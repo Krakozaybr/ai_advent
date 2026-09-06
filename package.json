@@ -1,0 +1,8 @@
+{
+  "name": "ai-advent",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "ask": "node day1/app.mjs"
+  }
+}
