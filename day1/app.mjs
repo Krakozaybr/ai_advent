@@ -1,36 +1,88 @@
-const prompt = process.argv.slice(2).join(" ") || "Привет! Ответь одной короткой фразой.";
-const apiKey = process.env.OPENAI_API_KEY;
-const model = process.env.OPENAI_MODEL || "gpt-5-mini";
+import { spawn } from "node:child_process";
+import { createInterface } from "node:readline";
 
-if (!apiKey) {
-  console.error("Не задан OPENAI_API_KEY.");
-  process.exit(1);
+const prompt = process.argv.slice(2).join(" ") || "Привет! Ответь одной короткой фразой.";
+const model = process.env.CODEX_MODEL || null;
+const server = spawn("codex", ["app-server", "--stdio"], {
+  stdio: ["pipe", "pipe", "pipe"],
+});
+
+let nextId = 1;
+const pending = new Map();
+let answer = "";
+let finishTurn;
+
+function request(method, params) {
+  const id = nextId++;
+  server.stdin.write(`${JSON.stringify({ id, method, params })}\n`);
+  return new Promise((resolve, reject) => pending.set(id, { resolve, reject }));
 }
 
-try {
-  const response = await fetch("https://api.openai.com/v1/responses", {
-    method: "POST",
-    headers: {
-      Authorization: `Bearer ${apiKey}`,
-      "Content-Type": "application/json",
-    },
-    body: JSON.stringify({ model, input: prompt }),
-  });
+function notify(method, params) {
+  server.stdin.write(`${JSON.stringify({ method, params })}\n`);
+}
 
-  const data = await response.json();
+const completed = new Promise((resolve, reject) => {
+  finishTurn = { resolve, reject };
+});
 
-  if (!response.ok) {
-    throw new Error(data.error?.message || `HTTP ${response.status}`);
+createInterface({ input: server.stdout }).on("line", (line) => {
+  const message = JSON.parse(line);
+
+  if (message.id && pending.has(message.id)) {
+    const { resolve, reject } = pending.get(message.id);
+    pending.delete(message.id);
+    message.error ? reject(new Error(message.error.message)) : resolve(message.result);
+    return;
   }
 
-  const answer = data.output
-    .flatMap((item) => item.content || [])
-    .filter((part) => part.type === "output_text")
-    .map((part) => part.text)
-    .join("");
+  if (message.method === "item/agentMessage/delta") {
+    answer += message.params.delta;
+  }
 
-  console.log(answer || "Модель не вернула текстовый ответ.");
+  if (message.method === "turn/completed") {
+    const finalAnswer = message.params.turn.items
+      .filter((item) => item.type === "agentMessage")
+      .map((item) => item.text)
+      .join("");
+    finishTurn.resolve(finalAnswer || answer);
+  }
+});
+
+server.on("error", (error) => finishTurn.reject(error));
+server.stderr.on("data", () => {});
+
+try {
+  await request("initialize", {
+    clientInfo: { name: "ai-advent", version: "1.0.0" },
+    capabilities: { experimentalApi: true },
+  });
+  notify("initialized", {});
+
+  const thread = await request("thread/start", {
+    cwd: process.cwd(),
+    ephemeral: true,
+    environments: [],
+    model,
+    sandbox: "read-only",
+    approvalPolicy: "never",
+  });
+
+  await request("turn/start", {
+    threadId: thread.thread.id,
+    input: [{ type: "text", text: prompt }],
+  });
+
+  const timeout = setTimeout(() => {
+    finishTurn.reject(new Error("Превышено время ожидания ответа Codex."));
+  }, 120_000);
+  const result = await completed;
+  clearTimeout(timeout);
+
+  console.log(result || "Codex не вернул текстовый ответ.");
 } catch (error) {
-  console.error(`Ошибка запроса к API: ${error.message}`);
-  process.exit(1);
+  console.error(`Ошибка Codex app-server: ${error.message}`);
+  process.exitCode = 1;
+} finally {
+  server.kill();
 }
