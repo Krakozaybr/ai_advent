@@ -1,4 +1,5 @@
-import { askOpenRouter, getModel, saveResult } from "../lib/openrouter.mjs";
+import { writeFile } from "node:fs/promises";
+import { askCodex } from "../lib/codex.mjs";
 
 const prompt = "Объясни разницу между let и const в JavaScript.";
 const constrainedPrompt = `${prompt}
@@ -8,19 +9,18 @@ const constrainedPrompt = `${prompt}
 Завершение: после строки «END» больше ничего не пиши.`;
 
 try {
-  const model = getModel();
   const [withoutConstraints, withConstraints] = await Promise.all([
-    askOpenRouter({ model, prompt }),
-    askOpenRouter({ model, prompt: constrainedPrompt }),
+    askCodex(prompt),
+    askCodex(constrainedPrompt),
   ]);
 
   const result = {
-    model,
+    model: withoutConstraints.model,
     prompt,
     withoutConstraints,
     withConstraints: { ...withConstraints, prompt: constrainedPrompt },
   };
-  await saveResult("day2/result.json", result);
+  await writeFile("day2/result.json", `${JSON.stringify(result, null, 2)}\n`);
 
   console.log("Без ограничений:\n", withoutConstraints.answer);
   console.log("\nС ограничениями:\n", withConstraints.answer);

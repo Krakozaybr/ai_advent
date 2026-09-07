@@ -1,4 +1,5 @@
-import { askOpenRouter, getModel, saveResult } from "../lib/openrouter.mjs";
+import { writeFile } from "node:fs/promises";
+import { askCodex } from "../lib/codex.mjs";
 
 const task = `Найди трёхзначное число. Его цифры различны, сумма цифр равна 12,
 десятки на 2 больше единиц, а сотни на 1 меньше десятков. Назови число и обоснуй ответ.`;
@@ -9,25 +10,18 @@ function isCorrect(answer) {
 }
 
 try {
-  const model = getModel();
   const [direct, stepByStep, experts, promptDesign] = await Promise.all([
-    askOpenRouter({ model, prompt: task }),
-    askOpenRouter({ model, prompt: `${task}\nРешай пошагово.` }),
-    askOpenRouter({
-      model,
-      prompt: `${task}
+    askCodex(task),
+    askCodex(`${task}\nРешай пошагово.`),
+    askCodex(`${task}
 
 Дай три независимых мини-решения с заголовками:
-«Аналитик», «Инженер», «Критик». Критик обязан проверить выводы остальных.`,
-    }),
-    askOpenRouter({
-      model,
-      prompt: `Составь короткий, точный prompt для другой модели, чтобы она решила задачу.
-Не решай её сам.\n\nЗадача:\n${task}`,
-    }),
+«Аналитик», «Инженер», «Критик». Критик обязан проверить выводы остальных.`),
+    askCodex(`Составь короткий, точный prompt для другой модели, чтобы она решила задачу.
+Не решай её сам.\n\nЗадача:\n${task}`),
   ]);
 
-  const promptThenSolve = await askOpenRouter({ model, prompt: promptDesign.answer });
+  const promptThenSolve = await askCodex(promptDesign.answer);
   const approaches = {
     direct,
     stepByStep,
@@ -40,8 +34,8 @@ try {
       latencyMs: result.latencyMs,
     }]),
   );
-  const result = { model, task, expectedAnswer, approaches, comparison };
-  await saveResult("day3/result.json", result);
+  const result = { model: direct.model, task, expectedAnswer, approaches, comparison };
+  await writeFile("day3/result.json", `${JSON.stringify(result, null, 2)}\n`);
 
   for (const [name, answer] of Object.entries(approaches)) {
     console.log(`\n${name}:\n${answer.answer}`);
