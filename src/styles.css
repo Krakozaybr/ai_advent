@@ -151,6 +151,12 @@ h1 {
   border-color: #827e72;
 }
 
+.settings-button:disabled,
+.secondary-button:disabled {
+  cursor: not-allowed;
+  opacity: 0.45;
+}
+
 .primary-button {
   min-width: 150px;
   padding: 11px 17px;
@@ -469,6 +475,17 @@ h1 {
   border-top: 1px solid #e2ded2;
 }
 
+.temperature-form {
+  display: grid;
+  grid-template-columns: minmax(150px, 0.35fr) minmax(260px, 1fr);
+  align-items: end;
+  gap: 16px;
+}
+
+.temperature-form .primary-button {
+  justify-self: end;
+}
+
 .metrics {
   display: flex;
   flex-wrap: wrap;
@@ -670,8 +687,13 @@ pre {
 
   .settings-panel,
   .field-grid,
-  .day2-parameters.controlled {
+  .day2-parameters.controlled,
+  .temperature-form {
     grid-template-columns: 1fr;
+  }
+
+  .temperature-form .primary-button {
+    justify-self: stretch;
   }
 
   .variant-tabs {

@@ -7,6 +7,7 @@ import { createApp } from "../server/app.mjs";
 import { buildOpenRouterRequest } from "../server/openrouter.mjs";
 import { createSettingsStore } from "../server/settings.mjs";
 import { DEFAULT_DAY3_TASK } from "../shared/day3.js";
+import { DEFAULT_DAY4_PROMPT } from "../shared/day4.js";
 
 function createMemorySettingsStore(initialApiKey = "") {
   let apiKey = initialApiKey;
@@ -88,6 +89,7 @@ test("OpenRouter request details expose JSON and query without the API key", () 
     prompt: "Тест",
     maxTokens: 150,
     stop: "END",
+    temperature: 0.7,
   });
 
   assert.deepEqual(request, {
@@ -99,6 +101,7 @@ test("OpenRouter request details expose JSON and query without the API key", () 
       messages: [{ role: "user", content: "Тест" }],
       max_tokens: 150,
       stop: ["END"],
+      temperature: 0.7,
     },
   });
   assert.equal(JSON.stringify(request).includes("apiKey"), false);
@@ -302,5 +305,79 @@ test("day 3 meta method creates a prompt and then solves with it", async () => {
     assert.equal(result.cost, 0.000006);
     assert.equal(result.latencyMs, 70);
     assert.equal(result.calls.length, 2);
+  });
+});
+
+test("day 4 sends temperature and calculates comparison metrics", async () => {
+  let receivedRequest;
+  const requestLlm = async (request) => {
+    receivedRequest = request;
+    return {
+      answer: `1. Название: Учебный ритм
+   Слоган: Планируй спокойно
+   Польза: Помогает распределить задания.
+
+2. Название: Верный план
+   Слоган: Всё вовремя
+   Польза: Напоминает о важных сроках.
+
+3. Название: Шаг за шагом
+   Слоган: Учись без спешки
+   Польза: Делит большие цели на задачи.`,
+      model: request.model,
+      usage: { total_tokens: 90 },
+      cost: 0.00001,
+      latencyMs: 120,
+      httpRequest: buildOpenRouterRequest(request),
+    };
+  };
+  const app = createApp({
+    settingsStore: createMemorySettingsStore("test-secret-key"),
+    requestLlm,
+    environmentApiKey: "",
+  });
+
+  await withServer(app, async (origin) => {
+    const response = await fetch(`${origin}/api/day4/run`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        prompt: DEFAULT_DAY4_PROMPT,
+        model: "qwen/test",
+        maxTokens: 550,
+        temperature: 1.2,
+      }),
+    });
+    const result = await response.json();
+
+    assert.equal(response.status, 200);
+    assert.deepEqual(receivedRequest, {
+      apiKey: "test-secret-key",
+      prompt: DEFAULT_DAY4_PROMPT,
+      model: "qwen/test",
+      maxTokens: 550,
+      temperature: 1.2,
+    });
+    assert.equal(result.temperature, 1.2);
+    assert.equal(result.formatCorrect, true);
+    assert.equal(result.formatDetails.labels.names, 3);
+    assert.ok(result.lexicalDiversity > 0);
+    assert.equal(result.httpRequest.json.temperature, 1.2);
+
+    const invalidResponse = await fetch(`${origin}/api/day4/run`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        prompt: DEFAULT_DAY4_PROMPT,
+        model: "qwen/test",
+        maxTokens: 550,
+        temperature: "",
+      }),
+    });
+
+    assert.equal(invalidResponse.status, 400);
+    assert.deepEqual(await invalidResponse.json(), {
+      error: "temperature должна быть числом от 0 до 2.",
+    });
   });
 });

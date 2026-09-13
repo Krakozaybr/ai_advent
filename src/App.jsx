@@ -4,9 +4,10 @@ import { apiRequest } from "./api.js";
 import { Day1 } from "./Day1.jsx";
 import { Day2 } from "./Day2.jsx";
 import { Day3 } from "./Day3.jsx";
+import { Day4 } from "./Day4.jsx";
 import { SettingsPanel } from "./SettingsPanel.jsx";
 
-const DAY_COMPONENTS = { 1: Day1, 2: Day2, 3: Day3 };
+const DAY_COMPONENTS = { 1: Day1, 2: Day2, 3: Day3, 4: Day4 };
 
 export function App() {
   const [activeDayNumber, setActiveDayNumber] = useState(1);
@@ -28,7 +29,7 @@ export function App() {
           <p className="lead">От первого запроса к стратегиям управления контекстом.</p>
         </div>
         <div className="header-actions">
-          <span className="stage-badge">Готовы Дни 1–3</span>
+          <span className="stage-badge">Готовы Дни 1–4</span>
           <button
             className="settings-button"
             onClick={() => setShowSettings((value) => !value)}

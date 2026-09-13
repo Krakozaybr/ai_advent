@@ -1,5 +1,6 @@
 import express from "express";
 import { runDay3Method } from "./day3.mjs";
+import { runDay4Experiment } from "./day4.mjs";
 import { askOpenRouter } from "./openrouter.mjs";
 import { createSettingsStore } from "./settings.mjs";
 
@@ -144,6 +145,45 @@ export function createApp({
       model,
       requestLlm,
       task,
+    });
+    return response.json(result);
+  });
+
+  app.post("/api/day4/run", async (request, response) => {
+    const prompt = typeof request.body?.prompt === "string" ? request.body.prompt.trim() : "";
+    const model = typeof request.body?.model === "string" ? request.body.model.trim() : "";
+    const maxTokens = Number(request.body?.maxTokens);
+    const rawTemperature = request.body?.temperature;
+    const temperature = Number(rawTemperature);
+
+    if (!prompt || !model) {
+      return response.status(400).json({ error: "Заполни prompt и модель." });
+    }
+    if (!Number.isInteger(maxTokens) || maxTokens < 1 || maxTokens > 8192) {
+      return response.status(400).json({ error: "maxTokens должен быть целым числом от 1 до 8192." });
+    }
+    if (
+      rawTemperature == null ||
+      rawTemperature === "" ||
+      !Number.isFinite(temperature) ||
+      temperature < 0 ||
+      temperature > 2
+    ) {
+      return response.status(400).json({ error: "temperature должна быть числом от 0 до 2." });
+    }
+
+    const apiKey = await resolveApiKey();
+    if (!apiKey) {
+      return response.status(401).json({ error: "Сначала добавь API-ключ OpenRouter в настройках." });
+    }
+
+    const result = await runDay4Experiment({
+      apiKey,
+      maxTokens,
+      model,
+      prompt,
+      requestLlm,
+      temperature,
     });
     return response.json(result);
   });
