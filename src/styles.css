@@ -284,10 +284,6 @@ h1 {
   gap: 16px;
 }
 
-.day2-fields {
-  grid-template-columns: minmax(260px, 2fr) repeat(3, minmax(130px, 0.7fr));
-}
-
 .field-hint {
   color: #858b84;
   font-size: 0.72rem;
@@ -369,17 +365,31 @@ h1 {
   box-shadow: 0 4px 12px rgb(23 33 27 / 14%);
 }
 
-.comparison-card {
-  min-width: 0;
-  margin-bottom: 20px;
-  padding: 18px;
-  border: 1px solid #e0dccf;
-  border-radius: 14px;
+.variant-panel {
+  padding: clamp(18px, 4vw, 30px);
+  border: 1px solid #dfdbce;
+  border-radius: 16px;
   background: #fbfaf5;
 }
 
-.comparison-card .answer {
-  min-height: 120px;
+.variant-heading {
+  margin-bottom: 20px;
+}
+
+.variant-heading h3 {
+  margin: 0 0 6px;
+  font-size: 1.35rem;
+}
+
+.compact-fields {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(120px, 1fr));
+  gap: 12px;
+}
+
+.final-comparison {
+  margin-bottom: 0;
+  margin-top: 18px;
 }
 
 .metrics {
@@ -555,7 +565,7 @@ pre {
 
   .settings-panel,
   .field-grid,
-  .day2-fields {
+  .compact-fields {
     grid-template-columns: 1fr;
   }
 

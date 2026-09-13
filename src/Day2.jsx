@@ -17,83 +17,98 @@ const ASSIGNMENT = `Отправьте один и тот же запрос, н�
 - 👉 с ограничениями
 
 **Результат:** один и тот же запрос с разным уровнем контроля ответа через API.`;
-const DEFAULTS = {
-  prompt: "Объясни разницу между let и const в JavaScript.",
-  model: DEFAULT_MODEL,
-  format: "Markdown: заголовок и два пункта — отдельно про let и const.",
-  maxWords: 80,
-  maxTokens: 220,
-  stop: "END",
+
+const DEFAULT_FORMS = {
+  free: {
+    model: DEFAULT_MODEL,
+    prompt: "Объясни разницу между let и const в JavaScript.",
+  },
+  controlled: {
+    model: DEFAULT_MODEL,
+    prompt: `Объясни разницу между let и const в JavaScript.
+
+Формат ответа: Markdown-заголовок и два пункта — отдельно про let и const.
+Длина: не более 80 слов.
+Завершение: в конце отдельной строкой напиши END.`,
+    maxTokens: 220,
+    stop: "END",
+  },
 };
 
-function ComparisonCard({ result }) {
-  return (
-    <article className="comparison-card">
-      <div className="answer markdown-body">
-        <Markdown>
-          {result.answer || "Модель не вернула текст. Попробуй увеличить лимит токенов."}
-        </Markdown>
-      </div>
-      <ResultMetrics result={result} />
-    </article>
+const VARIANTS = {
+  free: {
+    title: "Без ограничений",
+    description: "Модель получает только исходный вопрос — без формата, лимита и stop sequence.",
+  },
+  controlled: {
+    title: "С ограничениями",
+    description: "Prompt явно задаёт формат, длину и завершение; API дополнительно передаёт лимит и stop.",
+  },
+};
+
+function downloadResult(variant, result) {
+  const url = URL.createObjectURL(
+    new Blob([`${JSON.stringify(result, null, 2)}\n`], { type: "application/json" }),
   );
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = `day2-${variant}-result.json`;
+  link.click();
+  URL.revokeObjectURL(url);
 }
 
 export function Day2({ hasApiKey, onOpenSettings }) {
-  const [form, setForm] = useState(DEFAULTS);
-  const [result, setResult] = useState(null);
-  const [error, setError] = useState("");
-  const [loading, setLoading] = useState(false);
-  const [activeVariant, setActiveVariant] = useState("withoutConstraints");
+  const [activeVariant, setActiveVariant] = useState("free");
+  const [forms, setForms] = useState(DEFAULT_FORMS);
+  const [results, setResults] = useState({ free: null, controlled: null });
+  const [errors, setErrors] = useState({ free: "", controlled: "" });
+  const [loadingVariant, setLoadingVariant] = useState(null);
+
+  const form = forms[activeVariant];
+  const result = results[activeVariant];
+  const variant = VARIANTS[activeVariant];
 
   function update(name, value) {
-    setForm((current) => ({ ...current, [name]: value }));
+    setForms((current) => ({
+      ...current,
+      [activeVariant]: { ...current[activeVariant], [name]: value },
+    }));
   }
 
   async function runExperiment(event) {
     event.preventDefault();
-    setLoading(true);
-    setError("");
-    setResult(null);
-    setActiveVariant("withoutConstraints");
+    const requestedVariant = activeVariant;
+    const requestedForm = forms[requestedVariant];
+    setLoadingVariant(requestedVariant);
+    setErrors((current) => ({ ...current, [requestedVariant]: "" }));
 
     try {
       const nextResult = await apiRequest("/api/day2/run", {
         method: "POST",
         body: JSON.stringify({
-          ...form,
-          maxWords: Number(form.maxWords),
-          maxTokens: Number(form.maxTokens),
+          ...requestedForm,
+          variant: requestedVariant,
+          maxTokens:
+            requestedVariant === "controlled" ? Number(requestedForm.maxTokens) : undefined,
         }),
       });
-      setResult(nextResult);
+      setResults((current) => ({ ...current, [requestedVariant]: nextResult }));
     } catch (requestError) {
-      setError(requestError.message);
+      setErrors((current) => ({ ...current, [requestedVariant]: requestError.message }));
     } finally {
-      setLoading(false);
+      setLoadingVariant(null);
     }
   }
 
-  function reset() {
-    setForm(DEFAULTS);
-    setResult(null);
-    setError("");
-    setActiveVariant("withoutConstraints");
+  function resetActiveVariant() {
+    setForms((current) => ({ ...current, [activeVariant]: DEFAULT_FORMS[activeVariant] }));
+    setResults((current) => ({ ...current, [activeVariant]: null }));
+    setErrors((current) => ({ ...current, [activeVariant]: "" }));
   }
 
-  function downloadResult() {
-    const url = URL.createObjectURL(
-      new Blob([`${JSON.stringify(result, null, 2)}\n`], { type: "application/json" }),
-    );
-    const link = document.createElement("a");
-    link.href = url;
-    link.download = "day2-result.json";
-    link.click();
-    URL.revokeObjectURL(url);
-  }
-
-  const wordDifference = result
-    ? result.withoutConstraints.wordCount - result.withConstraints.wordCount
+  const bothReady = results.free && results.controlled;
+  const wordDifference = bothReady
+    ? results.free.response.wordCount - results.controlled.response.wordCount
     : 0;
 
   return (
@@ -102,7 +117,7 @@ export function Day2({ hasApiKey, onOpenSettings }) {
         <div>
           <p className="eyebrow">День 2</p>
           <h2>Контроль формата ответа</h2>
-          <p className="muted">Сравни один запрос без ограничений и с явными правилами.</p>
+          <p className="muted">Запусти два варианта отдельно, затем сравни результаты.</p>
         </div>
         <span className={hasApiKey ? "status ready" : "status missing"}>
           {hasApiKey ? "Ключ готов" : "Нет ключа"}
@@ -120,115 +135,120 @@ export function Day2({ hasApiKey, onOpenSettings }) {
 
       <AssignmentDetails>{ASSIGNMENT}</AssignmentDetails>
 
-      <form className="experiment-form" onSubmit={runExperiment}>
-        <label>
-          Один запрос для обоих вариантов
-          <textarea
-            onChange={(event) => update("prompt", event.target.value)}
-            rows="4"
-            value={form.prompt}
-          />
-        </label>
-        <label>
-          Явное описание формата
-          <textarea
-            onChange={(event) => update("format", event.target.value)}
-            rows="3"
-            value={form.format}
-          />
-        </label>
-        <div className="field-grid day2-fields">
+      <div className="variant-tabs" role="tablist" aria-label="Варианты эксперимента">
+        {Object.entries(VARIANTS).map(([id, item]) => (
+          <button
+            aria-controls="day2-variant-panel"
+            aria-selected={activeVariant === id}
+            className={activeVariant === id ? "variant-tab active" : "variant-tab"}
+            key={id}
+            onClick={() => setActiveVariant(id)}
+            role="tab"
+            type="button"
+          >
+            {item.title} {results[id] ? "✓" : ""}
+          </button>
+        ))}
+      </div>
+
+      <section className="variant-panel" id="day2-variant-panel" role="tabpanel">
+        <div className="variant-heading">
+          <h3>{variant.title}</h3>
+          <p className="muted">{variant.description}</p>
+        </div>
+
+        <form className="experiment-form" onSubmit={runExperiment}>
           <label>
-            Модель OpenRouter
-            <input onChange={(event) => update("model", event.target.value)} value={form.model} />
-          </label>
-          <label>
-            Максимум слов
-            <input
-              max="500"
-              min="1"
-              onChange={(event) => update("maxWords", event.target.value)}
-              type="number"
-              value={form.maxWords}
+            Prompt
+            <textarea
+              onChange={(event) => update("prompt", event.target.value)}
+              rows={activeVariant === "controlled" ? 8 : 4}
+              value={form.prompt}
             />
           </label>
-          <label>
-            Максимум токенов
-            <input
-              max="8192"
-              min="1"
-              onChange={(event) => update("maxTokens", event.target.value)}
-              type="number"
-              value={form.maxTokens}
-            />
-          </label>
-          <label>
-            Stop sequence
-            <input onChange={(event) => update("stop", event.target.value)} value={form.stop} />
-            <span className="field-hint">OpenRouter остановится перед этой строкой.</span>
-          </label>
-        </div>
-        <div className="button-row">
-          <button className="secondary-button" onClick={reset} type="button">
-            Сбросить
-          </button>
-          <button className="primary-button" disabled={loading || !hasApiKey} type="submit">
-            {loading ? "Ждём два ответа…" : "Сравнить ответы"}
-          </button>
-        </div>
-      </form>
+          <div className="field-grid">
+            <label>
+              Модель OpenRouter
+              <input onChange={(event) => update("model", event.target.value)} value={form.model} />
+            </label>
+            {activeVariant === "controlled" && (
+              <div className="compact-fields">
+                <label>
+                  Максимум токенов
+                  <input
+                    max="8192"
+                    min="1"
+                    onChange={(event) => update("maxTokens", event.target.value)}
+                    type="number"
+                    value={form.maxTokens}
+                  />
+                </label>
+                <label>
+                  Stop sequence
+                  <input onChange={(event) => update("stop", event.target.value)} value={form.stop} />
+                </label>
+              </div>
+            )}
+          </div>
+          {activeVariant === "controlled" && (
+            <p className="field-hint">
+              Stop sequence не показывается в ответе: OpenRouter завершает генерацию прямо перед ней.
+            </p>
+          )}
+          <div className="button-row">
+            <button className="secondary-button" onClick={resetActiveVariant} type="button">
+              Сбросить вариант
+            </button>
+            <button
+              className="primary-button"
+              disabled={loadingVariant !== null || !hasApiKey}
+              type="submit"
+            >
+              {loadingVariant === activeVariant ? "Ждём ответ…" : `Отправить: ${variant.title}`}
+            </button>
+          </div>
+        </form>
 
-      {error && <p className="error-message result-message">{error}</p>}
+        {errors[activeVariant] && (
+          <p className="error-message result-message">{errors[activeVariant]}</p>
+        )}
 
-      {result && (
-        <section className="result-card" aria-live="polite">
-          <div className="result-heading">
-            <div>
-              <p className="eyebrow">Сравнение</p>
-              <h3>{result.request.model}</h3>
+        {result && (
+          <section className="result-card" aria-live="polite">
+            <div className="result-heading">
+              <div>
+                <p className="eyebrow">Ответ модели</p>
+                <h3>{result.response.model}</h3>
+              </div>
+              <button
+                className="secondary-button"
+                onClick={() => downloadResult(activeVariant, result)}
+                type="button"
+              >
+                Скачать JSON
+              </button>
             </div>
-            <button className="secondary-button" onClick={downloadResult} type="button">
-              Скачать JSON
-            </button>
-          </div>
-          <p className="comparison-summary">
-            Управляемый ответ {wordDifference >= 0 ? "короче" : "длиннее"} на{" "}
-            <strong>{Math.abs(wordDifference)}</strong> слов.
-          </p>
-          <div className="variant-tabs" role="tablist" aria-label="Варианты ответа">
-            <button
-              aria-controls="day2-variant-panel"
-              aria-selected={activeVariant === "withoutConstraints"}
-              className={
-                activeVariant === "withoutConstraints" ? "variant-tab active" : "variant-tab"
-              }
-              onClick={() => setActiveVariant("withoutConstraints")}
-              role="tab"
-              type="button"
-            >
-              Без ограничений · {result.withoutConstraints.wordCount} слов
-            </button>
-            <button
-              aria-controls="day2-variant-panel"
-              aria-selected={activeVariant === "withConstraints"}
-              className={
-                activeVariant === "withConstraints" ? "variant-tab active" : "variant-tab"
-              }
-              onClick={() => setActiveVariant("withConstraints")}
-              role="tab"
-              type="button"
-            >
-              С ограничениями · {result.withConstraints.wordCount} слов
-            </button>
-          </div>
-          <div id="day2-variant-panel" role="tabpanel">
-            <ComparisonCard result={result[activeVariant]} />
-          </div>
-          <details>
-            <summary>Технические детали и управляемый prompt</summary>
-            <pre>{JSON.stringify(result.request, null, 2)}</pre>
-          </details>
-        </section>
+            <div className="answer markdown-body">
+              <Markdown>
+                {result.response.answer ||
+                  "Модель не вернула текст. Попробуй увеличить лимит токенов."}
+              </Markdown>
+            </div>
+            <ResultMetrics result={result.response} />
+            <details>
+              <summary>Технические детали запроса</summary>
+              <pre>{JSON.stringify(result.request, null, 2)}</pre>
+            </details>
+          </section>
+        )}
+      </section>
+
+      {bothReady && (
+        <p className="comparison-summary final-comparison">
+          Оба варианта готовы. Ответ с ограничениями {wordDifference >= 0 ? "короче" : "длиннее"}
+          {" на "}
+          <strong>{Math.abs(wordDifference)}</strong> слов.
+        </p>
       )}
     </section>
   );

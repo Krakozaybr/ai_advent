@@ -62,24 +62,29 @@ export function createApp({
   });
 
   app.post("/api/day2/run", async (request, response) => {
+    const variant = request.body?.variant;
     const prompt = typeof request.body?.prompt === "string" ? request.body.prompt.trim() : "";
     const model = typeof request.body?.model === "string" ? request.body.model.trim() : "";
-    const format = typeof request.body?.format === "string" ? request.body.format.trim() : "";
     const stop = typeof request.body?.stop === "string" ? request.body.stop.trim() : "";
-    const maxWords = Number(request.body?.maxWords);
     const maxTokens = Number(request.body?.maxTokens);
 
-    if (!prompt || !model || !format || !stop) {
-      return response.status(400).json({ error: "Заполни запрос и все параметры управления." });
+    if (variant !== "free" && variant !== "controlled") {
+      return response.status(400).json({ error: "Неизвестный вариант эксперимента." });
     }
-    if (!Number.isInteger(maxWords) || maxWords < 1 || maxWords > 500) {
-      return response.status(400).json({ error: "maxWords должен быть целым числом от 1 до 500." });
+    if (!prompt || !model) {
+      return response.status(400).json({ error: "Заполни prompt и модель." });
     }
-    if (!Number.isInteger(maxTokens) || maxTokens < 1 || maxTokens > 8192) {
-      return response.status(400).json({ error: "maxTokens должен быть целым числом от 1 до 8192." });
-    }
-    if (stop.length > 50) {
-      return response.status(400).json({ error: "Stop sequence должна быть короче 50 символов." });
+    if (variant === "controlled") {
+      if (!Number.isInteger(maxTokens) || maxTokens < 1 || maxTokens > 8192) {
+        return response.status(400).json({
+          error: "maxTokens должен быть целым числом от 1 до 8192.",
+        });
+      }
+      if (!stop || stop.length > 50) {
+        return response.status(400).json({
+          error: "Stop sequence должна содержать от 1 до 50 символов.",
+        });
+      }
     }
 
     const apiKey = await resolveApiKey();
@@ -87,29 +92,22 @@ export function createApp({
       return response.status(401).json({ error: "Сначала добавь API-ключ OpenRouter в настройках." });
     }
 
-    const controlledPrompt = `${prompt}
-
-Требования к ответу:
-- ${format}
-- Не более ${maxWords} слов.
-- В конце отдельной строкой напиши: ${stop}`;
-
-    const [withoutConstraints, withConstraints] = await Promise.all([
-      requestLlm({ apiKey, model, prompt }),
-      requestLlm({ apiKey, model, prompt: controlledPrompt, maxTokens, stop }),
-    ]);
+    const llmRequest = { apiKey, model, prompt };
+    if (variant === "controlled") {
+      llmRequest.maxTokens = maxTokens;
+      llmRequest.stop = stop;
+    }
+    const result = await requestLlm(llmRequest);
     const countWords = (text) => (text.trim() ? text.trim().split(/\s+/u).length : 0);
 
     return response.json({
-      request: { prompt, model, format, maxWords, maxTokens, stop, controlledPrompt },
-      withoutConstraints: {
-        ...withoutConstraints,
-        wordCount: countWords(withoutConstraints.answer),
+      variant,
+      request: {
+        prompt,
+        model,
+        ...(variant === "controlled" ? { maxTokens, stop } : {}),
       },
-      withConstraints: {
-        ...withConstraints,
-        wordCount: countWords(withConstraints.answer),
-      },
+      response: { ...result, wordCount: countWords(result.answer) },
     });
   });
 

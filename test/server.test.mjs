@@ -117,12 +117,15 @@ test("day 1 sends the prompt to the selected model", async () => {
   });
 });
 
-test("day 2 sends the same task with and without output controls", async () => {
+test("day 2 runs free and controlled variants independently", async () => {
   const calls = [];
   const requestLlm = async (request) => {
     calls.push(request);
     return {
-      answer: calls.length === 1 ? "Ответ без заданных ограничений формата" : "Короткий управляемый ответ",
+      answer:
+        calls.length === 1
+          ? "Ответ без заданных ограничений формата"
+          : "Короткий управляемый ответ",
       model: request.model,
       usage: { total_tokens: 20 },
       cost: 0.000002,
@@ -136,33 +139,50 @@ test("day 2 sends the same task with and without output controls", async () => {
   });
 
   await withServer(app, async (origin) => {
-    const response = await fetch(`${origin}/api/day2/run`, {
+    const freeResponse = await fetch(`${origin}/api/day2/run`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
+        variant: "free",
         prompt: "Объясни замыкания.",
         model: "qwen/test",
-        format: "Markdown-список из двух пунктов.",
-        maxWords: 40,
-        maxTokens: 150,
-        stop: "END",
       }),
     });
-    const result = await response.json();
+    const freeResult = await freeResponse.json();
 
-    assert.equal(response.status, 200);
-    assert.equal(calls.length, 2);
+    assert.equal(freeResponse.status, 200);
+    assert.equal(calls.length, 1);
     assert.deepEqual(calls[0], {
       apiKey: "test-secret-key",
       model: "qwen/test",
       prompt: "Объясни замыкания.",
     });
-    assert.equal(calls[1].model, "qwen/test");
-    assert.equal(calls[1].maxTokens, 150);
-    assert.equal(calls[1].stop, "END");
-    assert.match(calls[1].prompt, /Markdown-список из двух пунктов/u);
-    assert.match(calls[1].prompt, /Не более 40 слов/u);
-    assert.equal(result.withoutConstraints.wordCount, 5);
-    assert.equal(result.withConstraints.wordCount, 3);
+    assert.equal(freeResult.variant, "free");
+    assert.equal(freeResult.response.wordCount, 5);
+
+    const controlledResponse = await fetch(`${origin}/api/day2/run`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        variant: "controlled",
+        prompt: "Объясни замыкания. Не более 40 слов. В конце напиши END.",
+        model: "qwen/test",
+        maxTokens: 150,
+        stop: "END",
+      }),
+    });
+    const controlledResult = await controlledResponse.json();
+
+    assert.equal(controlledResponse.status, 200);
+    assert.equal(calls.length, 2);
+    assert.deepEqual(calls[1], {
+      apiKey: "test-secret-key",
+      model: "qwen/test",
+      prompt: "Объясни замыкания. Не более 40 слов. В конце напиши END.",
+      maxTokens: 150,
+      stop: "END",
+    });
+    assert.equal(controlledResult.variant, "controlled");
+    assert.equal(controlledResult.response.wordCount, 3);
   });
 });
