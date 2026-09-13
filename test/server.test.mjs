@@ -6,6 +6,7 @@ import test from "node:test";
 import { createApp } from "../server/app.mjs";
 import { buildOpenRouterRequest } from "../server/openrouter.mjs";
 import { createSettingsStore } from "../server/settings.mjs";
+import { DEFAULT_DAY3_TASK } from "../shared/day3.js";
 
 function createMemorySettingsStore(initialApiKey = "") {
   let apiKey = initialApiKey;
@@ -207,5 +208,99 @@ test("day 2 runs free and controlled variants independently", async () => {
     });
     assert.equal(controlledResult.variant, "controlled");
     assert.equal(controlledResult.response.wordCount, 3);
+  });
+});
+
+test("day 3 runs a direct method and checks the expected answer", async () => {
+  const calls = [];
+  const requestLlm = async (request) => {
+    calls.push(request);
+    return {
+      answer: "Краткое решение. Итоговый ответ: 453",
+      model: request.model,
+      usage: { prompt_tokens: 20, completion_tokens: 10, total_tokens: 30 },
+      cost: 0.000004,
+      latencyMs: 40,
+      httpRequest: buildOpenRouterRequest(request),
+    };
+  };
+  const app = createApp({
+    settingsStore: createMemorySettingsStore("test-secret-key"),
+    requestLlm,
+    environmentApiKey: "",
+  });
+
+  await withServer(app, async (origin) => {
+    const response = await fetch(`${origin}/api/day3/run`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        method: "direct",
+        task: DEFAULT_DAY3_TASK,
+        instruction: "Дай прямой ответ.",
+        model: "qwen/test",
+        maxTokens: 300,
+      }),
+    });
+    const result = await response.json();
+
+    assert.equal(response.status, 200);
+    assert.equal(calls.length, 1);
+    assert.match(calls[0].prompt, /Дай прямой ответ/u);
+    assert.equal(result.correct, true);
+    assert.equal(result.expectedAnswer, "453");
+    assert.equal(result.usage.total_tokens, 30);
+  });
+});
+
+test("day 3 meta method creates a prompt and then solves with it", async () => {
+  const calls = [];
+  const requestLlm = async (request) => {
+    calls.push(request);
+    const answer =
+      calls.length === 1
+        ? "Реши систему условий для цифр числа и проверь сумму."
+        : "Цифры равны 4, 5 и 3. Итоговый ответ: 453";
+    return {
+      answer,
+      model: request.model,
+      usage: { prompt_tokens: 10, completion_tokens: 15, total_tokens: 25 },
+      cost: 0.000003,
+      latencyMs: 35,
+      httpRequest: buildOpenRouterRequest({ ...request, prompt: request.prompt }),
+    };
+  };
+  const app = createApp({
+    settingsStore: createMemorySettingsStore("test-secret-key"),
+    requestLlm,
+    environmentApiKey: "",
+  });
+
+  await withServer(app, async (origin) => {
+    const response = await fetch(`${origin}/api/day3/run`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        method: "meta",
+        task: DEFAULT_DAY3_TASK,
+        instruction: "Сначала создай prompt.",
+        model: "qwen/test",
+        maxTokens: 300,
+      }),
+    });
+    const result = await response.json();
+
+    assert.equal(response.status, 200);
+    assert.equal(calls.length, 2);
+    assert.match(calls[1].prompt, /Реши систему условий/u);
+    assert.equal(
+      result.generatedPrompt,
+      "Реши систему условий для цифр числа и проверь сумму.",
+    );
+    assert.equal(result.correct, true);
+    assert.equal(result.usage.total_tokens, 50);
+    assert.equal(result.cost, 0.000006);
+    assert.equal(result.latencyMs, 70);
+    assert.equal(result.calls.length, 2);
   });
 });

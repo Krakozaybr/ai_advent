@@ -3,6 +3,7 @@ import { days } from "./days.js";
 import { apiRequest } from "./api.js";
 import { Day1 } from "./Day1.jsx";
 import { Day2 } from "./Day2.jsx";
+import { Day3 } from "./Day3.jsx";
 import { SettingsPanel } from "./SettingsPanel.jsx";
 
 export function App() {
@@ -26,7 +27,7 @@ export function App() {
           <p className="lead">От первого запроса к стратегиям управления контекстом.</p>
         </div>
         <div className="header-actions">
-          <span className="stage-badge">Готовы Дни 1–2</span>
+          <span className="stage-badge">Готовы Дни 1–3</span>
           <button
             className="settings-button"
             onClick={() => setShowSettings((value) => !value)}
@@ -73,6 +74,11 @@ export function App() {
           />
         ) : activeDayNumber === 2 ? (
           <Day2
+            hasApiKey={settingsStatus.hasApiKey}
+            onOpenSettings={() => setShowSettings(true)}
+          />
+        ) : activeDayNumber === 3 ? (
+          <Day3
             hasApiKey={settingsStatus.hasApiKey}
             onOpenSettings={() => setShowSettings(true)}
           />

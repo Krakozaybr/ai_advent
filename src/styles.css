@@ -405,6 +405,18 @@ h1 {
   font-size: 1.35rem;
 }
 
+.shared-task {
+  margin-bottom: 22px;
+}
+
+.method-tabs {
+  overflow-x: auto;
+}
+
+.method-tabs .variant-tab {
+  min-width: 140px;
+}
+
 .day2-parameters {
   display: grid;
   grid-template-columns: minmax(0, 1fr);
@@ -422,6 +434,39 @@ h1 {
 .final-comparison {
   margin-bottom: 0;
   margin-top: 18px;
+}
+
+.result-actions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.accuracy-badge {
+  padding: 7px 10px;
+  border-radius: 999px;
+  font-size: 0.75rem;
+  font-weight: 800;
+}
+
+.accuracy-badge.correct {
+  color: #275f3c;
+  background: #dff1e3;
+}
+
+.accuracy-badge.incorrect {
+  color: #8e2f26;
+  background: #fde5e1;
+}
+
+.accuracy-badge.unknown {
+  color: #665f4d;
+  background: #eeeade;
+}
+
+.generated-prompt {
+  margin-top: 20px;
+  border-top: 1px solid #e2ded2;
 }
 
 .metrics {
@@ -639,6 +684,11 @@ pre {
 
   .experiment-heading,
   .result-heading {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+
+  .result-actions {
     align-items: flex-start;
     flex-direction: column;
   }

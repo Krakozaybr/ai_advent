@@ -1,4 +1,5 @@
 import express from "express";
+import { runDay3Method } from "./day3.mjs";
 import { askOpenRouter } from "./openrouter.mjs";
 import { createSettingsStore } from "./settings.mjs";
 
@@ -109,6 +110,42 @@ export function createApp({
       },
       response: { ...result, wordCount: countWords(result.answer) },
     });
+  });
+
+  app.post("/api/day3/run", async (request, response) => {
+    const method = request.body?.method;
+    const task = typeof request.body?.task === "string" ? request.body.task.trim() : "";
+    const instruction =
+      typeof request.body?.instruction === "string" ? request.body.instruction.trim() : "";
+    const model = typeof request.body?.model === "string" ? request.body.model.trim() : "";
+    const maxTokens = Number(request.body?.maxTokens);
+    const allowedMethods = ["direct", "step", "meta", "experts"];
+
+    if (!allowedMethods.includes(method)) {
+      return response.status(400).json({ error: "Неизвестный способ рассуждения." });
+    }
+    if (!task || !instruction || !model) {
+      return response.status(400).json({ error: "Заполни задачу, инструкцию и модель." });
+    }
+    if (!Number.isInteger(maxTokens) || maxTokens < 1 || maxTokens > 8192) {
+      return response.status(400).json({ error: "maxTokens должен быть целым числом от 1 до 8192." });
+    }
+
+    const apiKey = await resolveApiKey();
+    if (!apiKey) {
+      return response.status(401).json({ error: "Сначала добавь API-ключ OpenRouter в настройках." });
+    }
+
+    const result = await runDay3Method({
+      apiKey,
+      instruction,
+      maxTokens,
+      method,
+      model,
+      requestLlm,
+      task,
+    });
+    return response.json(result);
   });
 
   app.use((error, _request, response, _next) => {
