@@ -1,5 +1,23 @@
 import { buildDay8History } from "../shared/day8.js";
+import { buildOpenRouterRequest } from "./openrouter.mjs";
 import { estimateMessagesTokens, estimateTextTokens } from "./token-counter.mjs";
+
+function compactRequestDetails(request) {
+  return {
+    ...request,
+    note: "Полный текст сообщений отправлен в OpenRouter. Здесь он сокращён, чтобы не завис интерфейс.",
+    json: {
+      ...request.json,
+      messages: request.json.messages.map((message) => ({
+        role: message.role,
+        content:
+          message.content.length > 500
+            ? `[сокращено для показа: ${message.content.length.toLocaleString("ru-RU")} символов]`
+            : message.content,
+      })),
+    },
+  };
+}
 
 export async function runDay8Experiment({
   apiKey,
@@ -31,35 +49,44 @@ export async function runDay8Experiment({
     contextLimit,
   };
 
-  if (estimatedWithResponse > contextLimit) {
+  const exceedsLimit = estimatedWithResponse > contextLimit;
+  const request = buildOpenRouterRequest({ messages, model, maxTokens, temperature });
+
+  try {
+    const result = await requestLlm({
+      apiKey,
+      maxTokens,
+      messages,
+      model,
+      temperature,
+    });
+
+    return {
+      ...result,
+      scenario,
+      sent: true,
+      failed: false,
+      exceedsLimit,
+      tokenCounts: {
+        ...tokenCounts,
+        actualInput: result.usage?.prompt_tokens ?? null,
+        actualResponse: result.usage?.completion_tokens ?? null,
+        actualTotal: result.usage?.total_tokens ?? null,
+      },
+      historyMessages: history.length,
+      httpRequest: scenario === "overflow" ? compactRequestDetails(request) : result.httpRequest,
+    };
+  } catch (error) {
     return {
       scenario,
-      blocked: true,
-      reason: `Запрос заблокирован до OpenRouter: оценка входа (${estimatedInput}) + резерв ответа (${maxTokens}) превышает учебный лимит (${contextLimit}).`,
+      sent: true,
+      failed: true,
+      exceedsLimit,
+      reason: error.message,
       tokenCounts,
       historyMessages: history.length,
-      cost: 0,
+      cost: null,
+      httpRequest: compactRequestDetails(request),
     };
   }
-
-  const result = await requestLlm({
-    apiKey,
-    maxTokens,
-    messages,
-    model,
-    temperature,
-  });
-
-  return {
-    ...result,
-    scenario,
-    blocked: false,
-    tokenCounts: {
-      ...tokenCounts,
-      actualInput: result.usage?.prompt_tokens ?? null,
-      actualResponse: result.usage?.completion_tokens ?? null,
-      actualTotal: result.usage?.total_tokens ?? null,
-    },
-    historyMessages: history.length,
-  };
 }

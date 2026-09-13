@@ -10,6 +10,7 @@ export function RequestDetails({ request, title = "Технические дет
         <p className="request-endpoint">
           <strong>{request.method}</strong> <code>{request.url}</code>
         </p>
+        {request.note && <p className="field-hint">{request.note}</p>}
         <p className="detail-label">Query parameters</p>
         <pre>{JSON.stringify(request.query, null, 2)}</pre>
         <p className="detail-label">JSON body</p>

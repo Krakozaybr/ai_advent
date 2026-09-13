@@ -1,6 +1,8 @@
 export const DEFAULT_DAY8_PROMPT =
   "Составь резюме того, что ты знаешь о моём учебном проекте. Не более 70 слов.";
 
+export const DEFAULT_DAY8_CONTEXT_LIMIT = 262_144;
+
 export const DAY8_SCENARIOS = {
   short: {
     title: "Короткий диалог",
@@ -12,7 +14,7 @@ export const DAY8_SCENARIOS = {
   },
   overflow: {
     title: "Переполнение",
-    description: "Большая история превышает учебный лимит до вызова API.",
+    description: "История больше контекстного окна и всё равно отправляется в OpenRouter.",
   },
 };
 
@@ -45,7 +47,10 @@ export function buildDay8History(scenario) {
   }
 
   if (scenario === "overflow") {
-    return Array.from({ length: 4 }, () => longHistory).flat();
+    return longHistory.map((message) => ({
+      ...message,
+      content: Array.from({ length: 700 }, () => message.content).join(" "),
+    }));
   }
 
   throw new Error("Неизвестный сценарий Дня 8.");

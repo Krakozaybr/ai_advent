@@ -656,7 +656,7 @@ h1 {
   transition: width 180ms ease;
 }
 
-.blocked-result .context-meter span {
+.overflow-result .context-meter span {
   background: #bd5139;
 }
 

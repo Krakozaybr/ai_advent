@@ -1,6 +1,10 @@
 import { useState } from "react";
 import { DEFAULT_DAY7_SYSTEM_PROMPT } from "../shared/day7.js";
-import { DAY8_SCENARIOS, DEFAULT_DAY8_PROMPT } from "../shared/day8.js";
+import {
+  DAY8_SCENARIOS,
+  DEFAULT_DAY8_CONTEXT_LIMIT,
+  DEFAULT_DAY8_PROMPT,
+} from "../shared/day8.js";
 import { DEFAULT_MODEL } from "../shared/models.js";
 import { apiRequest } from "./api.js";
 import { AssignmentDetails } from "./AssignmentDetails.jsx";
@@ -32,12 +36,12 @@ function buildComparison(results) {
   const rows = Object.entries(DAY8_SCENARIOS).map(([id, scenario]) => {
     const result = results[id];
     const counts = result.tokenCounts;
-    const status = result.blocked ? "заблокирован до API" : "получен ответ";
-    const cost = result.blocked
-      ? "$0.000000"
-      : result.cost == null
-        ? "н/д"
-        : `$${Number(result.cost).toFixed(6)}`;
+    const status = result.failed
+      ? "ошибка OpenRouter"
+      : result.exceedsLimit
+        ? "ответ получен сверх оценки"
+        : "получен ответ";
+    const cost = result.cost == null ? "н/д" : `$${Number(result.cost).toFixed(6)}`;
     return `| ${scenario.title} | ${result.historyMessages} | ≈ ${counts.estimatedCurrentMessage} | ≈ ${counts.estimatedHistory} | ${counts.actualInput ?? "—"} | ${counts.actualResponse ?? "—"} | ${counts.actualTotal ?? "—"} | ${cost} | ${status} |`;
   });
   const shortInput = results.short.tokenCounts.actualInput;
@@ -46,7 +50,7 @@ function buildComparison(results) {
     ? `Фактический вход вырос с **${shortInput}** до **${longInput} токенов**.`
     : "Длинная история увеличила оценку входного контекста.";
 
-  return `${growth} Вместе с контекстом обычно растёт и стоимость запроса. Сценарий переполнения остановлен локально до OpenRouter, поэтому он не потратил деньги.
+  return `${growth} Вместе с контекстом обычно растёт и стоимость запроса. Переполненный сценарий тоже отправлен в OpenRouter, поэтому в таблице виден реальный результат провайдера.
 
 | Сценарий | Сообщений в истории | Текущий запрос | История | Вход API | Ответ | Всего | Стоимость | Результат |
 |---|---:|---:|---:|---:|---:|---:|---:|---|
@@ -72,7 +76,7 @@ export function Day8({ hasApiKey, onOpenSettings }) {
   const [prompt, setPrompt] = useState(DEFAULT_DAY8_PROMPT);
   const [model, setModel] = useState(DEFAULT_MODEL);
   const [maxTokens, setMaxTokens] = useState(180);
-  const [contextLimit, setContextLimit] = useState(1200);
+  const [contextLimit, setContextLimit] = useState(DEFAULT_DAY8_CONTEXT_LIMIT);
   const [temperature, setTemperature] = useState(0.2);
   const [results, setResults] = useState(EMPTY_RESULTS);
   const [errors, setErrors] = useState(EMPTY_ERRORS);
@@ -124,7 +128,7 @@ export function Day8({ hasApiKey, onOpenSettings }) {
     setPrompt(DEFAULT_DAY8_PROMPT);
     setModel(DEFAULT_MODEL);
     setMaxTokens(180);
-    setContextLimit(1200);
+    setContextLimit(DEFAULT_DAY8_CONTEXT_LIMIT);
     setTemperature(0.2);
     clearResults();
   }
@@ -158,17 +162,23 @@ export function Day8({ hasApiKey, onOpenSettings }) {
       <AssignmentDetails>{ASSIGNMENT}</AssignmentDetails>
 
       <details className="agent-architecture">
-        <summary>Как считается и почему лимит учебный</summary>
+        <summary>Как считается и что произойдёт при переполнении</summary>
         <p>
           До API приложение оценивает токены по размеру UTF-8-текста и добавляет служебные
           токены сообщений. Точное разбиение зависит от токенизатора выбранной модели,
           поэтому после ответа показываются фактические счётчики OpenRouter.
         </p>
         <p>
-          Лимит намеренно уменьшен до <strong>1200</strong>: так переполнение воспроизводится
-          мгновенно и без дорогого огромного запроса. Значение можно изменить.
+          Для дефолтной Qwen-модели указан лимит <strong>262 144</strong> токена.
+          Переполненный сценарий создаёт ещё более крупную историю и действительно отправляет
+          её в OpenRouter, чтобы показать ответ или ошибку провайдера. Значение можно изменить.
         </p>
       </details>
+
+      <div className="notice">
+        Сценарий «Переполнение» действительно отправляет большой контекст: локальная оценка
+        около 376 000 токенов. Возможны списание примерно $0.015, ошибка провайдера или таймаут.
+      </div>
 
       <div className="experiment-form shared-task">
         <label>
@@ -210,7 +220,7 @@ export function Day8({ hasApiKey, onOpenSettings }) {
             />
           </label>
           <label>
-            Учебный лимит
+            Контекстное окно модели
             <input
               disabled={anyLoading}
               max="1000000"
@@ -284,15 +294,23 @@ export function Day8({ hasApiKey, onOpenSettings }) {
         )}
 
         {result && (
-          <section className={`result-card ${result.blocked ? "blocked-result" : ""}`} aria-live="polite">
+          <section className={`result-card ${result.exceedsLimit ? "overflow-result" : ""}`} aria-live="polite">
             <div className="result-heading">
               <div>
                 <p className="eyebrow">Результат сценария</p>
-                <h3>{result.blocked ? "Запрос не отправлен" : result.model}</h3>
+                <h3>{result.failed ? "OpenRouter вернул ошибку" : result.model}</h3>
               </div>
               <div className="result-actions">
-                <span className={`accuracy-badge ${result.blocked ? "incorrect" : "correct"}`}>
-                  {result.blocked ? "Лимит превышен" : "Ответ получен"}
+                <span
+                  className={`accuracy-badge ${
+                    result.failed ? "incorrect" : result.exceedsLimit ? "unknown" : "correct"
+                  }`}
+                >
+                  {result.failed
+                    ? "Ошибка после отправки"
+                    : result.exceedsLimit
+                      ? "Отправлено сверх лимита"
+                      : "Ответ получен"}
                 </span>
                 <button
                   className="secondary-button"
@@ -304,7 +322,7 @@ export function Day8({ hasApiKey, onOpenSettings }) {
               </div>
             </div>
 
-            <div className="context-meter" aria-label={`Использовано ${limitUsed}% учебного лимита`}>
+            <div className="context-meter" aria-label={`Использовано ${limitUsed}% контекстного окна`}>
               <span style={{ width: `${limitUsed}%` }} />
             </div>
             <p className="field-hint">
@@ -318,8 +336,14 @@ export function Day8({ hasApiKey, onOpenSettings }) {
               <div><span>Ответ модели</span><strong>{formatTokenCount(result.tokenCounts.actualResponse)}</strong></div>
             </div>
 
-            {result.blocked ? (
-              <p className="error-message token-limit-message">{result.reason}</p>
+            {result.failed ? (
+              <>
+                <p className="error-message token-limit-message">{result.reason}</p>
+                <RequestDetails
+                  request={result.httpRequest}
+                  title="Технические детали отправленного запроса"
+                />
+              </>
             ) : (
               <>
                 <div className="answer markdown-body">

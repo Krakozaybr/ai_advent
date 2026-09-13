@@ -650,10 +650,13 @@ test("token estimate grows together with the dialogue history", () => {
   assert.ok(overflowEstimate > longEstimate);
 });
 
-test("day 8 returns exact usage and blocks overflow before OpenRouter", async () => {
+test("day 8 returns exact usage and sends overflow to OpenRouter", async () => {
   const calls = [];
   const requestLlm = async (request) => {
     calls.push(request);
+    if (request.messages.some((message) => message.content.length > 500)) {
+      throw new Error("OpenRouter: context length exceeded");
+    }
     return {
       answer: "AI Advent — локальный учебный проект с десятью вкладками.",
       model: request.model,
@@ -686,7 +689,8 @@ test("day 8 returns exact usage and blocks overflow before OpenRouter", async ()
     const shortResult = await shortResponse.json();
 
     assert.equal(shortResponse.status, 200);
-    assert.equal(shortResult.blocked, false);
+    assert.equal(shortResult.failed, false);
+    assert.equal(shortResult.sent, true);
     assert.equal(shortResult.tokenCounts.actualInput, 135);
     assert.equal(shortResult.tokenCounts.actualResponse, 18);
     assert.equal(calls.length, 1);
@@ -700,7 +704,7 @@ test("day 8 returns exact usage and blocks overflow before OpenRouter", async ()
     const longResult = await longResponse.json();
 
     assert.equal(longResponse.status, 200);
-    assert.equal(longResult.blocked, false);
+    assert.equal(longResult.failed, false);
     assert.equal(longResult.historyMessages, 16);
     assert.ok(longResult.tokenCounts.estimatedInput > shortResult.tokenCounts.estimatedInput);
     assert.equal(calls.length, 2);
@@ -714,14 +718,17 @@ test("day 8 returns exact usage and blocks overflow before OpenRouter", async ()
     const overflowResult = await overflowResponse.json();
 
     assert.equal(overflowResponse.status, 200);
-    assert.equal(overflowResult.blocked, true);
-    assert.match(overflowResult.reason, /превышает учебный лимит/u);
+    assert.equal(overflowResult.sent, true);
+    assert.equal(overflowResult.failed, true);
+    assert.equal(overflowResult.exceedsLimit, true);
+    assert.match(overflowResult.reason, /context length exceeded/u);
     assert.ok(
       overflowResult.tokenCounts.estimatedWithResponse >
         overflowResult.tokenCounts.contextLimit,
     );
-    assert.equal(overflowResult.cost, 0);
-    assert.equal(calls.length, 2);
+    assert.equal(overflowResult.cost, null);
+    assert.equal(calls.length, 3);
+    assert.match(overflowResult.httpRequest.note, /отправлен в OpenRouter/u);
   });
 });
 
