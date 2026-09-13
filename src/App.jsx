@@ -6,11 +6,12 @@ import { Day2 } from "./Day2.jsx";
 import { Day3 } from "./Day3.jsx";
 import { SettingsPanel } from "./SettingsPanel.jsx";
 
+const DAY_COMPONENTS = { 1: Day1, 2: Day2, 3: Day3 };
+
 export function App() {
   const [activeDayNumber, setActiveDayNumber] = useState(1);
   const [showSettings, setShowSettings] = useState(false);
   const [settingsStatus, setSettingsStatus] = useState({ hasApiKey: false, source: null });
-  const activeDay = days.find((day) => day.number === activeDayNumber);
 
   useEffect(() => {
     apiRequest("/api/settings")
@@ -58,7 +59,7 @@ export function App() {
             role="tab"
             type="button"
             aria-selected={day.number === activeDayNumber}
-            aria-controls="day-content"
+            aria-controls={`day-${day.number}-content`}
           >
             <span>День</span>
             <strong>{day.number}</strong>
@@ -66,37 +67,38 @@ export function App() {
         ))}
       </nav>
 
-      <section id="day-content" role="tabpanel">
-        {activeDayNumber === 1 ? (
-          <Day1
-            hasApiKey={settingsStatus.hasApiKey}
-            onOpenSettings={() => setShowSettings(true)}
-          />
-        ) : activeDayNumber === 2 ? (
-          <Day2
-            hasApiKey={settingsStatus.hasApiKey}
-            onOpenSettings={() => setShowSettings(true)}
-          />
-        ) : activeDayNumber === 3 ? (
-          <Day3
-            hasApiKey={settingsStatus.hasApiKey}
-            onOpenSettings={() => setShowSettings(true)}
-          />
-        ) : (
-          <div className="day-card">
-            <div className="day-number">{String(activeDay.number).padStart(2, "0")}</div>
-            <div className="day-copy">
-              <p className="eyebrow">День {activeDay.number}</p>
-              <h2>{activeDay.title}</h2>
-              <p>{activeDay.description}</p>
-              <div className="placeholder">
-                <span className="placeholder-dot" aria-hidden="true" />
-                Содержимое появится на этапе Day {activeDay.number}
+      {days.map((day) => {
+        const DayComponent = DAY_COMPONENTS[day.number];
+
+        return (
+          <section
+            hidden={day.number !== activeDayNumber}
+            id={`day-${day.number}-content`}
+            key={day.number}
+            role="tabpanel"
+          >
+            {DayComponent ? (
+              <DayComponent
+                hasApiKey={settingsStatus.hasApiKey}
+                onOpenSettings={() => setShowSettings(true)}
+              />
+            ) : (
+              <div className="day-card">
+                <div className="day-number">{String(day.number).padStart(2, "0")}</div>
+                <div className="day-copy">
+                  <p className="eyebrow">День {day.number}</p>
+                  <h2>{day.title}</h2>
+                  <p>{day.description}</p>
+                  <div className="placeholder">
+                    <span className="placeholder-dot" aria-hidden="true" />
+                    Содержимое появится на этапе Day {day.number}
+                  </div>
+                </div>
               </div>
-            </div>
-          </div>
-        )}
-      </section>
+            )}
+          </section>
+        );
+      })}
     </main>
   );
 }

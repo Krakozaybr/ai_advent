@@ -57,6 +57,7 @@ const DEFAULT_FORMS = Object.fromEntries(
 
 const EMPTY_RESULTS = { direct: null, step: null, meta: null, experts: null };
 const EMPTY_ERRORS = { direct: "", step: "", meta: "", experts: "" };
+const EMPTY_LOADING = { direct: false, step: false, meta: false, experts: false };
 
 function downloadResult(method, task, form, result) {
   const payload = { task, method, settings: form, result };
@@ -99,7 +100,7 @@ export function Day3({ hasApiKey, onOpenSettings }) {
   const [forms, setForms] = useState(DEFAULT_FORMS);
   const [results, setResults] = useState(EMPTY_RESULTS);
   const [errors, setErrors] = useState(EMPTY_ERRORS);
-  const [loadingMethod, setLoadingMethod] = useState(null);
+  const [loadingMethods, setLoadingMethods] = useState(EMPTY_LOADING);
 
   const method = METHODS[activeMethod];
   const form = forms[activeMethod];
@@ -123,7 +124,7 @@ export function Day3({ hasApiKey, onOpenSettings }) {
     event.preventDefault();
     const requestedMethod = activeMethod;
     const requestedForm = forms[requestedMethod];
-    setLoadingMethod(requestedMethod);
+    setLoadingMethods((current) => ({ ...current, [requestedMethod]: true }));
     setErrors((current) => ({ ...current, [requestedMethod]: "" }));
 
     try {
@@ -140,7 +141,7 @@ export function Day3({ hasApiKey, onOpenSettings }) {
     } catch (requestError) {
       setErrors((current) => ({ ...current, [requestedMethod]: requestError.message }));
     } finally {
-      setLoadingMethod(null);
+      setLoadingMethods((current) => ({ ...current, [requestedMethod]: false }));
     }
   }
 
@@ -193,7 +194,7 @@ export function Day3({ hasApiKey, onOpenSettings }) {
             role="tab"
             type="button"
           >
-            {item.title} {results[id] ? "✓" : ""}
+            {item.title} {loadingMethods[id] ? "…" : results[id] ? "✓" : ""}
           </button>
         ))}
       </div>
@@ -235,10 +236,10 @@ export function Day3({ hasApiKey, onOpenSettings }) {
             </button>
             <button
               className="primary-button"
-              disabled={loadingMethod !== null || !hasApiKey}
+              disabled={loadingMethods[activeMethod] || !hasApiKey}
               type="submit"
             >
-              {loadingMethod === activeMethod ? "Ждём ответ…" : `Запустить: ${method.title}`}
+              {loadingMethods[activeMethod] ? "Ждём ответ…" : `Запустить: ${method.title}`}
             </button>
           </div>
         </form>

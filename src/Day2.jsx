@@ -47,6 +47,8 @@ const VARIANTS = {
   },
 };
 
+const EMPTY_LOADING = { free: false, controlled: false };
+
 function downloadResult(variant, result) {
   const url = URL.createObjectURL(
     new Blob([`${JSON.stringify(result, null, 2)}\n`], { type: "application/json" }),
@@ -63,7 +65,7 @@ export function Day2({ hasApiKey, onOpenSettings }) {
   const [forms, setForms] = useState(DEFAULT_FORMS);
   const [results, setResults] = useState({ free: null, controlled: null });
   const [errors, setErrors] = useState({ free: "", controlled: "" });
-  const [loadingVariant, setLoadingVariant] = useState(null);
+  const [loadingVariants, setLoadingVariants] = useState(EMPTY_LOADING);
 
   const form = forms[activeVariant];
   const result = results[activeVariant];
@@ -80,7 +82,7 @@ export function Day2({ hasApiKey, onOpenSettings }) {
     event.preventDefault();
     const requestedVariant = activeVariant;
     const requestedForm = forms[requestedVariant];
-    setLoadingVariant(requestedVariant);
+    setLoadingVariants((current) => ({ ...current, [requestedVariant]: true }));
     setErrors((current) => ({ ...current, [requestedVariant]: "" }));
 
     try {
@@ -97,7 +99,7 @@ export function Day2({ hasApiKey, onOpenSettings }) {
     } catch (requestError) {
       setErrors((current) => ({ ...current, [requestedVariant]: requestError.message }));
     } finally {
-      setLoadingVariant(null);
+      setLoadingVariants((current) => ({ ...current, [requestedVariant]: false }));
     }
   }
 
@@ -147,7 +149,7 @@ export function Day2({ hasApiKey, onOpenSettings }) {
             role="tab"
             type="button"
           >
-            {item.title} {results[id] ? "✓" : ""}
+            {item.title} {loadingVariants[id] ? "…" : results[id] ? "✓" : ""}
           </button>
         ))}
       </div>
@@ -208,10 +210,10 @@ export function Day2({ hasApiKey, onOpenSettings }) {
             </button>
             <button
               className="primary-button"
-              disabled={loadingVariant !== null || !hasApiKey}
+              disabled={loadingVariants[activeVariant] || !hasApiKey}
               type="submit"
             >
-              {loadingVariant === activeVariant ? "Ждём ответ…" : `Отправить: ${variant.title}`}
+              {loadingVariants[activeVariant] ? "Ждём ответ…" : `Отправить: ${variant.title}`}
             </button>
           </div>
         </form>
