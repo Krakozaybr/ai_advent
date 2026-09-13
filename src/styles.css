@@ -634,6 +634,61 @@ h1 {
   flex-wrap: wrap;
 }
 
+.day8-settings-grid {
+  display: grid;
+  grid-template-columns: minmax(240px, 1.7fr) repeat(3, minmax(120px, 0.55fr));
+  gap: 14px;
+}
+
+.context-meter {
+  height: 12px;
+  margin: 20px 0 8px;
+  overflow: hidden;
+  border-radius: 999px;
+  background: #e8e5db;
+}
+
+.context-meter span {
+  display: block;
+  height: 100%;
+  border-radius: inherit;
+  background: #4e855d;
+  transition: width 180ms ease;
+}
+
+.blocked-result .context-meter span {
+  background: #bd5139;
+}
+
+.token-grid {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(120px, 1fr));
+  gap: 10px;
+  margin: 18px 0;
+}
+
+.token-grid > div {
+  display: grid;
+  gap: 5px;
+  padding: 12px;
+  border-radius: 11px;
+  background: #f0eee5;
+}
+
+.token-grid span {
+  color: #747b74;
+  font-size: 0.72rem;
+  font-weight: 750;
+}
+
+.token-grid strong {
+  font-size: 1.15rem;
+}
+
+.token-limit-message {
+  margin-top: 18px;
+}
+
 .chat-composer {
   display: grid;
   gap: 14px;
@@ -845,7 +900,9 @@ pre {
   .field-grid,
   .day2-parameters.controlled,
   .single-run-form,
-  .day5-common-settings {
+  .day5-common-settings,
+  .day8-settings-grid,
+  .token-grid {
     grid-template-columns: 1fr;
   }
 

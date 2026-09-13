@@ -8,11 +8,13 @@ import { createApp } from "../server/app.mjs";
 import { createConversationStore } from "../server/conversation-store.mjs";
 import { buildOpenRouterRequest } from "../server/openrouter.mjs";
 import { createSettingsStore } from "../server/settings.mjs";
+import { estimateMessagesTokens } from "../server/token-counter.mjs";
 import { DEFAULT_DAY3_TASK } from "../shared/day3.js";
 import { DEFAULT_DAY4_PROMPT } from "../shared/day4.js";
 import { DEFAULT_DAY5_PROMPT } from "../shared/day5.js";
 import { DEFAULT_AGENT_SYSTEM_PROMPT } from "../shared/day6.js";
 import { DEFAULT_DAY7_SYSTEM_PROMPT } from "../shared/day7.js";
+import { buildDay8History, DEFAULT_DAY8_PROMPT } from "../shared/day8.js";
 
 function createMemorySettingsStore(initialApiKey = "") {
   let apiKey = initialApiKey;
@@ -636,6 +638,91 @@ test("day 7 sends restored SQLite history after an application restart", async (
     store.close();
     await rm(directory, { recursive: true, force: true });
   }
+});
+
+test("token estimate grows together with the dialogue history", () => {
+  const shortEstimate = estimateMessagesTokens(buildDay8History("short"));
+  const longEstimate = estimateMessagesTokens(buildDay8History("long"));
+  const overflowEstimate = estimateMessagesTokens(buildDay8History("overflow"));
+
+  assert.ok(shortEstimate > 0);
+  assert.ok(longEstimate > shortEstimate);
+  assert.ok(overflowEstimate > longEstimate);
+});
+
+test("day 8 returns exact usage and blocks overflow before OpenRouter", async () => {
+  const calls = [];
+  const requestLlm = async (request) => {
+    calls.push(request);
+    return {
+      answer: "AI Advent — локальный учебный проект с десятью вкладками.",
+      model: request.model,
+      usage: { prompt_tokens: 135, completion_tokens: 18, total_tokens: 153 },
+      cost: 0.000012,
+      latencyMs: 55,
+      httpRequest: buildOpenRouterRequest(request),
+    };
+  };
+  const app = createApp({
+    settingsStore: createMemorySettingsStore("test-secret-key"),
+    requestLlm,
+    environmentApiKey: "",
+  });
+  const baseBody = {
+    systemPrompt: DEFAULT_DAY7_SYSTEM_PROMPT,
+    prompt: DEFAULT_DAY8_PROMPT,
+    model: "qwen/test",
+    maxTokens: 180,
+    contextLimit: 1200,
+    temperature: 0.2,
+  };
+
+  await withServer(app, async (origin) => {
+    const shortResponse = await fetch(`${origin}/api/day8/run`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ ...baseBody, scenario: "short" }),
+    });
+    const shortResult = await shortResponse.json();
+
+    assert.equal(shortResponse.status, 200);
+    assert.equal(shortResult.blocked, false);
+    assert.equal(shortResult.tokenCounts.actualInput, 135);
+    assert.equal(shortResult.tokenCounts.actualResponse, 18);
+    assert.equal(calls.length, 1);
+    assert.equal(calls[0].messages.length, 4);
+
+    const longResponse = await fetch(`${origin}/api/day8/run`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ ...baseBody, scenario: "long" }),
+    });
+    const longResult = await longResponse.json();
+
+    assert.equal(longResponse.status, 200);
+    assert.equal(longResult.blocked, false);
+    assert.equal(longResult.historyMessages, 16);
+    assert.ok(longResult.tokenCounts.estimatedInput > shortResult.tokenCounts.estimatedInput);
+    assert.equal(calls.length, 2);
+    assert.equal(calls[1].messages.length, 18);
+
+    const overflowResponse = await fetch(`${origin}/api/day8/run`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ ...baseBody, scenario: "overflow" }),
+    });
+    const overflowResult = await overflowResponse.json();
+
+    assert.equal(overflowResponse.status, 200);
+    assert.equal(overflowResult.blocked, true);
+    assert.match(overflowResult.reason, /превышает учебный лимит/u);
+    assert.ok(
+      overflowResult.tokenCounts.estimatedWithResponse >
+        overflowResult.tokenCounts.contextLimit,
+    );
+    assert.equal(overflowResult.cost, 0);
+    assert.equal(calls.length, 2);
+  });
 });
 
 function receivedMessages(request) {

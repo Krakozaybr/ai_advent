@@ -4,6 +4,7 @@ import { createConversationStore } from "./conversation-store.mjs";
 import { runDay3Method } from "./day3.mjs";
 import { runDay4Experiment } from "./day4.mjs";
 import { runDay5Experiment } from "./day5.mjs";
+import { runDay8Experiment } from "./day8.mjs";
 import { askOpenRouter } from "./openrouter.mjs";
 import { createSettingsStore } from "./settings.mjs";
 import { DAY7_CONVERSATION_ID } from "../shared/day7.js";
@@ -370,6 +371,62 @@ export function createApp({
       response: agentResponse,
       history: store.listMessages(DAY7_CONVERSATION_ID),
     });
+  });
+
+  app.post("/api/day8/run", async (request, response) => {
+    const scenario = request.body?.scenario;
+    const systemPrompt =
+      typeof request.body?.systemPrompt === "string" ? request.body.systemPrompt.trim() : "";
+    const prompt = typeof request.body?.prompt === "string" ? request.body.prompt.trim() : "";
+    const model = typeof request.body?.model === "string" ? request.body.model.trim() : "";
+    const maxTokens = Number(request.body?.maxTokens);
+    const contextLimit = Number(request.body?.contextLimit);
+    const rawTemperature = request.body?.temperature;
+    const temperature = Number(rawTemperature);
+
+    if (!Object.hasOwn({ short: true, long: true, overflow: true }, scenario)) {
+      return response.status(400).json({ error: "Неизвестный сценарий Дня 8." });
+    }
+    if (!systemPrompt || !prompt || !model) {
+      return response.status(400).json({
+        error: "Заполни системную инструкцию, текущий запрос и модель.",
+      });
+    }
+    if (!Number.isInteger(maxTokens) || maxTokens < 1 || maxTokens > 8192) {
+      return response.status(400).json({ error: "maxTokens должен быть целым числом от 1 до 8192." });
+    }
+    if (!Number.isInteger(contextLimit) || contextLimit < 256 || contextLimit > 1_000_000) {
+      return response.status(400).json({
+        error: "Учебный лимит контекста должен быть целым числом от 256 до 1000000.",
+      });
+    }
+    if (
+      rawTemperature == null ||
+      rawTemperature === "" ||
+      !Number.isFinite(temperature) ||
+      temperature < 0 ||
+      temperature > 2
+    ) {
+      return response.status(400).json({ error: "temperature должна быть числом от 0 до 2." });
+    }
+
+    const apiKey = await resolveApiKey();
+    if (!apiKey) {
+      return response.status(401).json({ error: "Сначала добавь API-ключ OpenRouter в настройках." });
+    }
+
+    const result = await runDay8Experiment({
+      apiKey,
+      contextLimit,
+      maxTokens,
+      model,
+      prompt,
+      requestLlm,
+      scenario,
+      systemPrompt,
+      temperature,
+    });
+    return response.json(result);
   });
 
   app.use((error, _request, response, _next) => {
