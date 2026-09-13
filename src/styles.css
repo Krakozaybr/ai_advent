@@ -251,6 +251,23 @@ h1 {
   background: #fff0d9;
 }
 
+.assignment-details {
+  margin-bottom: 22px;
+  padding: 0;
+  border: 1px solid #ddd8ca;
+  border-radius: 12px;
+  background: #f8f5ea;
+}
+
+.assignment-details summary {
+  padding: 13px 15px;
+}
+
+.assignment-copy {
+  padding: 15px;
+  border-top: 1px solid #ddd8ca;
+}
+
 .error-message {
   margin: 0;
   color: #8e2f26;
@@ -277,8 +294,35 @@ h1 {
 
 .answer {
   margin: 20px 0;
-  white-space: pre-wrap;
   line-height: 1.7;
+}
+
+.markdown-body > :first-child {
+  margin-top: 0;
+}
+
+.markdown-body > :last-child {
+  margin-bottom: 0;
+}
+
+.markdown-body ul,
+.markdown-body ol {
+  padding-left: 1.4rem;
+}
+
+.markdown-body blockquote {
+  margin-left: 0;
+  padding-left: 14px;
+  border-left: 3px solid #d55f36;
+  color: #5c665f;
+}
+
+.markdown-body :not(pre) > code {
+  padding: 2px 5px;
+  border-radius: 5px;
+  color: #81391f;
+  background: #f3e8dd;
+  font-size: 0.88em;
 }
 
 .metrics {

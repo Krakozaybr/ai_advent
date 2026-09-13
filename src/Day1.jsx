@@ -1,9 +1,17 @@
 import { useState } from "react";
+import Markdown from "react-markdown";
 import { DEFAULT_MODEL } from "../shared/models.js";
 import { apiRequest } from "./api.js";
 
 const DEFAULT_PROMPT = "Объясни простыми словами, что такое большая языковая модель.";
 const DEFAULT_MAX_TOKENS = 300;
+const ASSIGNMENT = `Напишите минимальный код, который:
+
+- 👉 отправляет запрос в LLM через API
+- 👉 получает ответ
+- 👉 выводит его в консоль или простой интерфейс (CLI / Web)
+
+**Результат:** код, который отправляет запрос в LLM через API и получает ответ.`;
 
 export function Day1({ hasApiKey, onOpenSettings }) {
   const [prompt, setPrompt] = useState(DEFAULT_PROMPT);
@@ -74,6 +82,13 @@ export function Day1({ hasApiKey, onOpenSettings }) {
         </div>
       )}
 
+      <details className="assignment-details">
+        <summary>Текст задания</summary>
+        <div className="assignment-copy markdown-body">
+          <Markdown>{ASSIGNMENT}</Markdown>
+        </div>
+      </details>
+
       <form className="experiment-form" onSubmit={runExperiment}>
         <label>
           Запрос
@@ -122,9 +137,12 @@ export function Day1({ hasApiKey, onOpenSettings }) {
               Скачать JSON
             </button>
           </div>
-          <p className="answer">
-            {result.answer || "Модель не вернула текст. Попробуй увеличить лимит токенов ответа."}
-          </p>
+          <div className="answer markdown-body">
+            <Markdown>
+              {result.answer ||
+                "Модель не вернула текст. Попробуй увеличить лимит токенов ответа."}
+            </Markdown>
+          </div>
           <div className="metrics">
             <span>{result.latencyMs} мс</span>
             <span>{result.usage?.total_tokens ?? "н/д"} токенов</span>
