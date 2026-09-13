@@ -1,3 +1,7 @@
 .env
 node_modules/
 day*/result.json
+legacy/cli-days-1-5/day*/result.json
+dist/
+data/
+.DS_Store

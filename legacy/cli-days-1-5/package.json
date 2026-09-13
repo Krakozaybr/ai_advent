@@ -1,0 +1,12 @@
+{
+  "name": "ai-advent-cli-legacy",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "ask": "node day1/app.mjs",
+    "day2": "node day2/app.mjs",
+    "day3": "node day3/app.mjs",
+    "day4": "node --env-file=../../.env day4/app.mjs",
+    "day5": "node day5/app.mjs"
+  }
+}

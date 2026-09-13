@@ -1,3 +1,4 @@
+// Общий клиент сохранённой CLI-версии.
 import { writeFile } from "node:fs/promises";
 
 const endpoint = "https://openrouter.ai/api/v1/chat/completions";

@@ -1,12 +1,20 @@
 {
-  "name": "ai-advent",
+  "name": "ai-advent-web",
   "private": true,
   "type": "module",
   "scripts": {
-    "ask": "node day1/app.mjs",
-    "day2": "node day2/app.mjs",
-    "day3": "node day3/app.mjs",
-    "day4": "node --env-file=.env day4/app.mjs",
-    "day5": "node day5/app.mjs"
+    "dev": "NODE_ENV=development node server/index.mjs",
+    "build": "vite build",
+    "start": "NODE_ENV=production node server/index.mjs",
+    "test": "node --test"
+  },
+  "dependencies": {
+    "express": "^5.2.1",
+    "react": "^19.1.1",
+    "react-dom": "^19.1.1"
+  },
+  "devDependencies": {
+    "@vitejs/plugin-react": "^5.0.2",
+    "vite": "^7.1.5"
   }
 }

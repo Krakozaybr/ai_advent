@@ -1,0 +1,12 @@
+export const days = [
+  { number: 1, title: "Первый запрос", description: "Отправка запроса в LLM и вывод ответа." },
+  { number: 2, title: "Формат ответа", description: "Сравнение ответа без ограничений и с заданным форматом." },
+  { number: 3, title: "Способы рассуждения", description: "Четыре подхода к решению одной задачи." },
+  { number: 4, title: "Температура", description: "Сравнение ответов при разных значениях temperature." },
+  { number: 5, title: "Версии моделей", description: "Сравнение трёх моделей семейства Qwen." },
+  { number: 6, title: "Первый агент", description: "Отдельный агент принимает запрос и вызывает LLM." },
+  { number: 7, title: "Сохранение контекста", description: "Восстановление истории после перезапуска." },
+  { number: 8, title: "Работа с токенами", description: "Подсчёт токенов и демонстрация переполнения." },
+  { number: 9, title: "Сжатие истории", description: "Summary старых сообщений и экономия контекста." },
+  { number: 10, title: "Стратегии контекста", description: "Sliding Window, Sticky Facts и Branching." },
+];
