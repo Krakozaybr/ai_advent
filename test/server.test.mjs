@@ -8,6 +8,7 @@ import { buildOpenRouterRequest } from "../server/openrouter.mjs";
 import { createSettingsStore } from "../server/settings.mjs";
 import { DEFAULT_DAY3_TASK } from "../shared/day3.js";
 import { DEFAULT_DAY4_PROMPT } from "../shared/day4.js";
+import { DEFAULT_DAY5_PROMPT } from "../shared/day5.js";
 
 function createMemorySettingsStore(initialApiKey = "") {
   let apiKey = initialApiKey;
@@ -379,5 +380,63 @@ test("day 4 sends temperature and calculates comparison metrics", async () => {
     assert.deepEqual(await invalidResponse.json(), {
       error: "temperature должна быть числом от 0 до 2.",
     });
+  });
+});
+
+test("day 5 measures a selected model and checks the default answer", async () => {
+  let receivedRequest;
+  const requestLlm = async (request) => {
+    receivedRequest = request;
+    return {
+      answer: `\`\`\`js
+function firstUniqueCharacter(text) {
+  const characters = Array.from(text);
+  const counts = new Map();
+  for (const character of characters) {
+    counts.set(character, (counts.get(character) || 0) + 1);
+  }
+  return characters.find((character) => counts.get(character) === 1) ?? null;
+}
+\`\`\`
+
+Результат для примера: «к». Сложность — O(n).`,
+      model: request.model,
+      usage: { total_tokens: 140 },
+      cost: 0.00002,
+      latencyMs: 180,
+      httpRequest: buildOpenRouterRequest(request),
+    };
+  };
+  const app = createApp({
+    settingsStore: createMemorySettingsStore("test-secret-key"),
+    requestLlm,
+    environmentApiKey: "",
+  });
+
+  await withServer(app, async (origin) => {
+    const response = await fetch(`${origin}/api/day5/run`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        prompt: DEFAULT_DAY5_PROMPT,
+        model: "qwen/test-strong",
+        maxTokens: 700,
+        temperature: 0,
+      }),
+    });
+    const result = await response.json();
+
+    assert.equal(response.status, 200);
+    assert.deepEqual(receivedRequest, {
+      apiKey: "test-secret-key",
+      prompt: DEFAULT_DAY5_PROMPT,
+      model: "qwen/test-strong",
+      maxTokens: 700,
+      temperature: 0,
+    });
+    assert.equal(result.qualityCheck.score, 5);
+    assert.equal(result.qualityCheck.total, 5);
+    assert.equal(result.httpRequest.json.model, "qwen/test-strong");
+    assert.equal(result.httpRequest.json.temperature, 0);
   });
 });

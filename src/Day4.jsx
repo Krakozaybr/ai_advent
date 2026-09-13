@@ -247,7 +247,7 @@ export function Day4({ hasApiKey, onOpenSettings }) {
         </div>
 
         <form
-          className="temperature-form"
+          className="single-run-form"
           onSubmit={(event) => {
             event.preventDefault();
             runProfile(activeProfile);

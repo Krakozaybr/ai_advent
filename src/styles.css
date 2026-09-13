@@ -475,15 +475,24 @@ h1 {
   border-top: 1px solid #e2ded2;
 }
 
-.temperature-form {
+.single-run-form,
+.day5-common-settings {
   display: grid;
   grid-template-columns: minmax(150px, 0.35fr) minmax(260px, 1fr);
-  align-items: end;
   gap: 16px;
 }
 
-.temperature-form .primary-button {
+.single-run-form {
+  align-items: end;
+}
+
+.single-run-form .primary-button {
   justify-self: end;
+}
+
+.quality-details ul {
+  margin-bottom: 0;
+  padding-left: 1.4rem;
 }
 
 .metrics {
@@ -688,11 +697,12 @@ pre {
   .settings-panel,
   .field-grid,
   .day2-parameters.controlled,
-  .temperature-form {
+  .single-run-form,
+  .day5-common-settings {
     grid-template-columns: 1fr;
   }
 
-  .temperature-form .primary-button {
+  .single-run-form .primary-button {
     justify-self: stretch;
   }
 
