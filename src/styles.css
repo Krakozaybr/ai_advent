@@ -307,6 +307,10 @@ h1 {
   margin-top: 0;
 }
 
+.markdown-body {
+  overflow-x: auto;
+}
+
 .markdown-body > :last-child {
   margin-bottom: 0;
 }
@@ -329,6 +333,26 @@ h1 {
   color: #81391f;
   background: #f3e8dd;
   font-size: 0.88em;
+}
+
+.markdown-body table {
+  width: 100%;
+  margin: 16px 0;
+  border-collapse: collapse;
+  font-size: 0.9rem;
+}
+
+.markdown-body th,
+.markdown-body td {
+  padding: 9px 11px;
+  border: 1px solid #d8d3c5;
+  text-align: left;
+  vertical-align: top;
+}
+
+.markdown-body th {
+  color: #354038;
+  background: #eeeade;
 }
 
 .comparison-summary {
@@ -381,10 +405,18 @@ h1 {
   font-size: 1.35rem;
 }
 
-.compact-fields {
+.day2-parameters {
   display: grid;
-  grid-template-columns: repeat(2, minmax(120px, 1fr));
-  gap: 12px;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 16px;
+}
+
+.day2-parameters.controlled {
+  grid-template-columns: minmax(260px, 2fr) minmax(140px, 0.65fr) minmax(150px, 0.8fr);
+}
+
+.day2-parameters > label {
+  min-width: 0;
 }
 
 .final-comparison {
@@ -418,6 +450,34 @@ summary {
   cursor: pointer;
   font-size: 0.85rem;
   font-weight: 750;
+}
+
+.request-details {
+  margin-top: 14px;
+}
+
+.request-endpoint {
+  display: flex;
+  gap: 8px;
+  align-items: baseline;
+  margin-bottom: 16px;
+}
+
+.request-endpoint code {
+  overflow-wrap: anywhere;
+}
+
+.detail-label {
+  margin: 15px 0 6px;
+  color: #747b74;
+  font-size: 0.75rem;
+  font-weight: 800;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.request-details pre {
+  margin-top: 0;
 }
 
 pre {
@@ -565,7 +625,7 @@ pre {
 
   .settings-panel,
   .field-grid,
-  .compact-fields {
+  .day2-parameters.controlled {
     grid-template-columns: 1fr;
   }
 

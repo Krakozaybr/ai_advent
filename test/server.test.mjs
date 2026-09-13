@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import { createApp } from "../server/app.mjs";
+import { buildOpenRouterRequest } from "../server/openrouter.mjs";
 import { createSettingsStore } from "../server/settings.mjs";
 
 function createMemorySettingsStore(initialApiKey = "") {
@@ -78,6 +79,28 @@ test("settings store keeps the key in a private local file", async () => {
   } finally {
     await rm(directory, { recursive: true, force: true });
   }
+});
+
+test("OpenRouter request details expose JSON and query without the API key", () => {
+  const request = buildOpenRouterRequest({
+    model: "qwen/test",
+    prompt: "Тест",
+    maxTokens: 150,
+    stop: "END",
+  });
+
+  assert.deepEqual(request, {
+    method: "POST",
+    url: "https://openrouter.ai/api/v1/chat/completions",
+    query: {},
+    json: {
+      model: "qwen/test",
+      messages: [{ role: "user", content: "Тест" }],
+      max_tokens: 150,
+      stop: ["END"],
+    },
+  });
+  assert.equal(JSON.stringify(request).includes("apiKey"), false);
 });
 
 test("day 1 sends the prompt to the selected model", async () => {

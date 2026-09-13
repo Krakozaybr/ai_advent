@@ -1,21 +1,32 @@
 const endpoint = "https://openrouter.ai/api/v1/chat/completions";
 
-export async function askOpenRouter({ apiKey, model, prompt, maxTokens, stop, temperature }) {
-  const startedAt = performance.now();
-  const body = {
+export function buildOpenRouterRequest({ model, prompt, maxTokens, stop, temperature }) {
+  const json = {
     model,
     messages: [{ role: "user", content: prompt }],
   };
 
   if (maxTokens != null) {
-    body.max_tokens = maxTokens;
+    json.max_tokens = maxTokens;
   }
   if (stop) {
-    body.stop = [stop];
+    json.stop = [stop];
   }
   if (temperature != null) {
-    body.temperature = temperature;
+    json.temperature = temperature;
   }
+
+  return {
+    method: "POST",
+    url: endpoint,
+    query: {},
+    json,
+  };
+}
+
+export async function askOpenRouter({ apiKey, model, prompt, maxTokens, stop, temperature }) {
+  const startedAt = performance.now();
+  const httpRequest = buildOpenRouterRequest({ model, prompt, maxTokens, stop, temperature });
 
   let response;
   try {
@@ -26,7 +37,7 @@ export async function askOpenRouter({ apiKey, model, prompt, maxTokens, stop, te
         "Content-Type": "application/json",
         "X-Title": "AI Advent",
       },
-      body: JSON.stringify(body),
+      body: JSON.stringify(httpRequest.json),
       signal: AbortSignal.timeout(45_000),
     });
   } catch (cause) {
@@ -52,6 +63,7 @@ export async function askOpenRouter({ apiKey, model, prompt, maxTokens, stop, te
     usage: data.usage || null,
     cost: data.usage?.cost ?? null,
     finishReason: data.choices?.[0]?.finish_reason || null,
+    httpRequest,
     latencyMs: Math.round(performance.now() - startedAt),
   };
 }

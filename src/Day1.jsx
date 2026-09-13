@@ -1,8 +1,9 @@
 import { useState } from "react";
-import Markdown from "react-markdown";
 import { DEFAULT_MODEL } from "../shared/models.js";
 import { apiRequest } from "./api.js";
 import { AssignmentDetails } from "./AssignmentDetails.jsx";
+import { MarkdownContent } from "./MarkdownContent.jsx";
+import { RequestDetails } from "./RequestDetails.jsx";
 import { ResultMetrics } from "./ResultMetrics.jsx";
 
 const DEFAULT_PROMPT = "Объясни простыми словами, что такое большая языковая модель.";
@@ -135,16 +136,13 @@ export function Day1({ hasApiKey, onOpenSettings }) {
             </button>
           </div>
           <div className="answer markdown-body">
-            <Markdown>
+            <MarkdownContent>
               {result.answer ||
                 "Модель не вернула текст. Попробуй увеличить лимит токенов ответа."}
-            </Markdown>
+            </MarkdownContent>
           </div>
           <ResultMetrics result={result} />
-          <details>
-            <summary>Технические детали</summary>
-            <pre>{JSON.stringify({ request: { model, maxTokens }, usage: result.usage }, null, 2)}</pre>
-          </details>
+          <RequestDetails request={result.httpRequest} />
         </section>
       )}
     </section>

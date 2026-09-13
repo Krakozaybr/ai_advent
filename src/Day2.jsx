@@ -1,8 +1,9 @@
 import { useState } from "react";
-import Markdown from "react-markdown";
 import { DEFAULT_MODEL } from "../shared/models.js";
 import { apiRequest } from "./api.js";
 import { AssignmentDetails } from "./AssignmentDetails.jsx";
+import { MarkdownContent } from "./MarkdownContent.jsx";
+import { RequestDetails } from "./RequestDetails.jsx";
 import { ResultMetrics } from "./ResultMetrics.jsx";
 
 const ASSIGNMENT = `Отправьте один и тот же запрос, но:
@@ -166,13 +167,19 @@ export function Day2({ hasApiKey, onOpenSettings }) {
               value={form.prompt}
             />
           </label>
-          <div className="field-grid">
+          <div
+            className={
+              activeVariant === "controlled"
+                ? "day2-parameters controlled"
+                : "day2-parameters"
+            }
+          >
             <label>
               Модель OpenRouter
               <input onChange={(event) => update("model", event.target.value)} value={form.model} />
             </label>
             {activeVariant === "controlled" && (
-              <div className="compact-fields">
+              <>
                 <label>
                   Максимум токенов
                   <input
@@ -187,7 +194,7 @@ export function Day2({ hasApiKey, onOpenSettings }) {
                   Stop sequence
                   <input onChange={(event) => update("stop", event.target.value)} value={form.stop} />
                 </label>
-              </div>
+              </>
             )}
           </div>
           {activeVariant === "controlled" && (
@@ -229,16 +236,13 @@ export function Day2({ hasApiKey, onOpenSettings }) {
               </button>
             </div>
             <div className="answer markdown-body">
-              <Markdown>
+              <MarkdownContent>
                 {result.response.answer ||
                   "Модель не вернула текст. Попробуй увеличить лимит токенов."}
-              </Markdown>
+              </MarkdownContent>
             </div>
             <ResultMetrics result={result.response} />
-            <details>
-              <summary>Технические детали запроса</summary>
-              <pre>{JSON.stringify(result.request, null, 2)}</pre>
-            </details>
+            <RequestDetails request={result.response.httpRequest} />
           </section>
         )}
       </section>
