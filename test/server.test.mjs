@@ -1,20 +1,118 @@
 import assert from "node:assert/strict";
+import { mkdtemp, rm, stat } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import test from "node:test";
 import { createApp } from "../server/app.mjs";
+import { createSettingsStore } from "../server/settings.mjs";
 
-test("health endpoint reports that the server is ready", async () => {
-  const server = createApp().listen(0, "127.0.0.1");
-  await new Promise((resolve) => server.once("listening", resolve));
+function createMemorySettingsStore(initialApiKey = "") {
+  let apiKey = initialApiKey;
+  return {
+    async getApiKey() {
+      return apiKey;
+    },
+    async saveApiKey(nextApiKey) {
+      apiKey = nextApiKey;
+    },
+  };
+}
+
+async function withServer(app, run) {
+  const server = app.listen(0, "127.0.0.1");
+  await new Promise((resolve, reject) => {
+    server.once("listening", resolve);
+    server.once("error", reject);
+  });
 
   try {
     const address = server.address();
-    const response = await fetch(`http://127.0.0.1:${address.port}/api/health`);
-
-    assert.equal(response.status, 200);
-    assert.deepEqual(await response.json(), { status: "ok" });
+    await run(`http://127.0.0.1:${address.port}`);
   } finally {
     await new Promise((resolve, reject) => {
       server.close((error) => (error ? reject(error) : resolve()));
     });
   }
+}
+
+test("health endpoint reports that the server is ready", async () => {
+  await withServer(createApp({ environmentApiKey: "" }), async (origin) => {
+    const response = await fetch(`${origin}/api/health`);
+
+    assert.equal(response.status, 200);
+    assert.deepEqual(await response.json(), { status: "ok" });
+  });
+});
+
+test("settings save the key without returning it to the browser", async () => {
+  const app = createApp({
+    settingsStore: createMemorySettingsStore(),
+    environmentApiKey: "",
+  });
+
+  await withServer(app, async (origin) => {
+    const saveResponse = await fetch(`${origin}/api/settings`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ apiKey: "sk-or-v1-test-key" }),
+    });
+    const saved = await saveResponse.json();
+    const status = await (await fetch(`${origin}/api/settings`)).json();
+
+    assert.deepEqual(saved, { hasApiKey: true, source: "saved" });
+    assert.deepEqual(status, { hasApiKey: true, source: "saved" });
+    assert.equal(JSON.stringify(status).includes("sk-or-v1-test-key"), false);
+  });
+});
+
+test("settings store keeps the key in a private local file", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "ai-advent-settings-"));
+  const filePath = join(directory, "settings.json");
+
+  try {
+    const store = createSettingsStore(filePath);
+    await store.saveApiKey("sk-or-v1-file-key");
+
+    assert.equal(await store.getApiKey(), "sk-or-v1-file-key");
+    assert.equal((await stat(filePath)).mode & 0o777, 0o600);
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("day 1 sends the prompt to the selected model", async () => {
+  let receivedRequest;
+  const requestLlm = async (request) => {
+    receivedRequest = request;
+    return {
+      answer: "Тестовый ответ",
+      model: request.model,
+      usage: { total_tokens: 12 },
+      cost: 0.000001,
+      latencyMs: 25,
+    };
+  };
+  const app = createApp({
+    settingsStore: createMemorySettingsStore("test-secret-key"),
+    requestLlm,
+    environmentApiKey: "",
+  });
+
+  await withServer(app, async (origin) => {
+    const response = await fetch(`${origin}/api/day1/run`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ prompt: "Что такое LLM?", model: "qwen/test", maxTokens: 300 }),
+    });
+    const result = await response.json();
+
+    assert.equal(response.status, 200);
+    assert.equal(result.answer, "Тестовый ответ");
+    assert.deepEqual(receivedRequest, {
+      apiKey: "test-secret-key",
+      prompt: "Что такое LLM?",
+      model: "qwen/test",
+      maxTokens: 300,
+    });
+  });
 });
