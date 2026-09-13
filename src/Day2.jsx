@@ -26,10 +26,9 @@ const DEFAULTS = {
   stop: "END",
 };
 
-function ComparisonCard({ label, result }) {
+function ComparisonCard({ result }) {
   return (
     <article className="comparison-card">
-      <p className="comparison-label">{label}</p>
       <div className="answer markdown-body">
         <Markdown>
           {result.answer || "Модель не вернула текст. Попробуй увеличить лимит токенов."}
@@ -45,6 +44,7 @@ export function Day2({ hasApiKey, onOpenSettings }) {
   const [result, setResult] = useState(null);
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
+  const [activeVariant, setActiveVariant] = useState("withoutConstraints");
 
   function update(name, value) {
     setForm((current) => ({ ...current, [name]: value }));
@@ -55,6 +55,7 @@ export function Day2({ hasApiKey, onOpenSettings }) {
     setLoading(true);
     setError("");
     setResult(null);
+    setActiveVariant("withoutConstraints");
 
     try {
       const nextResult = await apiRequest("/api/day2/run", {
@@ -77,6 +78,7 @@ export function Day2({ hasApiKey, onOpenSettings }) {
     setForm(DEFAULTS);
     setResult(null);
     setError("");
+    setActiveVariant("withoutConstraints");
   }
 
   function downloadResult() {
@@ -193,9 +195,34 @@ export function Day2({ hasApiKey, onOpenSettings }) {
             Управляемый ответ {wordDifference >= 0 ? "короче" : "длиннее"} на{" "}
             <strong>{Math.abs(wordDifference)}</strong> слов.
           </p>
-          <div className="comparison-grid">
-            <ComparisonCard label="Без ограничений" result={result.withoutConstraints} />
-            <ComparisonCard label="С ограничениями" result={result.withConstraints} />
+          <div className="variant-tabs" role="tablist" aria-label="Варианты ответа">
+            <button
+              aria-controls="day2-variant-panel"
+              aria-selected={activeVariant === "withoutConstraints"}
+              className={
+                activeVariant === "withoutConstraints" ? "variant-tab active" : "variant-tab"
+              }
+              onClick={() => setActiveVariant("withoutConstraints")}
+              role="tab"
+              type="button"
+            >
+              Без ограничений · {result.withoutConstraints.wordCount} слов
+            </button>
+            <button
+              aria-controls="day2-variant-panel"
+              aria-selected={activeVariant === "withConstraints"}
+              className={
+                activeVariant === "withConstraints" ? "variant-tab active" : "variant-tab"
+              }
+              onClick={() => setActiveVariant("withConstraints")}
+              role="tab"
+              type="button"
+            >
+              С ограничениями · {result.withConstraints.wordCount} слов
+            </button>
+          </div>
+          <div id="day2-variant-panel" role="tabpanel">
+            <ComparisonCard result={result[activeVariant]} />
           </div>
           <details>
             <summary>Технические детали и управляемый prompt</summary>

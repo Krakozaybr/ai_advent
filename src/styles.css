@@ -343,15 +343,35 @@ h1 {
   background: #f0eee5;
 }
 
-.comparison-grid {
-  display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 14px;
-  margin-bottom: 20px;
+.variant-tabs {
+  display: flex;
+  gap: 8px;
+  margin-bottom: 10px;
+  padding: 5px;
+  border-radius: 12px;
+  background: #efede4;
+}
+
+.variant-tab {
+  flex: 1;
+  padding: 10px 12px;
+  border: 0;
+  border-radius: 9px;
+  color: #626a63;
+  background: transparent;
+  cursor: pointer;
+  font-weight: 750;
+}
+
+.variant-tab.active {
+  color: #fff;
+  background: #17211b;
+  box-shadow: 0 4px 12px rgb(23 33 27 / 14%);
 }
 
 .comparison-card {
   min-width: 0;
+  margin-bottom: 20px;
   padding: 18px;
   border: 1px solid #e0dccf;
   border-radius: 14px;
@@ -360,15 +380,6 @@ h1 {
 
 .comparison-card .answer {
   min-height: 120px;
-}
-
-.comparison-label {
-  margin-bottom: 0;
-  color: #a34828;
-  font-size: 0.78rem;
-  font-weight: 850;
-  letter-spacing: 0.07em;
-  text-transform: uppercase;
 }
 
 .metrics {
@@ -544,9 +555,12 @@ pre {
 
   .settings-panel,
   .field-grid,
-  .day2-fields,
-  .comparison-grid {
+  .day2-fields {
     grid-template-columns: 1fr;
+  }
+
+  .variant-tabs {
+    flex-direction: column;
   }
 
   .settings-panel {
