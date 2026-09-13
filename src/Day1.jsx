@@ -2,6 +2,8 @@ import { useState } from "react";
 import Markdown from "react-markdown";
 import { DEFAULT_MODEL } from "../shared/models.js";
 import { apiRequest } from "./api.js";
+import { AssignmentDetails } from "./AssignmentDetails.jsx";
+import { ResultMetrics } from "./ResultMetrics.jsx";
 
 const DEFAULT_PROMPT = "Объясни простыми словами, что такое большая языковая модель.";
 const DEFAULT_MAX_TOKENS = 300;
@@ -82,12 +84,7 @@ export function Day1({ hasApiKey, onOpenSettings }) {
         </div>
       )}
 
-      <details className="assignment-details">
-        <summary>Текст задания</summary>
-        <div className="assignment-copy markdown-body">
-          <Markdown>{ASSIGNMENT}</Markdown>
-        </div>
-      </details>
+      <AssignmentDetails>{ASSIGNMENT}</AssignmentDetails>
 
       <form className="experiment-form" onSubmit={runExperiment}>
         <label>
@@ -143,11 +140,7 @@ export function Day1({ hasApiKey, onOpenSettings }) {
                 "Модель не вернула текст. Попробуй увеличить лимит токенов ответа."}
             </Markdown>
           </div>
-          <div className="metrics">
-            <span>{result.latencyMs} мс</span>
-            <span>{result.usage?.total_tokens ?? "н/д"} токенов</span>
-            <span>{result.cost == null ? "стоимость н/д" : `$${Number(result.cost).toFixed(6)}`}</span>
-          </div>
+          <ResultMetrics result={result} />
           <details>
             <summary>Технические детали</summary>
             <pre>{JSON.stringify({ request: { model, maxTokens }, usage: result.usage }, null, 2)}</pre>

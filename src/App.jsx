@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import { days } from "./days.js";
 import { apiRequest } from "./api.js";
 import { Day1 } from "./Day1.jsx";
+import { Day2 } from "./Day2.jsx";
 import { SettingsPanel } from "./SettingsPanel.jsx";
 
 export function App() {
@@ -25,7 +26,7 @@ export function App() {
           <p className="lead">От первого запроса к стратегиям управления контекстом.</p>
         </div>
         <div className="header-actions">
-          <span className="stage-badge">Готов День 1</span>
+          <span className="stage-badge">Готовы Дни 1–2</span>
           <button
             className="settings-button"
             onClick={() => setShowSettings((value) => !value)}
@@ -67,6 +68,11 @@ export function App() {
       <section id="day-content" role="tabpanel">
         {activeDayNumber === 1 ? (
           <Day1
+            hasApiKey={settingsStatus.hasApiKey}
+            onOpenSettings={() => setShowSettings(true)}
+          />
+        ) : activeDayNumber === 2 ? (
+          <Day2
             hasApiKey={settingsStatus.hasApiKey}
             onOpenSettings={() => setShowSettings(true)}
           />
