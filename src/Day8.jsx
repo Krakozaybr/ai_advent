@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { DEFAULT_DAY7_SYSTEM_PROMPT } from "../shared/day7.js";
 import {
+  buildDay8HistoryPreview,
   DAY8_SCENARIOS,
   DEFAULT_DAY8_CONTEXT_LIMIT,
   DEFAULT_DAY8_PROMPT,
@@ -84,6 +85,8 @@ export function Day8({ hasApiKey, onOpenSettings }) {
 
   const scenario = DAY8_SCENARIOS[activeScenario];
   const result = results[activeScenario];
+  const historyPreview = buildDay8HistoryPreview(activeScenario);
+  const historyCharacters = historyPreview.reduce((total, item) => total + item.fullLength, 0);
   const anyLoading = Object.values(loading).some(Boolean);
   const allReady = Object.values(results).every(Boolean);
 
@@ -190,15 +193,6 @@ export function Day8({ hasApiKey, onOpenSettings }) {
             value={systemPrompt}
           />
         </label>
-        <label>
-          Один текущий запрос для всех сценариев
-          <textarea
-            disabled={anyLoading}
-            onChange={(event) => updateShared(setPrompt, event.target.value)}
-            rows="4"
-            value={prompt}
-          />
-        </label>
         <div className="day8-settings-grid">
           <label>
             Модель OpenRouter
@@ -277,21 +271,94 @@ export function Day8({ hasApiKey, onOpenSettings }) {
       <section className="variant-panel" id="day8-scenario-panel" role="tabpanel">
         <div className="variant-heading">
           <h3>{scenario.title}</h3>
-          <p className="muted">{scenario.description}</p>
+          <p className="muted">
+            {scenario.description} В истории {historyPreview.length} сообщений и {formatTokenCount(historyCharacters)} символов.
+          </p>
         </div>
 
-        <button
-          className="primary-button"
-          disabled={loading[activeScenario] || !hasApiKey || temperature === ""}
-          onClick={() => runScenario(activeScenario)}
-          type="button"
-        >
-          {loading[activeScenario] ? "Выполняется…" : `Запустить: ${scenario.title}`}
-        </button>
+        <section className="chat-shell day8-chat" aria-label={`Сообщения сценария: ${scenario.title}`}>
+          <div className="chat-list" aria-live="polite">
+            <div className="chat-message system-message">
+              <span className="chat-role">System</span>
+              <p>{systemPrompt}</p>
+            </div>
 
-        {errors[activeScenario] && (
-          <p className="error-message result-message">{errors[activeScenario]}</p>
-        )}
+            {historyPreview.map((item, index) => (
+              <div
+                className={`chat-message ${item.role === "user" ? "user-message" : "assistant-message"}`}
+                key={`${activeScenario}-${index}`}
+              >
+                <span className="chat-role">{item.role === "user" ? "User" : "Assistant"}</span>
+                <p>{item.content}</p>
+                {item.repetitions > 1 && (
+                  <span className="chat-preview-note">
+                    В API: этот текст × {item.repetitions} · {formatTokenCount(item.fullLength)} символов
+                  </span>
+                )}
+              </div>
+            ))}
+
+            <div className="chat-message user-message current-request-message">
+              <span className="chat-role">Текущий User-запрос</span>
+              <p>{prompt || "Пустой запрос"}</p>
+            </div>
+
+            {loading[activeScenario] && (
+              <div className="chat-message assistant-message">
+                <span className="chat-role">Assistant</span>
+                <p className="muted">OpenRouter обрабатывает весь показанный контекст…</p>
+              </div>
+            )}
+
+            {errors[activeScenario] && (
+              <div className="chat-message assistant-message">
+                <span className="chat-role">Ошибка приложения</span>
+                <p className="error-message">{errors[activeScenario]}</p>
+              </div>
+            )}
+
+            {result && (
+              <div className="chat-message assistant-message">
+                <span className="chat-role">{result.failed ? "Ошибка OpenRouter" : "Assistant"}</span>
+                {result.failed ? (
+                  <p className="error-message">{result.reason}</p>
+                ) : (
+                  <div className="markdown-body">
+                    <MarkdownContent>{result.answer || "Модель не вернула текст."}</MarkdownContent>
+                  </div>
+                )}
+              </div>
+            )}
+          </div>
+
+          <form
+            className="chat-composer"
+            onSubmit={(event) => {
+              event.preventDefault();
+              runScenario(activeScenario);
+            }}
+          >
+            <label>
+              Текущий запрос для всех сценариев
+              <textarea
+                disabled={anyLoading}
+                onChange={(event) => updateShared(setPrompt, event.target.value)}
+                rows="4"
+                value={prompt}
+              />
+            </label>
+            <div className="button-row">
+              <span className="field-hint">Отправятся system + история выше + этот запрос.</span>
+              <button
+                className="primary-button"
+                disabled={loading[activeScenario] || !hasApiKey || !prompt.trim() || temperature === ""}
+                type="submit"
+              >
+                {loading[activeScenario] ? "Отправляется…" : `Отправить: ${scenario.title}`}
+              </button>
+            </div>
+          </form>
+        </section>
 
         {result && (
           <section className={`result-card ${result.exceedsLimit ? "overflow-result" : ""}`} aria-live="polite">
@@ -336,27 +403,19 @@ export function Day8({ hasApiKey, onOpenSettings }) {
               <div><span>Ответ модели</span><strong>{formatTokenCount(result.tokenCounts.actualResponse)}</strong></div>
             </div>
 
-            {result.failed ? (
+            {!result.failed && (
               <>
-                <p className="error-message token-limit-message">{result.reason}</p>
-                <RequestDetails
-                  request={result.httpRequest}
-                  title="Технические детали отправленного запроса"
-                />
-              </>
-            ) : (
-              <>
-                <div className="answer markdown-body">
-                  <MarkdownContent>{result.answer || "Модель не вернула текст."}</MarkdownContent>
-                </div>
                 <ResultMetrics result={result} />
                 <p className="comparison-summary">
                   OpenRouter насчитал во входе <strong>{formatTokenCount(result.tokenCounts.actualInput)}</strong>,
                   в ответе <strong>{formatTokenCount(result.tokenCounts.actualResponse)}</strong> токенов.
                 </p>
-                <RequestDetails request={result.httpRequest} />
               </>
             )}
+            <RequestDetails
+              request={result.httpRequest}
+              title={result.failed ? "Технические детали отправленного запроса" : undefined}
+            />
           </section>
         )}
       </section>

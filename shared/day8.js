@@ -36,12 +36,16 @@ function factExchange(fact, index) {
   ];
 }
 
+function buildLongHistory() {
+  return LONG_FACTS.flatMap(factExchange);
+}
+
 export function buildDay8History(scenario) {
   if (scenario === "short") {
     return factExchange(LONG_FACTS[0], 0);
   }
 
-  const longHistory = LONG_FACTS.flatMap(factExchange);
+  const longHistory = buildLongHistory();
   if (scenario === "long") {
     return longHistory;
   }
@@ -54,4 +58,25 @@ export function buildDay8History(scenario) {
   }
 
   throw new Error("Неизвестный сценарий Дня 8.");
+}
+
+export function buildDay8HistoryPreview(scenario) {
+  const history = scenario === "short" ? factExchange(LONG_FACTS[0], 0) : buildLongHistory();
+
+  if (scenario !== "short" && scenario !== "long" && scenario !== "overflow") {
+    throw new Error("Неизвестный сценарий Дня 8.");
+  }
+
+  return history.map((message) => {
+    if (scenario !== "overflow") {
+      return { ...message, fullLength: message.content.length, repetitions: 1 };
+    }
+
+    return {
+      ...message,
+      content: `${message.content} …`,
+      fullLength: message.content.length * 700 + 699,
+      repetitions: 700,
+    };
+  });
 }

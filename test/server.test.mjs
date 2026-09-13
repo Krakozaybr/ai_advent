@@ -14,7 +14,11 @@ import { DEFAULT_DAY4_PROMPT } from "../shared/day4.js";
 import { DEFAULT_DAY5_PROMPT } from "../shared/day5.js";
 import { DEFAULT_AGENT_SYSTEM_PROMPT } from "../shared/day6.js";
 import { DEFAULT_DAY7_SYSTEM_PROMPT } from "../shared/day7.js";
-import { buildDay8History, DEFAULT_DAY8_PROMPT } from "../shared/day8.js";
+import {
+  buildDay8History,
+  buildDay8HistoryPreview,
+  DEFAULT_DAY8_PROMPT,
+} from "../shared/day8.js";
 
 function createMemorySettingsStore(initialApiKey = "") {
   let apiKey = initialApiKey;
@@ -648,6 +652,16 @@ test("token estimate grows together with the dialogue history", () => {
   assert.ok(shortEstimate > 0);
   assert.ok(longEstimate > shortEstimate);
   assert.ok(overflowEstimate > longEstimate);
+});
+
+test("day 8 chat preview describes the full overflow without rendering it", () => {
+  const fullHistory = buildDay8History("overflow");
+  const preview = buildDay8HistoryPreview("overflow");
+
+  assert.equal(preview.length, fullHistory.length);
+  assert.equal(preview[0].repetitions, 700);
+  assert.equal(preview[0].fullLength, fullHistory[0].content.length);
+  assert.ok(preview[0].content.length < fullHistory[0].content.length);
 });
 
 test("day 8 returns exact usage and sends overflow to OpenRouter", async () => {

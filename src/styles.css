@@ -634,6 +634,36 @@ h1 {
   flex-wrap: wrap;
 }
 
+.day8-chat {
+  margin-top: 18px;
+}
+
+.system-message {
+  width: 100%;
+  color: #596159;
+  background: #ebe8de;
+  border: 1px dashed #bdb8aa;
+}
+
+.system-message p {
+  margin: 0;
+  white-space: pre-wrap;
+}
+
+.chat-preview-note {
+  display: block;
+  margin-top: 9px;
+  padding-top: 8px;
+  border-top: 1px solid currentColor;
+  font-size: 0.7rem;
+  font-weight: 750;
+  opacity: 0.72;
+}
+
+.current-request-message {
+  outline: 3px solid rgb(213 95 54 / 18%);
+}
+
 .day8-settings-grid {
   display: grid;
   grid-template-columns: minmax(240px, 1.7fr) repeat(3, minmax(120px, 0.55fr));
