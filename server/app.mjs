@@ -1,17 +1,28 @@
 import express from "express";
 import { LlmAgent } from "./agent.mjs";
+import { createConversationStore } from "./conversation-store.mjs";
 import { runDay3Method } from "./day3.mjs";
 import { runDay4Experiment } from "./day4.mjs";
 import { runDay5Experiment } from "./day5.mjs";
 import { askOpenRouter } from "./openrouter.mjs";
 import { createSettingsStore } from "./settings.mjs";
+import { DAY7_CONVERSATION_ID } from "../shared/day7.js";
 
 export function createApp({
   settingsStore = createSettingsStore(),
+  conversationStore,
   requestLlm = askOpenRouter,
   environmentApiKey = process.env.OPENROUTER_API_KEY || "",
 } = {}) {
   const app = express();
+  let resolvedConversationStore = conversationStore;
+
+  function getConversationStore() {
+    if (!resolvedConversationStore) {
+      resolvedConversationStore = createConversationStore();
+    }
+    return resolvedConversationStore;
+  }
 
   async function resolveApiKey() {
     return (await settingsStore.getApiKey()) || environmentApiKey;
@@ -277,6 +288,87 @@ export function createApp({
       agent: { name: agentName, type: "LlmAgent" },
       input: message,
       response: agentResponse,
+    });
+  });
+
+  app.get("/api/day7/history", (_request, response) => {
+    const messages = getConversationStore().listMessages(DAY7_CONVERSATION_ID);
+    response.json({
+      conversationId: DAY7_CONVERSATION_ID,
+      persistence: { type: "SQLite", file: "data/agent.sqlite" },
+      messages,
+    });
+  });
+
+  app.delete("/api/day7/history", (_request, response) => {
+    const store = getConversationStore();
+    store.clear(DAY7_CONVERSATION_ID);
+    response.json({
+      conversationId: DAY7_CONVERSATION_ID,
+      persistence: { type: "SQLite", file: "data/agent.sqlite" },
+      messages: [],
+    });
+  });
+
+  app.post("/api/day7/chat", async (request, response) => {
+    const agentName =
+      typeof request.body?.agentName === "string" ? request.body.agentName.trim() : "";
+    const systemPrompt =
+      typeof request.body?.systemPrompt === "string" ? request.body.systemPrompt.trim() : "";
+    const message = typeof request.body?.message === "string" ? request.body.message.trim() : "";
+    const model = typeof request.body?.model === "string" ? request.body.model.trim() : "";
+    const maxTokens = Number(request.body?.maxTokens);
+    const rawTemperature = request.body?.temperature;
+    const temperature = Number(rawTemperature);
+
+    if (!agentName || !systemPrompt || !message || !model) {
+      return response.status(400).json({
+        error: "Заполни имя агента, системную инструкцию, сообщение и модель.",
+      });
+    }
+    if (!Number.isInteger(maxTokens) || maxTokens < 1 || maxTokens > 8192) {
+      return response.status(400).json({ error: "maxTokens должен быть целым числом от 1 до 8192." });
+    }
+    if (
+      rawTemperature == null ||
+      rawTemperature === "" ||
+      !Number.isFinite(temperature) ||
+      temperature < 0 ||
+      temperature > 2
+    ) {
+      return response.status(400).json({ error: "temperature должна быть числом от 0 до 2." });
+    }
+
+    const apiKey = await resolveApiKey();
+    if (!apiKey) {
+      return response.status(401).json({ error: "Сначала добавь API-ключ OpenRouter в настройках." });
+    }
+
+    const store = getConversationStore();
+    const history = store.listMessages(DAY7_CONVERSATION_ID).map(({ role, content }) => ({
+      role,
+      content,
+    }));
+    const agent = new LlmAgent({
+      apiKey,
+      history,
+      maxTokens,
+      model,
+      requestLlm,
+      systemPrompt,
+      temperature,
+    });
+    const agentResponse = await agent.respond(message);
+
+    store.appendExchange(DAY7_CONVERSATION_ID, message, agentResponse.answer);
+
+    return response.json({
+      agent: { name: agentName, type: "LlmAgent" },
+      conversationId: DAY7_CONVERSATION_ID,
+      input: message,
+      persistence: { type: "SQLite", file: "data/agent.sqlite" },
+      response: agentResponse,
+      history: store.listMessages(DAY7_CONVERSATION_ID),
     });
   });
 

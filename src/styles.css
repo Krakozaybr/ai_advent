@@ -615,6 +615,25 @@ h1 {
   font-size: 0.76rem;
 }
 
+.chat-role {
+  display: block;
+  margin-bottom: 7px;
+  font-size: 0.72rem;
+  font-weight: 850;
+  opacity: 0.68;
+}
+
+.memory-demo-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  margin-bottom: 14px;
+}
+
+.memory-actions {
+  flex-wrap: wrap;
+}
+
 .chat-composer {
   display: grid;
   gap: 14px;

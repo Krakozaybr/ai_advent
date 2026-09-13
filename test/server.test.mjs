@@ -5,12 +5,14 @@ import { join } from "node:path";
 import test from "node:test";
 import { LlmAgent } from "../server/agent.mjs";
 import { createApp } from "../server/app.mjs";
+import { createConversationStore } from "../server/conversation-store.mjs";
 import { buildOpenRouterRequest } from "../server/openrouter.mjs";
 import { createSettingsStore } from "../server/settings.mjs";
 import { DEFAULT_DAY3_TASK } from "../shared/day3.js";
 import { DEFAULT_DAY4_PROMPT } from "../shared/day4.js";
 import { DEFAULT_DAY5_PROMPT } from "../shared/day5.js";
 import { DEFAULT_AGENT_SYSTEM_PROMPT } from "../shared/day6.js";
+import { DEFAULT_DAY7_SYSTEM_PROMPT } from "../shared/day7.js";
 
 function createMemorySettingsStore(initialApiKey = "") {
   let apiKey = initialApiKey;
@@ -527,3 +529,115 @@ test("day 6 calls the LlmAgent through the HTTP API", async () => {
     assert.deepEqual(result.response.httpRequest.json.messages, receivedRequest.messages);
   });
 });
+
+test("SQLite conversation store restores messages after reopening", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "ai-advent-history-"));
+  const filePath = join(directory, "agent.sqlite");
+  let store = createConversationStore(filePath);
+
+  try {
+    store.appendExchange("dialog", "Запомни JavaScript", "Я запомнил JavaScript");
+    store.close();
+
+    store = createConversationStore(filePath);
+    const messages = store.listMessages("dialog");
+
+    assert.equal(messages.length, 2);
+    assert.deepEqual(
+      messages.map(({ role, content }) => ({ role, content })),
+      [
+        { role: "user", content: "Запомни JavaScript" },
+        { role: "assistant", content: "Я запомнил JavaScript" },
+      ],
+    );
+    assert.equal((await stat(filePath)).mode & 0o777, 0o600);
+  } finally {
+    store.close();
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("day 7 sends restored SQLite history after an application restart", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "ai-advent-day7-"));
+  const filePath = join(directory, "agent.sqlite");
+  const calls = [];
+  const requestLlm = async (request) => {
+    calls.push(request);
+    return {
+      answer: calls.length === 1 ? "Я запомнил JavaScript." : "Твой любимый язык — JavaScript.",
+      model: request.model,
+      usage: { total_tokens: 42 },
+      cost: 0.000004,
+      latencyMs: 50,
+      httpRequest: buildOpenRouterRequest(request),
+    };
+  };
+  const requestBody = {
+    agentName: "Агент с памятью",
+    systemPrompt: DEFAULT_DAY7_SYSTEM_PROMPT,
+    model: "qwen/test",
+    maxTokens: 300,
+    temperature: 0.7,
+  };
+  let store = createConversationStore(filePath);
+
+  try {
+    await withServer(
+      createApp({
+        conversationStore: store,
+        settingsStore: createMemorySettingsStore("test-secret-key"),
+        requestLlm,
+        environmentApiKey: "",
+      }),
+      async (origin) => {
+        const response = await fetch(`${origin}/api/day7/chat`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ ...requestBody, message: "Запомни JavaScript" }),
+        });
+
+        assert.equal(response.status, 200);
+        assert.equal((await response.json()).history.length, 2);
+      },
+    );
+
+    store.close();
+    store = createConversationStore(filePath);
+
+    await withServer(
+      createApp({
+        conversationStore: store,
+        settingsStore: createMemorySettingsStore("test-secret-key"),
+        requestLlm,
+        environmentApiKey: "",
+      }),
+      async (origin) => {
+        const historyBefore = await (await fetch(`${origin}/api/day7/history`)).json();
+        assert.equal(historyBefore.messages.length, 2);
+
+        const response = await fetch(`${origin}/api/day7/chat`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ ...requestBody, message: "Какой язык я люблю?" }),
+        });
+        const result = await response.json();
+
+        assert.equal(response.status, 200);
+        assert.equal(result.history.length, 4);
+        assert.deepEqual(receivedMessages(calls[1]), [
+          { role: "system", content: DEFAULT_DAY7_SYSTEM_PROMPT },
+          { role: "user", content: "Запомни JavaScript" },
+          { role: "assistant", content: "Я запомнил JavaScript." },
+          { role: "user", content: "Какой язык я люблю?" },
+        ]);
+      },
+    );
+  } finally {
+    store.close();
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+function receivedMessages(request) {
+  return request.messages.map(({ role, content }) => ({ role, content }));
+}
