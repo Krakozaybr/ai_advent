@@ -3,12 +3,14 @@ import { mkdtemp, rm, stat } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
+import { LlmAgent } from "../server/agent.mjs";
 import { createApp } from "../server/app.mjs";
 import { buildOpenRouterRequest } from "../server/openrouter.mjs";
 import { createSettingsStore } from "../server/settings.mjs";
 import { DEFAULT_DAY3_TASK } from "../shared/day3.js";
 import { DEFAULT_DAY4_PROMPT } from "../shared/day4.js";
 import { DEFAULT_DAY5_PROMPT } from "../shared/day5.js";
+import { DEFAULT_AGENT_SYSTEM_PROMPT } from "../shared/day6.js";
 
 function createMemorySettingsStore(initialApiKey = "") {
   let apiKey = initialApiKey;
@@ -438,5 +440,90 @@ function firstUniqueCharacter(text) {
     assert.equal(result.qualityCheck.total, 5);
     assert.equal(result.httpRequest.json.model, "qwen/test-strong");
     assert.equal(result.httpRequest.json.temperature, 0);
+  });
+});
+
+test("LlmAgent encapsulates messages and keeps runtime history", async () => {
+  const calls = [];
+  const agent = new LlmAgent({
+    apiKey: "test-secret-key",
+    model: "qwen/test",
+    maxTokens: 300,
+    temperature: 0.7,
+    systemPrompt: DEFAULT_AGENT_SYSTEM_PROMPT,
+    requestLlm: async (request) => {
+      calls.push(request);
+      return {
+        answer: calls.length === 1 ? "Первый ответ" : "Второй ответ",
+        model: request.model,
+        usage: { total_tokens: 20 },
+        cost: 0.000002,
+        latencyMs: 30,
+      };
+    },
+  });
+
+  await agent.respond("Первый вопрос");
+  await agent.respond("Второй вопрос");
+
+  assert.deepEqual(
+    calls[0].messages.map((message) => message.role),
+    ["system", "user"],
+  );
+  assert.deepEqual(
+    calls[1].messages.map((message) => message.role),
+    ["system", "user", "assistant", "user"],
+  );
+  assert.deepEqual(agent.getHistory(), [
+    { role: "user", content: "Первый вопрос" },
+    { role: "assistant", content: "Первый ответ" },
+    { role: "user", content: "Второй вопрос" },
+    { role: "assistant", content: "Второй ответ" },
+  ]);
+});
+
+test("day 6 calls the LlmAgent through the HTTP API", async () => {
+  let receivedRequest;
+  const requestLlm = async (request) => {
+    receivedRequest = request;
+    return {
+      answer: "HTTP API работает через сеть, а функция вызывается внутри программы.",
+      model: request.model,
+      usage: { total_tokens: 32 },
+      cost: 0.000003,
+      latencyMs: 45,
+      httpRequest: buildOpenRouterRequest(request),
+    };
+  };
+  const app = createApp({
+    settingsStore: createMemorySettingsStore("test-secret-key"),
+    requestLlm,
+    environmentApiKey: "",
+  });
+
+  await withServer(app, async (origin) => {
+    const response = await fetch(`${origin}/api/day6/chat`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        agentName: "Тестовый агент",
+        systemPrompt: DEFAULT_AGENT_SYSTEM_PROMPT,
+        message: "Чем API отличается от функции?",
+        model: "qwen/test",
+        maxTokens: 300,
+        temperature: 0.7,
+      }),
+    });
+    const result = await response.json();
+
+    assert.equal(response.status, 200);
+    assert.deepEqual(result.agent, { name: "Тестовый агент", type: "LlmAgent" });
+    assert.equal(result.input, "Чем API отличается от функции?");
+    assert.equal(result.response.wordCount, 10);
+    assert.deepEqual(receivedRequest.messages, [
+      { role: "system", content: DEFAULT_AGENT_SYSTEM_PROMPT },
+      { role: "user", content: "Чем API отличается от функции?" },
+    ]);
+    assert.deepEqual(result.response.httpRequest.json.messages, receivedRequest.messages);
   });
 });

@@ -1,9 +1,9 @@
 const endpoint = "https://openrouter.ai/api/v1/chat/completions";
 
-export function buildOpenRouterRequest({ model, prompt, maxTokens, stop, temperature }) {
+export function buildOpenRouterRequest({ messages, model, prompt, maxTokens, stop, temperature }) {
   const json = {
     model,
-    messages: [{ role: "user", content: prompt }],
+    messages: messages || [{ role: "user", content: prompt }],
   };
 
   if (maxTokens != null) {
@@ -24,9 +24,24 @@ export function buildOpenRouterRequest({ model, prompt, maxTokens, stop, tempera
   };
 }
 
-export async function askOpenRouter({ apiKey, model, prompt, maxTokens, stop, temperature }) {
+export async function askOpenRouter({
+  apiKey,
+  messages,
+  model,
+  prompt,
+  maxTokens,
+  stop,
+  temperature,
+}) {
   const startedAt = performance.now();
-  const httpRequest = buildOpenRouterRequest({ model, prompt, maxTokens, stop, temperature });
+  const httpRequest = buildOpenRouterRequest({
+    messages,
+    model,
+    prompt,
+    maxTokens,
+    stop,
+    temperature,
+  });
 
   let response;
   try {

@@ -1,4 +1,5 @@
 import express from "express";
+import { LlmAgent } from "./agent.mjs";
 import { runDay3Method } from "./day3.mjs";
 import { runDay4Experiment } from "./day4.mjs";
 import { runDay5Experiment } from "./day5.mjs";
@@ -226,6 +227,57 @@ export function createApp({
       temperature,
     });
     return response.json(result);
+  });
+
+  app.post("/api/day6/chat", async (request, response) => {
+    const agentName =
+      typeof request.body?.agentName === "string" ? request.body.agentName.trim() : "";
+    const systemPrompt =
+      typeof request.body?.systemPrompt === "string" ? request.body.systemPrompt.trim() : "";
+    const message = typeof request.body?.message === "string" ? request.body.message.trim() : "";
+    const model = typeof request.body?.model === "string" ? request.body.model.trim() : "";
+    const maxTokens = Number(request.body?.maxTokens);
+    const rawTemperature = request.body?.temperature;
+    const temperature = Number(rawTemperature);
+
+    if (!agentName || !systemPrompt || !message || !model) {
+      return response.status(400).json({
+        error: "Заполни имя агента, системную инструкцию, сообщение и модель.",
+      });
+    }
+    if (!Number.isInteger(maxTokens) || maxTokens < 1 || maxTokens > 8192) {
+      return response.status(400).json({ error: "maxTokens должен быть целым числом от 1 до 8192." });
+    }
+    if (
+      rawTemperature == null ||
+      rawTemperature === "" ||
+      !Number.isFinite(temperature) ||
+      temperature < 0 ||
+      temperature > 2
+    ) {
+      return response.status(400).json({ error: "temperature должна быть числом от 0 до 2." });
+    }
+
+    const apiKey = await resolveApiKey();
+    if (!apiKey) {
+      return response.status(401).json({ error: "Сначала добавь API-ключ OpenRouter в настройках." });
+    }
+
+    const agent = new LlmAgent({
+      apiKey,
+      maxTokens,
+      model,
+      requestLlm,
+      systemPrompt,
+      temperature,
+    });
+    const agentResponse = await agent.respond(message);
+
+    return response.json({
+      agent: { name: agentName, type: "LlmAgent" },
+      input: message,
+      response: agentResponse,
+    });
   });
 
   app.use((error, _request, response, _next) => {

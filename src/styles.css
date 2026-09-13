@@ -495,6 +495,134 @@ h1 {
   padding-left: 1.4rem;
 }
 
+.agent-identity,
+.agent-identity > div,
+.chat-response-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.agent-identity {
+  margin-bottom: 18px;
+  padding: 14px 16px;
+  border: 1px solid #d8d3c4;
+  border-radius: 14px;
+  background: #fffefa;
+}
+
+.agent-identity > div {
+  justify-content: flex-start;
+}
+
+.agent-identity p {
+  margin: 3px 0 0;
+  color: #747b74;
+  font-size: 0.78rem;
+}
+
+.agent-avatar {
+  display: grid;
+  width: 38px;
+  height: 38px;
+  place-items: center;
+  border-radius: 50%;
+  color: #fff;
+  background: #d55f36;
+  font-weight: 900;
+}
+
+.agent-architecture {
+  margin-bottom: 22px;
+  padding: 14px 16px;
+  border: 1px solid #ddd8ca;
+  border-radius: 12px;
+  background: #f8f5ea;
+}
+
+.agent-architecture p,
+.agent-architecture ol {
+  margin-bottom: 0;
+  line-height: 1.6;
+}
+
+.agent-settings {
+  margin-bottom: 24px;
+  padding-bottom: 24px;
+  border-bottom: 1px solid #ded9cc;
+}
+
+.chat-shell {
+  overflow: hidden;
+  border: 1px solid #d8d3c4;
+  border-radius: 18px;
+  background: #f8f6ef;
+}
+
+.chat-list {
+  display: grid;
+  gap: 22px;
+  min-height: 220px;
+  max-height: 720px;
+  overflow-y: auto;
+  padding: 22px;
+}
+
+.chat-empty {
+  align-self: center;
+  margin: 0;
+  color: #858b84;
+  text-align: center;
+}
+
+.chat-turn {
+  display: grid;
+  gap: 10px;
+}
+
+.chat-message {
+  width: min(88%, 760px);
+  padding: 14px 16px;
+  border-radius: 16px;
+}
+
+.user-message {
+  justify-self: end;
+  color: #fff;
+  background: #17211b;
+  border-bottom-right-radius: 5px;
+}
+
+.user-message p {
+  margin: 0;
+  white-space: pre-wrap;
+}
+
+.assistant-message {
+  justify-self: start;
+  border: 1px solid #ddd8ca;
+  background: #fffefa;
+  border-bottom-left-radius: 5px;
+}
+
+.chat-response-heading {
+  margin-bottom: 14px;
+}
+
+.chat-response-heading .secondary-button {
+  padding: 7px 10px;
+  font-size: 0.76rem;
+}
+
+.chat-composer {
+  display: grid;
+  gap: 14px;
+  padding: 18px;
+  border-top: 1px solid #d8d3c4;
+  background: #fffefa;
+}
+
 .metrics {
   display: flex;
   flex-wrap: wrap;
@@ -722,6 +850,15 @@ pre {
 
   .result-actions {
     align-items: flex-start;
+    flex-direction: column;
+  }
+
+  .chat-message {
+    width: 100%;
+  }
+
+  .chat-composer .button-row {
+    align-items: stretch;
     flex-direction: column;
   }
 
