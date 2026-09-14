@@ -1,6 +1,14 @@
 const endpoint = "https://openrouter.ai/api/v1/chat/completions";
 
-export function buildOpenRouterRequest({ messages, model, prompt, maxTokens, stop, temperature }) {
+export function buildOpenRouterRequest({
+  messages,
+  model,
+  plugins,
+  prompt,
+  maxTokens,
+  stop,
+  temperature,
+}) {
   const json = {
     model,
     messages: messages || [{ role: "user", content: prompt }],
@@ -14,6 +22,9 @@ export function buildOpenRouterRequest({ messages, model, prompt, maxTokens, sto
   }
   if (temperature != null) {
     json.temperature = temperature;
+  }
+  if (plugins?.length) {
+    json.plugins = plugins;
   }
 
   return {
@@ -32,6 +43,8 @@ export async function askOpenRouter({
   maxTokens,
   stop,
   temperature,
+  plugins,
+  timeoutMs = 45_000,
 }) {
   const startedAt = performance.now();
   const httpRequest = buildOpenRouterRequest({
@@ -39,6 +52,7 @@ export async function askOpenRouter({
     model,
     prompt,
     maxTokens,
+    plugins,
     stop,
     temperature,
   });
@@ -53,12 +67,12 @@ export async function askOpenRouter({
         "X-Title": "AI Advent",
       },
       body: JSON.stringify(httpRequest.json),
-      signal: AbortSignal.timeout(45_000),
+      signal: AbortSignal.timeout(timeoutMs),
     });
   } catch (cause) {
     const error = new Error(
       cause.name === "TimeoutError"
-        ? "OpenRouter не ответил за 45 секунд. Попробуй ещё раз."
+        ? `OpenRouter не ответил за ${Math.round(timeoutMs / 1_000)} секунд. Попробуй ещё раз.`
         : `Не удалось обратиться к OpenRouter: ${cause.message}`,
     );
     error.statusCode = cause.name === "TimeoutError" ? 504 : 502;

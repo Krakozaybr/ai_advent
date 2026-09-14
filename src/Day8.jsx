@@ -43,7 +43,11 @@ function buildComparison(results) {
   const rows = Object.entries(DAY8_SCENARIOS).map(([id, scenario]) => {
     const result = results[id];
     const counts = result.tokenCounts;
-    const status = result.failed ? "ошибка OpenRouter" : "получен ответ";
+    const status = result.failed
+      ? "ошибка OpenRouter"
+      : result.compressionEnabled
+        ? "ответ после сжатия"
+        : "получен ответ";
     const cost = result.cost == null ? "н/д" : `$${Number(result.cost).toFixed(6)}`;
     return `| ${scenario.title} | ${result.historyMessages} | ≈ ${counts.estimatedCurrentMessage} | ≈ ${counts.estimatedHistory} | ${counts.actualInput ?? "—"} | ${counts.actualResponse ?? "—"} | ${cost} | ${status} |`;
   });
@@ -282,14 +286,16 @@ export function Day8({ hasApiKey, onOpenSettings }) {
         </p>
         <p>
           В сценарии переполнения сначала отправляется короткий факт. Затем в поле ввода
-          подставляется вопрос с большим stack trace. Он отправляется целиком: провайдер может
-          отклонить запрос до генерации ответа.
+          подставляется вопрос с большим stack trace. В OpenRouter отправляется полный текст,
+          после чего плагин context-compression удаляет часть середины, чтобы запрос поместился
+          в окно модели.
         </p>
       </details>
 
       <div className="notice">
-        Большой stack trace создаётся только после ответа на первое сообщение сценария
-        «Переполнение». Перед второй отправкой красный индикатор явно покажет превышение лимита.
+        Для сценария «Переполнение» включён OpenRouter context-compression. Большой stack trace
+        создаётся после ответа на первое сообщение; перед второй отправкой индикатор покажет
+        исходный размер запроса и превышение лимита.
       </div>
 
       <div className="experiment-form shared-task">
@@ -439,8 +445,9 @@ export function Day8({ hasApiKey, onOpenSettings }) {
               </div>
               {exceedsLimit && (
                 <p className="error-message">
-                  Этот запрос всё равно будет отправлен. Если OpenRouter отклонит его до
-                  генерации, вместо ответа LLM в чате появится явная ошибка.
+                  Запрос будет отправлен полностью. В сценарии «Переполнение» OpenRouter
+                  автоматически сократит его середину через context-compression перед вызовом
+                  модели.
                 </p>
               )}
             </section>
@@ -473,7 +480,11 @@ export function Day8({ hasApiKey, onOpenSettings }) {
               </div>
               <div className="result-actions">
                 <span className={`accuracy-badge ${result.failed ? "incorrect" : "correct"}`}>
-                  {result.failed ? "Ответ LLM не создан" : "Ответ получен"}
+                  {result.failed
+                    ? "Ответ LLM не создан"
+                    : result.compressionEnabled
+                      ? "Ответ после сжатия"
+                      : "Ответ получен"}
                 </span>
                 <button
                   className="secondary-button"

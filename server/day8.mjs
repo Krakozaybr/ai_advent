@@ -2,9 +2,14 @@ import { buildOpenRouterRequest } from "./openrouter.mjs";
 import { estimateMessagesTokens, estimateTextTokens } from "./token-counter.mjs";
 
 function compactRequestDetails(request) {
+  const compressionEnabled = request.json.plugins?.some(
+    (plugin) => plugin.id === "context-compression",
+  );
   return {
     ...request,
-    note: "Полный текст сообщений отправлен в OpenRouter. Здесь он сокращён, чтобы не завис интерфейс.",
+    note: compressionEnabled
+      ? "Полный текст отправлен в OpenRouter. Плагин context-compression может удалить часть середины перед вызовом модели. Здесь сообщения сокращены только для отображения."
+      : "Полный текст сообщений отправлен в OpenRouter. Здесь он сокращён, чтобы не завис интерфейс.",
     json: {
       ...request.json,
       messages: request.json.messages.map((message) => ({
@@ -49,7 +54,8 @@ export async function runDay8Experiment({
   };
 
   const exceedsLimit = estimatedWithResponse > contextLimit;
-  const request = buildOpenRouterRequest({ messages, model, maxTokens, temperature });
+  const plugins = scenario === "overflow" ? [{ id: "context-compression" }] : undefined;
+  const request = buildOpenRouterRequest({ messages, model, plugins, maxTokens, temperature });
 
   try {
     const result = await requestLlm({
@@ -57,13 +63,16 @@ export async function runDay8Experiment({
       maxTokens,
       messages,
       model,
+      plugins,
       temperature,
+      timeoutMs: scenario === "overflow" ? 120_000 : undefined,
     });
 
     return {
       ...result,
       scenario,
       sent: true,
+      compressionEnabled: Boolean(plugins),
       failed: false,
       exceedsLimit,
       tokenCounts: {
@@ -79,6 +88,7 @@ export async function runDay8Experiment({
     return {
       scenario,
       sent: true,
+      compressionEnabled: Boolean(plugins),
       failed: true,
       exceedsLimit,
       reason: error.message,

@@ -678,11 +678,14 @@ test("day 8 overflow prompt is a meaningful stack trace beyond the model limit",
   );
 });
 
-test("day 8 returns exact usage and sends overflow to OpenRouter", async () => {
+test("day 8 enables OpenRouter compression for the overflow request", async () => {
   const calls = [];
   const requestLlm = async (request) => {
     calls.push(request);
-    if (request.messages.some((message) => message.content.length > 500)) {
+    if (
+      request.messages.some((message) => message.content.length > 500) &&
+      !request.plugins?.some((plugin) => plugin.id === "context-compression")
+    ) {
       throw new Error("OpenRouter: context length exceeded");
     }
     return {
@@ -769,16 +772,20 @@ test("day 8 returns exact usage and sends overflow to OpenRouter", async () => {
 
     assert.equal(overflowResponse.status, 200);
     assert.equal(overflowResult.sent, true);
-    assert.equal(overflowResult.failed, true);
+    assert.equal(overflowResult.failed, false);
+    assert.equal(overflowResult.compressionEnabled, true);
     assert.equal(overflowResult.exceedsLimit, true);
-    assert.match(overflowResult.reason, /context length exceeded/u);
     assert.ok(
       overflowResult.tokenCounts.estimatedWithResponse >
         overflowResult.tokenCounts.contextLimit,
     );
-    assert.equal(overflowResult.cost, null);
     assert.equal(calls.length, 3);
     assert.equal(calls[2].messages.at(-1).content, overflowPrompt);
+    assert.deepEqual(calls[2].plugins, [{ id: "context-compression" }]);
+    assert.equal(calls[2].timeoutMs, 120_000);
+    assert.deepEqual(overflowResult.httpRequest.json.plugins, [
+      { id: "context-compression" },
+    ]);
     assert.match(overflowResult.httpRequest.note, /отправлен в OpenRouter/u);
   });
 });
