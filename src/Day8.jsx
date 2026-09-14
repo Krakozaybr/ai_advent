@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { DEFAULT_DAY7_SYSTEM_PROMPT } from "../shared/day7.js";
 import {
   buildDay8HistoryPreview,
@@ -86,10 +86,10 @@ function HistoryMessage({ item, scenario, index }) {
     >
       <span className="chat-role">{item.role === "user" ? "User" : "Assistant"}</span>
       <p>{item.content}</p>
-      {item.repetitions > 1 && (
+      {item.records > 1 && (
         <>
           <span className="chat-preview-note">
-            В API: этот текст × {item.repetitions} · {formatTokenCount(item.fullLength)} символов
+            В API: {item.records} разных записей · {formatTokenCount(item.fullLength)} символов
           </span>
           <details className="chat-message-expander" onToggle={toggleFullContent}>
             <summary>{fullContent == null ? "Показать весь текст" : "Скрыть полный текст"}</summary>
@@ -112,6 +112,7 @@ export function Day8({ hasApiKey, onOpenSettings }) {
   const [results, setResults] = useState(EMPTY_RESULTS);
   const [errors, setErrors] = useState(EMPTY_ERRORS);
   const [loading, setLoading] = useState(EMPTY_LOADING);
+  const chatEndRef = useRef(null);
 
   const scenario = DAY8_SCENARIOS[activeScenario];
   const result = results[activeScenario];
@@ -119,6 +120,19 @@ export function Day8({ hasApiKey, onOpenSettings }) {
   const historyCharacters = historyPreview.reduce((total, item) => total + item.fullLength, 0);
   const anyLoading = Object.values(loading).some(Boolean);
   const allReady = Object.values(results).every(Boolean);
+  const hasChatResults =
+    Object.values(results).some(Boolean) || Object.values(errors).some(Boolean);
+
+  useEffect(() => {
+    if (!loading[activeScenario] && !result && !errors[activeScenario]) {
+      return undefined;
+    }
+
+    const animationFrame = requestAnimationFrame(() => {
+      chatEndRef.current?.scrollIntoView({ behavior: "smooth", block: "nearest" });
+    });
+    return () => cancelAnimationFrame(animationFrame);
+  }, [activeScenario, errors, loading, result]);
 
   function clearResults() {
     setResults(EMPTY_RESULTS);
@@ -210,7 +224,7 @@ export function Day8({ hasApiKey, onOpenSettings }) {
 
       <div className="notice">
         Сценарий «Переполнение» действительно отправляет большой контекст: локальная оценка
-        около 376 000 токенов. Возможны списание примерно $0.015, ошибка провайдера или таймаут.
+        около 365 000 токенов. Возможны списание примерно $0.015, ошибка провайдера или таймаут.
       </div>
 
       <div className="experiment-form shared-task">
@@ -267,10 +281,20 @@ export function Day8({ hasApiKey, onOpenSettings }) {
             />
           </label>
         </div>
-        <div className="button-row">
-          <button className="secondary-button" disabled={anyLoading} onClick={resetAll} type="button">
-            Сбросить всё
-          </button>
+        <div className="button-row memory-actions">
+          <div className="result-actions">
+            <button className="secondary-button" disabled={anyLoading} onClick={resetAll} type="button">
+              Сбросить настройки
+            </button>
+            <button
+              className="secondary-button"
+              disabled={anyLoading || !hasChatResults}
+              onClick={clearResults}
+              type="button"
+            >
+              Очистить всю историю
+            </button>
+          </div>
           <button
             className="primary-button"
             disabled={anyLoading || !hasApiKey || temperature === ""}
@@ -345,7 +369,10 @@ export function Day8({ hasApiKey, onOpenSettings }) {
               <div className="chat-message assistant-message">
                 <span className="chat-role">{result.failed ? "Ошибка OpenRouter" : "Assistant"}</span>
                 {result.failed ? (
-                  <p className="error-message">{result.reason}</p>
+                  <div className="error-message">
+                    <strong>LLM не сформировала ответ.</strong>
+                    <p>Запрос отправлен, но генерация не началась: {result.reason}</p>
+                  </div>
                 ) : (
                   <div className="markdown-body">
                     <MarkdownContent>{result.answer || "Модель не вернула текст."}</MarkdownContent>
@@ -353,6 +380,7 @@ export function Day8({ hasApiKey, onOpenSettings }) {
                 )}
               </div>
             )}
+            <div ref={chatEndRef} />
           </div>
 
           <form

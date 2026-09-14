@@ -682,6 +682,10 @@ h1 {
   white-space: pre-wrap;
 }
 
+.chat-message .error-message p {
+  margin: 6px 0 0;
+}
+
 .current-request-message {
   outline: 3px solid rgb(213 95 54 / 18%);
 }

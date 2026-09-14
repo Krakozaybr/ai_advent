@@ -29,6 +29,42 @@ const LONG_FACTS = [
   "Каждый учебный день должен быть удобен для записи короткого видео.",
 ];
 
+const OVERFLOW_RECORDS_PER_MESSAGE = 220;
+const PROJECT_AREAS = [
+  "интерфейс чата",
+  "HTTP API",
+  "хранилище SQLite",
+  "подсчёт токенов",
+  "Markdown-ответ",
+  "настройки модели",
+  "сценарий для видео",
+  "обработка ошибок",
+];
+const EXTRA_CONDITIONS = [
+  "сохранить локальный запуск",
+  "не раскрывать API-ключ браузеру",
+  "показать параметры запроса",
+  "оставить значения редактируемыми",
+  "вывести измеренную стоимость",
+  "объяснить результат простыми словами",
+];
+const NEXT_STEPS = [
+  "добавить проверяемый пример",
+  "сравнить результат с предыдущим запуском",
+  "показать метрики рядом с ответом",
+  "сохранить результат в JSON",
+  "проверить поведение после перезапуска",
+  "описать ограничение в интерфейсе",
+];
+const DECISION_REASONS = [
+  "так различие будет видно на видео",
+  "это сохраняет учебный код минимальным",
+  "так пользователь видит реальный запрос",
+  "это позволяет воспроизвести эксперимент",
+  "так измерение остаётся прозрачным",
+  "это не требует дополнительной настройки",
+];
+
 function factExchange(fact, index) {
   return [
     { role: "user", content: `Требование ${index + 1}: ${fact}` },
@@ -38,6 +74,35 @@ function factExchange(fact, index) {
 
 function buildLongHistory() {
   return LONG_FACTS.flatMap(factExchange);
+}
+
+function buildOverflowRecord(message, messageIndex, recordIndex) {
+  const recordNumber = messageIndex * OVERFLOW_RECORDS_PER_MESSAGE + recordIndex + 1;
+  const day = (recordNumber % 10) + 1;
+  const area = PROJECT_AREAS[recordNumber % PROJECT_AREAS.length];
+
+  if (message.role === "user") {
+    const condition = EXTRA_CONDITIONS[recordNumber % EXTRA_CONDITIONS.length];
+    return `Запись ${recordNumber}. Пользователь уточняет требования Дня ${day} для блока «${area}»: ${message.content} Дополнительное условие — ${condition}.`;
+  }
+
+  const nextStep = NEXT_STEPS[recordNumber % NEXT_STEPS.length];
+  const reason = DECISION_REASONS[recordNumber % DECISION_REASONS.length];
+  return `Запись ${recordNumber}. Ассистент фиксирует решение Дня ${day} для блока «${area}»: ${message.content} Следующий шаг — ${nextStep}, потому что ${reason}.`;
+}
+
+function buildOverflowContent(message, messageIndex) {
+  return Array.from({ length: OVERFLOW_RECORDS_PER_MESSAGE }, (_, recordIndex) =>
+    buildOverflowRecord(message, messageIndex, recordIndex),
+  ).join("\n");
+}
+
+function getOverflowContentLength(message, messageIndex) {
+  let length = OVERFLOW_RECORDS_PER_MESSAGE - 1;
+  for (let recordIndex = 0; recordIndex < OVERFLOW_RECORDS_PER_MESSAGE; recordIndex += 1) {
+    length += buildOverflowRecord(message, messageIndex, recordIndex).length;
+  }
+  return length;
 }
 
 export function buildDay8History(scenario) {
@@ -51,9 +116,9 @@ export function buildDay8History(scenario) {
   }
 
   if (scenario === "overflow") {
-    return longHistory.map((message) => ({
+    return longHistory.map((message, messageIndex) => ({
       ...message,
-      content: Array.from({ length: 700 }, () => message.content).join(" "),
+      content: buildOverflowContent(message, messageIndex),
     }));
   }
 
@@ -67,26 +132,33 @@ export function buildDay8HistoryPreview(scenario) {
     throw new Error("Неизвестный сценарий Дня 8.");
   }
 
-  return history.map((message) => {
+  return history.map((message, messageIndex) => {
     if (scenario !== "overflow") {
       return {
         ...message,
         sourceContent: message.content,
         fullLength: message.content.length,
-        repetitions: 1,
+        records: 1,
       };
     }
 
     return {
       ...message,
-      content: `${message.content} …`,
+      content: `${buildOverflowRecord(message, messageIndex, 0)}\n${buildOverflowRecord(message, messageIndex, 1)}\n…`,
+      messageIndex,
       sourceContent: message.content,
-      fullLength: message.content.length * 700 + 699,
-      repetitions: 700,
+      fullLength: getOverflowContentLength(message, messageIndex),
+      records: OVERFLOW_RECORDS_PER_MESSAGE,
     };
   });
 }
 
 export function expandDay8PreviewMessage(message) {
-  return Array.from({ length: message.repetitions }, () => message.sourceContent).join(" ");
+  if (message.records === 1) {
+    return message.sourceContent;
+  }
+  return buildOverflowContent(
+    { role: message.role, content: message.sourceContent },
+    message.messageIndex,
+  );
 }

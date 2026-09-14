@@ -658,12 +658,18 @@ test("token estimate grows together with the dialogue history", () => {
 test("day 8 chat preview describes the full overflow without rendering it", () => {
   const fullHistory = buildDay8History("overflow");
   const preview = buildDay8HistoryPreview("overflow");
+  const expanded = expandDay8PreviewMessage(preview[0]);
+  const records = expanded.split("\n");
 
   assert.equal(preview.length, fullHistory.length);
-  assert.equal(preview[0].repetitions, 700);
+  assert.equal(preview[0].records, 220);
   assert.equal(preview[0].fullLength, fullHistory[0].content.length);
   assert.ok(preview[0].content.length < fullHistory[0].content.length);
-  assert.equal(expandDay8PreviewMessage(preview[0]), fullHistory[0].content);
+  assert.equal(expanded, fullHistory[0].content);
+  assert.equal(records.length, 220);
+  assert.match(records[0], /Запись 1\./u);
+  assert.match(records[1], /Запись 2\./u);
+  assert.notEqual(records[0], records[1]);
 });
 
 test("day 8 returns exact usage and sends overflow to OpenRouter", async () => {
