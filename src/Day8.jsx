@@ -150,6 +150,13 @@ export function Day8({ hasApiKey, onOpenSettings }) {
   const limitUsed = Number(contextLimit)
     ? Math.min(100, Math.round((tokenCounts.withResponse / Number(contextLimit)) * 100))
     : 0;
+  const canSend = Boolean(
+    !loading[activeScenario] &&
+      hasApiKey &&
+      draft.trim() &&
+      model.trim() &&
+      temperature !== "",
+  );
 
   useEffect(() => {
     if (messages.length === 0 && !loading[activeScenario]) {
@@ -420,6 +427,20 @@ export function Day8({ hasApiKey, onOpenSettings }) {
               <textarea
                 disabled={loading[activeScenario]}
                 onChange={(event) => updateDraft(event.target.value)}
+                onKeyDown={(event) => {
+                  if (
+                    event.key !== "Enter" ||
+                    event.shiftKey ||
+                    event.repeat ||
+                    event.nativeEvent.isComposing
+                  ) {
+                    return;
+                  }
+                  event.preventDefault();
+                  if (canSend) {
+                    runScenario(activeScenario);
+                  }
+                }}
                 rows={activeScenario === "overflow" ? 7 : 4}
                 value={draft}
               />
@@ -453,16 +474,13 @@ export function Day8({ hasApiKey, onOpenSettings }) {
             </section>
 
             <div className="button-row">
-              <span className="field-hint">Отправятся system + сообщения чата + этот текст.</span>
+              <span className="field-hint">
+                Enter — отправить · Shift+Enter — новая строка. Отправятся system + сообщения
+                чата + этот текст.
+              </span>
               <button
                 className="primary-button"
-                disabled={
-                  loading[activeScenario] ||
-                  !hasApiKey ||
-                  !draft.trim() ||
-                  !model.trim() ||
-                  temperature === ""
-                }
+                disabled={!canSend}
                 type="submit"
               >
                 {loading[activeScenario] ? "Отправляется…" : `Отправить: ${scenario.title}`}
