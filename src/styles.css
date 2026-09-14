@@ -660,6 +660,28 @@ h1 {
   opacity: 0.72;
 }
 
+.chat-message-expander {
+  margin-top: 9px;
+  padding-top: 8px;
+  border-top-color: currentColor;
+  color: inherit;
+}
+
+.chat-full-content {
+  max-height: 360px;
+  margin-top: 10px;
+  overflow: auto;
+  padding: 12px;
+  border-radius: 9px;
+  color: #17211b;
+  background: #fffefa;
+  font-family: "SFMono-Regular", Consolas, "Liberation Mono", monospace;
+  font-size: 0.74rem;
+  line-height: 1.55;
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
+}
+
 .current-request-message {
   outline: 3px solid rgb(213 95 54 / 18%);
 }

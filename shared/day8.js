@@ -69,14 +69,24 @@ export function buildDay8HistoryPreview(scenario) {
 
   return history.map((message) => {
     if (scenario !== "overflow") {
-      return { ...message, fullLength: message.content.length, repetitions: 1 };
+      return {
+        ...message,
+        sourceContent: message.content,
+        fullLength: message.content.length,
+        repetitions: 1,
+      };
     }
 
     return {
       ...message,
       content: `${message.content} …`,
+      sourceContent: message.content,
       fullLength: message.content.length * 700 + 699,
       repetitions: 700,
     };
   });
+}
+
+export function expandDay8PreviewMessage(message) {
+  return Array.from({ length: message.repetitions }, () => message.sourceContent).join(" ");
 }

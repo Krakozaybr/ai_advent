@@ -18,6 +18,7 @@ import {
   buildDay8History,
   buildDay8HistoryPreview,
   DEFAULT_DAY8_PROMPT,
+  expandDay8PreviewMessage,
 } from "../shared/day8.js";
 
 function createMemorySettingsStore(initialApiKey = "") {
@@ -662,6 +663,7 @@ test("day 8 chat preview describes the full overflow without rendering it", () =
   assert.equal(preview[0].repetitions, 700);
   assert.equal(preview[0].fullLength, fullHistory[0].content.length);
   assert.ok(preview[0].content.length < fullHistory[0].content.length);
+  assert.equal(expandDay8PreviewMessage(preview[0]), fullHistory[0].content);
 });
 
 test("day 8 returns exact usage and sends overflow to OpenRouter", async () => {

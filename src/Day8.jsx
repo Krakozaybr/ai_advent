@@ -5,6 +5,7 @@ import {
   DAY8_SCENARIOS,
   DEFAULT_DAY8_CONTEXT_LIMIT,
   DEFAULT_DAY8_PROMPT,
+  expandDay8PreviewMessage,
 } from "../shared/day8.js";
 import { DEFAULT_MODEL } from "../shared/models.js";
 import { apiRequest } from "./api.js";
@@ -69,6 +70,35 @@ function downloadResult(id, result) {
   link.download = `day8-${id}-tokens.json`;
   link.click();
   URL.revokeObjectURL(url);
+}
+
+function HistoryMessage({ item, scenario, index }) {
+  const [fullContent, setFullContent] = useState(null);
+
+  function toggleFullContent(event) {
+    setFullContent(event.currentTarget.open ? expandDay8PreviewMessage(item) : null);
+  }
+
+  return (
+    <div
+      className={`chat-message ${item.role === "user" ? "user-message" : "assistant-message"}`}
+      key={`${scenario}-${index}`}
+    >
+      <span className="chat-role">{item.role === "user" ? "User" : "Assistant"}</span>
+      <p>{item.content}</p>
+      {item.repetitions > 1 && (
+        <>
+          <span className="chat-preview-note">
+            В API: этот текст × {item.repetitions} · {formatTokenCount(item.fullLength)} символов
+          </span>
+          <details className="chat-message-expander" onToggle={toggleFullContent}>
+            <summary>{fullContent == null ? "Показать весь текст" : "Скрыть полный текст"}</summary>
+            {fullContent != null && <div className="chat-full-content">{fullContent}</div>}
+          </details>
+        </>
+      )}
+    </div>
+  );
 }
 
 export function Day8({ hasApiKey, onOpenSettings }) {
@@ -284,18 +314,12 @@ export function Day8({ hasApiKey, onOpenSettings }) {
             </div>
 
             {historyPreview.map((item, index) => (
-              <div
-                className={`chat-message ${item.role === "user" ? "user-message" : "assistant-message"}`}
+              <HistoryMessage
+                index={index}
+                item={item}
                 key={`${activeScenario}-${index}`}
-              >
-                <span className="chat-role">{item.role === "user" ? "User" : "Assistant"}</span>
-                <p>{item.content}</p>
-                {item.repetitions > 1 && (
-                  <span className="chat-preview-note">
-                    В API: этот текст × {item.repetitions} · {formatTokenCount(item.fullLength)} символов
-                  </span>
-                )}
-              </div>
+                scenario={activeScenario}
+              />
             ))}
 
             <div className="chat-message user-message current-request-message">
