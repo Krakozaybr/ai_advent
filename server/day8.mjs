@@ -1,4 +1,3 @@
-import { buildDay8History } from "../shared/day8.js";
 import { buildOpenRouterRequest } from "./openrouter.mjs";
 import { estimateMessagesTokens, estimateTextTokens } from "./token-counter.mjs";
 
@@ -22,6 +21,7 @@ function compactRequestDetails(request) {
 export async function runDay8Experiment({
   apiKey,
   contextLimit,
+  history,
   maxTokens,
   model,
   prompt,
@@ -30,14 +30,13 @@ export async function runDay8Experiment({
   systemPrompt,
   temperature,
 }) {
-  const history = buildDay8History(scenario);
   const messages = [
     { role: "system", content: systemPrompt },
     ...history,
     { role: "user", content: prompt },
   ];
   const estimatedCurrentMessage = estimateTextTokens(prompt);
-  const estimatedHistory = estimateMessagesTokens(history);
+  const estimatedHistory = history.length ? estimateMessagesTokens(history) : 0;
   const estimatedInput = estimateMessagesTokens(messages);
   const estimatedWithResponse = estimatedInput + maxTokens;
   const tokenCounts = {

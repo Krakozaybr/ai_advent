@@ -29,7 +29,7 @@ export function createApp({
     return (await settingsStore.getApiKey()) || environmentApiKey;
   }
 
-  app.use(express.json({ limit: "32kb" }));
+  app.use(express.json({ limit: "4mb" }));
 
   app.get("/api/health", (_request, response) => {
     response.json({ status: "ok" });
@@ -383,6 +383,7 @@ export function createApp({
     const contextLimit = Number(request.body?.contextLimit);
     const rawTemperature = request.body?.temperature;
     const temperature = Number(rawTemperature);
+    const rawHistory = request.body?.history;
 
     if (!Object.hasOwn({ short: true, long: true, overflow: true }, scenario)) {
       return response.status(400).json({ error: "Неизвестный сценарий Дня 8." });
@@ -390,6 +391,20 @@ export function createApp({
     if (!systemPrompt || !prompt || !model) {
       return response.status(400).json({
         error: "Заполни системную инструкцию, текущий запрос и модель.",
+      });
+    }
+    if (
+      !Array.isArray(rawHistory) ||
+      rawHistory.length > 200 ||
+      rawHistory.some(
+        (message) =>
+          !message ||
+          (message.role !== "user" && message.role !== "assistant") ||
+          typeof message.content !== "string",
+      )
+    ) {
+      return response.status(400).json({
+        error: "История должна содержать не более 200 сообщений user/assistant.",
       });
     }
     if (!Number.isInteger(maxTokens) || maxTokens < 1 || maxTokens > 8192) {
@@ -418,6 +433,7 @@ export function createApp({
     const result = await runDay8Experiment({
       apiKey,
       contextLimit,
+      history: rawHistory.map(({ role, content }) => ({ role, content })),
       maxTokens,
       model,
       prompt,

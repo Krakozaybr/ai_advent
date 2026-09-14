@@ -638,6 +638,23 @@ h1 {
   margin-top: 18px;
 }
 
+.system-context {
+  padding: 11px 14px;
+  color: #596159;
+  background: #ebe8de;
+  border-bottom: 1px dashed #bdb8aa;
+  font-size: 0.78rem;
+  line-height: 1.5;
+  white-space: pre-wrap;
+}
+
+.empty-chat-state {
+  width: 100%;
+  padding: 26px 18px;
+  color: #747b74;
+  text-align: center;
+}
+
 .system-message {
   width: 100%;
   color: #596159;
@@ -739,6 +756,34 @@ h1 {
 
 .token-grid strong {
   font-size: 1.15rem;
+}
+
+.token-live-panel {
+  padding: 16px;
+  border: 1px solid #d8d4c8;
+  border-radius: 14px;
+  background: #fbfaf5;
+}
+
+.token-panel-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.token-live-panel .context-meter {
+  margin-top: 12px;
+}
+
+.token-live-panel .token-grid {
+  grid-template-columns: repeat(4, minmax(110px, 1fr));
+  margin-bottom: 0;
+}
+
+.token-live-panel.overflow-result {
+  border-color: #cf725b;
+  background: #fff4ef;
 }
 
 .token-limit-message {

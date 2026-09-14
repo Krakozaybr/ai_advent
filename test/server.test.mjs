@@ -15,10 +15,9 @@ import { DEFAULT_DAY5_PROMPT } from "../shared/day5.js";
 import { DEFAULT_AGENT_SYSTEM_PROMPT } from "../shared/day6.js";
 import { DEFAULT_DAY7_SYSTEM_PROMPT } from "../shared/day7.js";
 import {
-  buildDay8History,
-  buildDay8HistoryPreview,
-  DEFAULT_DAY8_PROMPT,
-  expandDay8PreviewMessage,
+  buildDay8OverflowPrompt,
+  DEFAULT_DAY8_CONTEXT_LIMIT,
+  getDay8ScriptPrompt,
 } from "../shared/day8.js";
 
 function createMemorySettingsStore(initialApiKey = "") {
@@ -646,30 +645,37 @@ test("day 7 sends restored SQLite history after an application restart", async (
 });
 
 test("token estimate grows together with the dialogue history", () => {
-  const shortEstimate = estimateMessagesTokens(buildDay8History("short"));
-  const longEstimate = estimateMessagesTokens(buildDay8History("long"));
-  const overflowEstimate = estimateMessagesTokens(buildDay8History("overflow"));
+  const shortHistory = [
+    { role: "user", content: getDay8ScriptPrompt("short", 0) },
+    { role: "assistant", content: "Запомнил." },
+  ];
+  const longHistory = Array.from({ length: 8 }, (_, index) => [
+    { role: "user", content: getDay8ScriptPrompt("long", index) },
+    { role: "assistant", content: "Запомнил требование." },
+  ]).flat();
+  const shortEstimate = estimateMessagesTokens(shortHistory);
+  const longEstimate = estimateMessagesTokens(longHistory);
+  const overflowEstimate = estimateMessagesTokens([
+    ...shortHistory,
+    { role: "user", content: buildDay8OverflowPrompt() },
+  ]);
 
   assert.ok(shortEstimate > 0);
   assert.ok(longEstimate > shortEstimate);
   assert.ok(overflowEstimate > longEstimate);
 });
 
-test("day 8 chat preview describes the full overflow without rendering it", () => {
-  const fullHistory = buildDay8History("overflow");
-  const preview = buildDay8HistoryPreview("overflow");
-  const expanded = expandDay8PreviewMessage(preview[0]);
-  const records = expanded.split("\n");
+test("day 8 overflow prompt is a meaningful stack trace beyond the model limit", () => {
+  const prompt = buildDay8OverflowPrompt();
 
-  assert.equal(preview.length, fullHistory.length);
-  assert.equal(preview[0].records, 220);
-  assert.equal(preview[0].fullLength, fullHistory[0].content.length);
-  assert.ok(preview[0].content.length < fullHistory[0].content.length);
-  assert.equal(expanded, fullHistory[0].content);
-  assert.equal(records.length, 220);
-  assert.match(records[0], /Запись 1\./u);
-  assert.match(records[1], /Запись 2\./u);
-  assert.notEqual(records[0], records[1]);
+  assert.match(prompt, /Объясни, в чём ошибка/u);
+  assert.match(prompt, /payments-api/u);
+  assert.match(prompt, /configured-port=5432; expected-port=6432/u);
+  assert.match(prompt, /request-001000/u);
+  assert.ok(
+    estimateMessagesTokens([{ role: "user", content: prompt }]) >
+      DEFAULT_DAY8_CONTEXT_LIMIT,
+  );
 });
 
 test("day 8 returns exact usage and sends overflow to OpenRouter", async () => {
@@ -695,7 +701,8 @@ test("day 8 returns exact usage and sends overflow to OpenRouter", async () => {
   });
   const baseBody = {
     systemPrompt: DEFAULT_DAY7_SYSTEM_PROMPT,
-    prompt: DEFAULT_DAY8_PROMPT,
+    prompt: getDay8ScriptPrompt("short", 0),
+    history: [],
     model: "qwen/test",
     maxTokens: 180,
     contextLimit: 1200,
@@ -716,26 +723,47 @@ test("day 8 returns exact usage and sends overflow to OpenRouter", async () => {
     assert.equal(shortResult.tokenCounts.actualInput, 135);
     assert.equal(shortResult.tokenCounts.actualResponse, 18);
     assert.equal(calls.length, 1);
-    assert.equal(calls[0].messages.length, 4);
+    assert.equal(calls[0].messages.length, 2);
 
     const longResponse = await fetch(`${origin}/api/day8/run`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ ...baseBody, scenario: "long" }),
+      body: JSON.stringify({
+        ...baseBody,
+        scenario: "long",
+        history: [
+          { role: "user", content: getDay8ScriptPrompt("long", 0) },
+          { role: "assistant", content: "Запомнил первое требование." },
+          { role: "user", content: getDay8ScriptPrompt("long", 1) },
+          { role: "assistant", content: "Запомнил второе требование." },
+        ],
+        prompt: getDay8ScriptPrompt("long", 2),
+      }),
     });
     const longResult = await longResponse.json();
 
     assert.equal(longResponse.status, 200);
     assert.equal(longResult.failed, false);
-    assert.equal(longResult.historyMessages, 16);
+    assert.equal(longResult.historyMessages, 4);
     assert.ok(longResult.tokenCounts.estimatedInput > shortResult.tokenCounts.estimatedInput);
     assert.equal(calls.length, 2);
-    assert.equal(calls[1].messages.length, 18);
+    assert.equal(calls[1].messages.length, 6);
+
+    const overflowPrompt = buildDay8OverflowPrompt();
 
     const overflowResponse = await fetch(`${origin}/api/day8/run`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ ...baseBody, scenario: "overflow" }),
+      body: JSON.stringify({
+        ...baseBody,
+        scenario: "overflow",
+        contextLimit: DEFAULT_DAY8_CONTEXT_LIMIT,
+        history: [
+          { role: "user", content: getDay8ScriptPrompt("overflow", 0) },
+          { role: "assistant", content: "Запомнил факт об изменении порта." },
+        ],
+        prompt: overflowPrompt,
+      }),
     });
     const overflowResult = await overflowResponse.json();
 
@@ -750,6 +778,7 @@ test("day 8 returns exact usage and sends overflow to OpenRouter", async () => {
     );
     assert.equal(overflowResult.cost, null);
     assert.equal(calls.length, 3);
+    assert.equal(calls[2].messages.at(-1).content, overflowPrompt);
     assert.match(overflowResult.httpRequest.note, /отправлен в OpenRouter/u);
   });
 });

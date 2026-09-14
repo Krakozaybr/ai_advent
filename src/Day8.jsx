@@ -1,13 +1,12 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { DEFAULT_DAY7_SYSTEM_PROMPT } from "../shared/day7.js";
 import {
-  buildDay8HistoryPreview,
   DAY8_SCENARIOS,
   DEFAULT_DAY8_CONTEXT_LIMIT,
-  DEFAULT_DAY8_PROMPT,
-  expandDay8PreviewMessage,
+  getDay8ScriptPrompt,
 } from "../shared/day8.js";
 import { DEFAULT_MODEL } from "../shared/models.js";
+import { estimateMessagesTokens, estimateTextTokens } from "../shared/token-counter.js";
 import { apiRequest } from "./api.js";
 import { AssignmentDetails } from "./AssignmentDetails.jsx";
 import { MarkdownContent } from "./MarkdownContent.jsx";
@@ -26,9 +25,15 @@ const ASSIGNMENT = `Добавьте в код агента подсчёт то�
 
 **Результат:** код считает токены и показывает, как они влияют на поведение агента.`;
 
-const EMPTY_RESULTS = { short: null, long: null, overflow: null };
-const EMPTY_ERRORS = { short: "", long: "", overflow: "" };
-const EMPTY_LOADING = { short: false, long: false, overflow: false };
+const SCENARIO_IDS = Object.keys(DAY8_SCENARIOS);
+
+function emptyScenarioState(value) {
+  return Object.fromEntries(SCENARIO_IDS.map((id) => [id, value]));
+}
+
+function initialDrafts() {
+  return Object.fromEntries(SCENARIO_IDS.map((id) => [id, getDay8ScriptPrompt(id, 0)]));
+}
 
 function formatTokenCount(value) {
   return value == null ? "н/д" : value.toLocaleString("ru-RU");
@@ -38,27 +43,16 @@ function buildComparison(results) {
   const rows = Object.entries(DAY8_SCENARIOS).map(([id, scenario]) => {
     const result = results[id];
     const counts = result.tokenCounts;
-    const status = result.failed
-      ? "ошибка OpenRouter"
-      : result.exceedsLimit
-        ? "ответ получен сверх оценки"
-        : "получен ответ";
+    const status = result.failed ? "ошибка OpenRouter" : "получен ответ";
     const cost = result.cost == null ? "н/д" : `$${Number(result.cost).toFixed(6)}`;
-    return `| ${scenario.title} | ${result.historyMessages} | ≈ ${counts.estimatedCurrentMessage} | ≈ ${counts.estimatedHistory} | ${counts.actualInput ?? "—"} | ${counts.actualResponse ?? "—"} | ${counts.actualTotal ?? "—"} | ${cost} | ${status} |`;
+    return `| ${scenario.title} | ${result.historyMessages} | ≈ ${counts.estimatedCurrentMessage} | ≈ ${counts.estimatedHistory} | ${counts.actualInput ?? "—"} | ${counts.actualResponse ?? "—"} | ${cost} | ${status} |`;
   });
-  const shortInput = results.short.tokenCounts.actualInput;
-  const longInput = results.long.tokenCounts.actualInput;
-  const growth = shortInput != null && longInput != null
-    ? `Фактический вход вырос с **${shortInput}** до **${longInput} токенов**.`
-    : "Длинная история увеличила оценку входного контекста.";
 
-  return `${growth} Вместе с контекстом обычно растёт и стоимость запроса. Переполненный сценарий тоже отправлен в OpenRouter, поэтому в таблице виден реальный результат провайдера.
+  return `Значения со знаком ≈ — локальная оценка до отправки. Точные значения возвращает OpenRouter после успешного ответа.
 
-| Сценарий | Сообщений в истории | Текущий запрос | История | Вход API | Ответ | Всего | Стоимость | Результат |
-|---|---:|---:|---:|---:|---:|---:|---:|---|
-${rows.join("\n")}
-
-> Значения со знаком ≈ — локальная оценка до отправки. Точные значения без знака возвращены OpenRouter после ответа.`;
+| Сценарий | Сообщений в истории | Текущий запрос | История | Вход API | Ответ | Стоимость | Результат |
+|---|---:|---:|---:|---:|---:|---:|---|
+${rows.join("\n")}`;
 }
 
 function downloadResult(id, result) {
@@ -72,28 +66,35 @@ function downloadResult(id, result) {
   URL.revokeObjectURL(url);
 }
 
-function HistoryMessage({ item, scenario, index }) {
-  const [fullContent, setFullContent] = useState(null);
-
-  function toggleFullContent(event) {
-    setFullContent(event.currentTarget.open ? expandDay8PreviewMessage(item) : null);
-  }
+function ChatMessage({ item }) {
+  const [expanded, setExpanded] = useState(false);
+  const isLong = item.content.length > 1_200;
+  const preview = isLong ? `${item.content.slice(0, 900)}\n…` : item.content;
+  const roleLabel =
+    item.role === "user" ? "User" : item.role === "error" ? "Ошибка OpenRouter" : "Assistant";
+  const messageClass = item.role === "user" ? "user-message" : "assistant-message";
 
   return (
-    <div
-      className={`chat-message ${item.role === "user" ? "user-message" : "assistant-message"}`}
-      key={`${scenario}-${index}`}
-    >
-      <span className="chat-role">{item.role === "user" ? "User" : "Assistant"}</span>
-      <p>{item.content}</p>
-      {item.records > 1 && (
+    <div className={`chat-message ${messageClass}`}>
+      <span className="chat-role">{roleLabel}</span>
+      {item.role === "assistant" ? (
+        <div className="markdown-body">
+          <MarkdownContent>{item.content}</MarkdownContent>
+        </div>
+      ) : (
+        <p className={item.role === "error" ? "error-message" : undefined}>{preview}</p>
+      )}
+      {isLong && (
         <>
           <span className="chat-preview-note">
-            В API: {item.records} разных записей · {formatTokenCount(item.fullLength)} символов
+            {formatTokenCount(item.content.length)} символов · показано начало
           </span>
-          <details className="chat-message-expander" onToggle={toggleFullContent}>
-            <summary>{fullContent == null ? "Показать весь текст" : "Скрыть полный текст"}</summary>
-            {fullContent != null && <div className="chat-full-content">{fullContent}</div>}
+          <details
+            className="chat-message-expander"
+            onToggle={(event) => setExpanded(event.currentTarget.open)}
+          >
+            <summary>{expanded ? "Скрыть полный текст" : "Показать весь текст"}</summary>
+            {expanded && <div className="chat-full-content">{item.content}</div>}
           </details>
         </>
       )}
@@ -104,27 +105,50 @@ function HistoryMessage({ item, scenario, index }) {
 export function Day8({ hasApiKey, onOpenSettings }) {
   const [activeScenario, setActiveScenario] = useState("short");
   const [systemPrompt, setSystemPrompt] = useState(DEFAULT_DAY7_SYSTEM_PROMPT);
-  const [prompt, setPrompt] = useState(DEFAULT_DAY8_PROMPT);
   const [model, setModel] = useState(DEFAULT_MODEL);
   const [maxTokens, setMaxTokens] = useState(180);
   const [contextLimit, setContextLimit] = useState(DEFAULT_DAY8_CONTEXT_LIMIT);
   const [temperature, setTemperature] = useState(0.2);
-  const [results, setResults] = useState(EMPTY_RESULTS);
-  const [errors, setErrors] = useState(EMPTY_ERRORS);
-  const [loading, setLoading] = useState(EMPTY_LOADING);
+  const [messagesByScenario, setMessagesByScenario] = useState(() =>
+    emptyScenarioState(null),
+  );
+  const [drafts, setDrafts] = useState(initialDrafts);
+  const [results, setResults] = useState(() => emptyScenarioState(null));
+  const [loading, setLoading] = useState(() => emptyScenarioState(false));
   const chatEndRef = useRef(null);
 
+  const messages = messagesByScenario[activeScenario] ?? [];
+  const draft = drafts[activeScenario] ?? "";
   const scenario = DAY8_SCENARIOS[activeScenario];
   const result = results[activeScenario];
-  const historyPreview = buildDay8HistoryPreview(activeScenario);
-  const historyCharacters = historyPreview.reduce((total, item) => total + item.fullLength, 0);
   const anyLoading = Object.values(loading).some(Boolean);
   const allReady = Object.values(results).every(Boolean);
-  const hasChatResults =
-    Object.values(results).some(Boolean) || Object.values(errors).some(Boolean);
+
+  const tokenCounts = useMemo(() => {
+    const history = messages.filter((item) => item.role === "user" || item.role === "assistant");
+    const requestMessages = [
+      { role: "system", content: systemPrompt },
+      ...history,
+      { role: "user", content: draft },
+    ];
+    const estimatedHistory = history.length ? estimateMessagesTokens(history) : 0;
+    const estimatedInput = estimateMessagesTokens(requestMessages);
+
+    return {
+      current: estimateTextTokens(draft),
+      history: estimatedHistory,
+      input: estimatedInput,
+      withResponse: estimatedInput + Number(maxTokens || 0),
+    };
+  }, [draft, maxTokens, messages, systemPrompt]);
+
+  const exceedsLimit = tokenCounts.withResponse > Number(contextLimit);
+  const limitUsed = Number(contextLimit)
+    ? Math.min(100, Math.round((tokenCounts.withResponse / Number(contextLimit)) * 100))
+    : 0;
 
   useEffect(() => {
-    if (!loading[activeScenario] && !result && !errors[activeScenario]) {
+    if (messages.length === 0 && !loading[activeScenario]) {
       return undefined;
     }
 
@@ -132,28 +156,51 @@ export function Day8({ hasApiKey, onOpenSettings }) {
       chatEndRef.current?.scrollIntoView({ behavior: "smooth", block: "nearest" });
     });
     return () => cancelAnimationFrame(animationFrame);
-  }, [activeScenario, errors, loading, result]);
+  }, [activeScenario, loading, messages.length]);
 
-  function clearResults() {
-    setResults(EMPTY_RESULTS);
-    setErrors(EMPTY_ERRORS);
+  function updateDraft(value) {
+    setDrafts((current) => ({ ...current, [activeScenario]: value }));
   }
 
-  function updateShared(setter, value) {
-    setter(value);
-    clearResults();
+  function resetSettings() {
+    setSystemPrompt(DEFAULT_DAY7_SYSTEM_PROMPT);
+    setModel(DEFAULT_MODEL);
+    setMaxTokens(180);
+    setContextLimit(DEFAULT_DAY8_CONTEXT_LIMIT);
+    setTemperature(0.2);
+  }
+
+  function clearAllHistory() {
+    setMessagesByScenario(emptyScenarioState(null));
+    setDrafts(initialDrafts());
+    setResults(emptyScenarioState(null));
+    setLoading(emptyScenarioState(false));
   }
 
   async function runScenario(id) {
+    const prompt = drafts[id]?.trim();
+    if (!prompt || loading[id]) {
+      return;
+    }
+
+    const previousMessages = messagesByScenario[id] ?? [];
+    const history = previousMessages
+      .filter((item) => item.role === "user" || item.role === "assistant")
+      .map(({ role, content }) => ({ role, content }));
+
     setLoading((current) => ({ ...current, [id]: true }));
     setResults((current) => ({ ...current, [id]: null }));
-    setErrors((current) => ({ ...current, [id]: "" }));
+    setMessagesByScenario((current) => ({
+      ...current,
+      [id]: [...(current[id] ?? []), { role: "user", content: prompt }],
+    }));
 
     try {
       const nextResult = await apiRequest("/api/day8/run", {
         method: "POST",
         body: JSON.stringify({
           scenario: id,
+          history,
           systemPrompt,
           prompt,
           model,
@@ -162,27 +209,46 @@ export function Day8({ hasApiKey, onOpenSettings }) {
           temperature: Number(temperature),
         }),
       });
+
       setResults((current) => ({ ...current, [id]: nextResult }));
+      if (nextResult.failed) {
+        setMessagesByScenario((current) => ({
+          ...current,
+          [id]: [
+            ...(current[id] ?? []),
+            {
+              role: "error",
+              content: `LLM не сформировала ответ. Запрос отправлен, но генерация не началась: ${nextResult.reason}`,
+            },
+          ],
+        }));
+        return;
+      }
+
+      setMessagesByScenario((current) => ({
+        ...current,
+        [id]: [
+          ...(current[id] ?? []),
+          { role: "assistant", content: nextResult.answer || "Модель не вернула текст." },
+        ],
+      }));
+      const completedUserMessages = history.filter((item) => item.role === "user").length + 1;
+      setDrafts((current) => ({
+        ...current,
+        [id]: getDay8ScriptPrompt(id, completedUserMessages),
+      }));
     } catch (requestError) {
-      setErrors((current) => ({ ...current, [id]: requestError.message }));
+      setMessagesByScenario((current) => ({
+        ...current,
+        [id]: [
+          ...(current[id] ?? []),
+          { role: "error", content: `Запрос завершился ошибкой: ${requestError.message}` },
+        ],
+      }));
     } finally {
       setLoading((current) => ({ ...current, [id]: false }));
     }
   }
-
-  function resetAll() {
-    setSystemPrompt(DEFAULT_DAY7_SYSTEM_PROMPT);
-    setPrompt(DEFAULT_DAY8_PROMPT);
-    setModel(DEFAULT_MODEL);
-    setMaxTokens(180);
-    setContextLimit(DEFAULT_DAY8_CONTEXT_LIMIT);
-    setTemperature(0.2);
-    clearResults();
-  }
-
-  const limitUsed = result
-    ? Math.min(100, Math.round((result.tokenCounts.estimatedWithResponse / contextLimit) * 100))
-    : 0;
 
   return (
     <section className="experiment-card">
@@ -190,7 +256,7 @@ export function Day8({ hasApiKey, onOpenSettings }) {
         <div>
           <p className="eyebrow">День 8</p>
           <h2>Работа с токенами</h2>
-          <p className="muted">Сравни размер контекста, ответ, стоимость и переполнение.</p>
+          <p className="muted">Проведи три диалога и наблюдай рост контекста до отправки.</p>
         </div>
         <span className={hasApiKey ? "status ready" : "status missing"}>
           {hasApiKey ? "Ключ готов" : "Нет ключа"}
@@ -199,7 +265,7 @@ export function Day8({ hasApiKey, onOpenSettings }) {
 
       {!hasApiKey && (
         <div className="notice">
-          Для короткого и длинного сценариев нужен ключ OpenRouter.
+          Для запросов нужен ключ OpenRouter.
           <button className="text-button" onClick={onOpenSettings} type="button">
             Открыть настройки
           </button>
@@ -211,20 +277,19 @@ export function Day8({ hasApiKey, onOpenSettings }) {
       <details className="agent-architecture">
         <summary>Как считается и что произойдёт при переполнении</summary>
         <p>
-          До API приложение оценивает токены по размеру UTF-8-текста и добавляет служебные
-          токены сообщений. Точное разбиение зависит от токенизатора выбранной модели,
-          поэтому после ответа показываются фактические счётчики OpenRouter.
+          До API приложение приблизительно считает токены по размеру UTF-8-текста. После
+          успешного ответа рядом появляются точные значения OpenRouter.
         </p>
         <p>
-          Для дефолтной Qwen-модели указан лимит <strong>262 144</strong> токена.
-          Переполненный сценарий создаёт ещё более крупную историю и действительно отправляет
-          её в OpenRouter, чтобы показать ответ или ошибку провайдера. Значение можно изменить.
+          В сценарии переполнения сначала отправляется короткий факт. Затем в поле ввода
+          подставляется вопрос с большим stack trace. Он отправляется целиком: провайдер может
+          отклонить запрос до генерации ответа.
         </p>
       </details>
 
       <div className="notice">
-        Сценарий «Переполнение» действительно отправляет большой контекст: локальная оценка
-        около 365 000 токенов. Возможны списание примерно $0.015, ошибка провайдера или таймаут.
+        Большой stack trace создаётся только после ответа на первое сообщение сценария
+        «Переполнение». Перед второй отправкой красный индикатор явно покажет превышение лимита.
       </div>
 
       <div className="experiment-form shared-task">
@@ -232,7 +297,7 @@ export function Day8({ hasApiKey, onOpenSettings }) {
           Системная инструкция агента
           <textarea
             disabled={anyLoading}
-            onChange={(event) => updateShared(setSystemPrompt, event.target.value)}
+            onChange={(event) => setSystemPrompt(event.target.value)}
             rows="4"
             value={systemPrompt}
           />
@@ -242,7 +307,7 @@ export function Day8({ hasApiKey, onOpenSettings }) {
             Модель OpenRouter
             <input
               disabled={anyLoading}
-              onChange={(event) => updateShared(setModel, event.target.value)}
+              onChange={(event) => setModel(event.target.value)}
               value={model}
             />
           </label>
@@ -252,7 +317,7 @@ export function Day8({ hasApiKey, onOpenSettings }) {
               disabled={anyLoading}
               max="8192"
               min="1"
-              onChange={(event) => updateShared(setMaxTokens, event.target.value)}
+              onChange={(event) => setMaxTokens(event.target.value)}
               type="number"
               value={maxTokens}
             />
@@ -263,7 +328,7 @@ export function Day8({ hasApiKey, onOpenSettings }) {
               disabled={anyLoading}
               max="1000000"
               min="256"
-              onChange={(event) => updateShared(setContextLimit, event.target.value)}
+              onChange={(event) => setContextLimit(event.target.value)}
               type="number"
               value={contextLimit}
             />
@@ -274,7 +339,7 @@ export function Day8({ hasApiKey, onOpenSettings }) {
               disabled={anyLoading}
               max="2"
               min="0"
-              onChange={(event) => updateShared(setTemperature, event.target.value)}
+              onChange={(event) => setTemperature(event.target.value)}
               step="0.1"
               type="number"
               value={temperature}
@@ -282,26 +347,11 @@ export function Day8({ hasApiKey, onOpenSettings }) {
           </label>
         </div>
         <div className="button-row memory-actions">
-          <div className="result-actions">
-            <button className="secondary-button" disabled={anyLoading} onClick={resetAll} type="button">
-              Сбросить настройки
-            </button>
-            <button
-              className="secondary-button"
-              disabled={anyLoading || !hasChatResults}
-              onClick={clearResults}
-              type="button"
-            >
-              Очистить всю историю
-            </button>
-          </div>
-          <button
-            className="primary-button"
-            disabled={anyLoading || !hasApiKey || temperature === ""}
-            onClick={() => Object.keys(DAY8_SCENARIOS).forEach(runScenario)}
-            type="button"
-          >
-            {anyLoading ? "Сценарии выполняются…" : "Запустить все сценарии"}
+          <button className="secondary-button" disabled={anyLoading} onClick={resetSettings} type="button">
+            Сбросить настройки
+          </button>
+          <button className="secondary-button" disabled={anyLoading} onClick={clearAllHistory} type="button">
+            Очистить всю историю
           </button>
         </div>
       </div>
@@ -325,59 +375,28 @@ export function Day8({ hasApiKey, onOpenSettings }) {
       <section className="variant-panel" id="day8-scenario-panel" role="tabpanel">
         <div className="variant-heading">
           <h3>{scenario.title}</h3>
-          <p className="muted">
-            {scenario.description} В истории {historyPreview.length} сообщений и {formatTokenCount(historyCharacters)} символов.
-          </p>
+          <p className="muted">{scenario.description}</p>
         </div>
 
         <section className="chat-shell day8-chat" aria-label={`Сообщения сценария: ${scenario.title}`}>
+          <div className="system-context">
+            <strong>System:</strong> {systemPrompt}
+          </div>
           <div className="chat-list" aria-live="polite">
-            <div className="chat-message system-message">
-              <span className="chat-role">System</span>
-              <p>{systemPrompt}</p>
-            </div>
+            {messages.length === 0 && (
+              <div className="empty-chat-state">
+                Диалог пока пуст. Первое учебное сообщение уже находится в поле ввода.
+              </div>
+            )}
 
-            {historyPreview.map((item, index) => (
-              <HistoryMessage
-                index={index}
-                item={item}
-                key={`${activeScenario}-${index}`}
-                scenario={activeScenario}
-              />
+            {messages.map((item, index) => (
+              <ChatMessage item={item} key={`${activeScenario}-${index}`} />
             ))}
-
-            <div className="chat-message user-message current-request-message">
-              <span className="chat-role">Текущий User-запрос</span>
-              <p>{prompt || "Пустой запрос"}</p>
-            </div>
 
             {loading[activeScenario] && (
               <div className="chat-message assistant-message">
                 <span className="chat-role">Assistant</span>
-                <p className="muted">OpenRouter обрабатывает весь показанный контекст…</p>
-              </div>
-            )}
-
-            {errors[activeScenario] && (
-              <div className="chat-message assistant-message">
-                <span className="chat-role">Ошибка приложения</span>
-                <p className="error-message">{errors[activeScenario]}</p>
-              </div>
-            )}
-
-            {result && (
-              <div className="chat-message assistant-message">
-                <span className="chat-role">{result.failed ? "Ошибка OpenRouter" : "Assistant"}</span>
-                {result.failed ? (
-                  <div className="error-message">
-                    <strong>LLM не сформировала ответ.</strong>
-                    <p>Запрос отправлен, но генерация не началась: {result.reason}</p>
-                  </div>
-                ) : (
-                  <div className="markdown-body">
-                    <MarkdownContent>{result.answer || "Модель не вернула текст."}</MarkdownContent>
-                  </div>
-                )}
+                <p className="muted">OpenRouter обрабатывает отправленный контекст…</p>
               </div>
             )}
             <div ref={chatEndRef} />
@@ -391,19 +410,52 @@ export function Day8({ hasApiKey, onOpenSettings }) {
             }}
           >
             <label>
-              Текущий запрос для всех сценариев
+              Сообщение пользователя
               <textarea
-                disabled={anyLoading}
-                onChange={(event) => updateShared(setPrompt, event.target.value)}
-                rows="4"
-                value={prompt}
+                disabled={loading[activeScenario]}
+                onChange={(event) => updateDraft(event.target.value)}
+                rows={activeScenario === "overflow" ? 7 : 4}
+                value={draft}
               />
             </label>
+
+            <section className={`token-live-panel ${exceedsLimit ? "overflow-result" : ""}`}>
+              <div className="token-panel-heading">
+                <strong>Подсчёт токенов до отправки</strong>
+                <span>{exceedsLimit ? "Лимит превышен" : `${limitUsed}% окна`}</span>
+              </div>
+              <div className="context-meter" aria-label={`Использовано ${limitUsed}% контекстного окна`}>
+                <span style={{ width: `${limitUsed}%` }} />
+              </div>
+              <div className="token-grid">
+                <div><span>Текущий запрос</span><strong>≈ {formatTokenCount(tokenCounts.current)}</strong></div>
+                <div><span>Вся история</span><strong>≈ {formatTokenCount(tokenCounts.history)}</strong></div>
+                <div><span>Весь вход</span><strong>≈ {formatTokenCount(tokenCounts.input)}</strong></div>
+                <div><span>Резерв ответа</span><strong>{formatTokenCount(Number(maxTokens || 0))}</strong></div>
+                <div><span>Вход + резерв</span><strong>≈ {formatTokenCount(tokenCounts.withResponse)}</strong></div>
+                <div><span>Лимит модели</span><strong>{formatTokenCount(Number(contextLimit || 0))}</strong></div>
+                <div><span>Последний ответ API</span><strong>{formatTokenCount(result?.tokenCounts?.actualResponse)}</strong></div>
+                <div><span>Последний вход API</span><strong>{formatTokenCount(result?.tokenCounts?.actualInput)}</strong></div>
+              </div>
+              {exceedsLimit && (
+                <p className="error-message">
+                  Этот запрос всё равно будет отправлен. Если OpenRouter отклонит его до
+                  генерации, вместо ответа LLM в чате появится явная ошибка.
+                </p>
+              )}
+            </section>
+
             <div className="button-row">
-              <span className="field-hint">Отправятся system + история выше + этот запрос.</span>
+              <span className="field-hint">Отправятся system + сообщения чата + этот текст.</span>
               <button
                 className="primary-button"
-                disabled={loading[activeScenario] || !hasApiKey || !prompt.trim() || temperature === ""}
+                disabled={
+                  loading[activeScenario] ||
+                  !hasApiKey ||
+                  !draft.trim() ||
+                  !model.trim() ||
+                  temperature === ""
+                }
                 type="submit"
               >
                 {loading[activeScenario] ? "Отправляется…" : `Отправить: ${scenario.title}`}
@@ -416,20 +468,12 @@ export function Day8({ hasApiKey, onOpenSettings }) {
           <section className={`result-card ${result.exceedsLimit ? "overflow-result" : ""}`} aria-live="polite">
             <div className="result-heading">
               <div>
-                <p className="eyebrow">Результат сценария</p>
+                <p className="eyebrow">Последний запрос</p>
                 <h3>{result.failed ? "OpenRouter вернул ошибку" : result.model}</h3>
               </div>
               <div className="result-actions">
-                <span
-                  className={`accuracy-badge ${
-                    result.failed ? "incorrect" : result.exceedsLimit ? "unknown" : "correct"
-                  }`}
-                >
-                  {result.failed
-                    ? "Ошибка после отправки"
-                    : result.exceedsLimit
-                      ? "Отправлено сверх лимита"
-                      : "Ответ получен"}
+                <span className={`accuracy-badge ${result.failed ? "incorrect" : "correct"}`}>
+                  {result.failed ? "Ответ LLM не создан" : "Ответ получен"}
                 </span>
                 <button
                   className="secondary-button"
@@ -441,29 +485,8 @@ export function Day8({ hasApiKey, onOpenSettings }) {
               </div>
             </div>
 
-            <div className="context-meter" aria-label={`Использовано ${limitUsed}% контекстного окна`}>
-              <span style={{ width: `${limitUsed}%` }} />
-            </div>
-            <p className="field-hint">
-              Оценка входа и резерва ответа: {formatTokenCount(result.tokenCounts.estimatedWithResponse)} из {formatTokenCount(result.tokenCounts.contextLimit)} токенов.
-            </p>
-
-            <div className="token-grid">
-              <div><span>Текущий запрос</span><strong>≈ {formatTokenCount(result.tokenCounts.estimatedCurrentMessage)}</strong></div>
-              <div><span>Вся история</span><strong>≈ {formatTokenCount(result.tokenCounts.estimatedHistory)}</strong></div>
-              <div><span>Весь вход</span><strong>≈ {formatTokenCount(result.tokenCounts.estimatedInput)}</strong></div>
-              <div><span>Ответ модели</span><strong>{formatTokenCount(result.tokenCounts.actualResponse)}</strong></div>
-            </div>
-
-            {!result.failed && (
-              <>
-                <ResultMetrics result={result} />
-                <p className="comparison-summary">
-                  OpenRouter насчитал во входе <strong>{formatTokenCount(result.tokenCounts.actualInput)}</strong>,
-                  в ответе <strong>{formatTokenCount(result.tokenCounts.actualResponse)}</strong> токенов.
-                </p>
-              </>
-            )}
+            {!result.failed && <ResultMetrics result={result} />}
+            {result.failed && <p className="error-message">{result.reason}</p>}
             <RequestDetails
               request={result.httpRequest}
               title={result.failed ? "Технические детали отправленного запроса" : undefined}
@@ -474,7 +497,7 @@ export function Day8({ hasApiKey, onOpenSettings }) {
 
       {allReady && (
         <section className="result-card final-comparison" aria-live="polite">
-          <p className="eyebrow">Итоговое сравнение</p>
+          <p className="eyebrow">Итоговое сравнение последних запросов</p>
           <div className="markdown-body">
             <MarkdownContent>{buildComparison(results)}</MarkdownContent>
           </div>
