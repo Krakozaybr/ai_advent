@@ -19,6 +19,10 @@ import {
   DEFAULT_DAY8_CONTEXT_LIMIT,
   getDay8ScriptPrompt,
 } from "../shared/day8.js";
+import {
+  DEFAULT_DAY9_SYSTEM_PROMPT,
+  getDay9ScriptPrompt,
+} from "../shared/day9.js";
 
 function createMemorySettingsStore(initialApiKey = "") {
   let apiKey = initialApiKey;
@@ -787,6 +791,97 @@ test("day 8 enables OpenRouter compression for the overflow request", async () =
       { id: "context-compression" },
     ]);
     assert.match(overflowResult.httpRequest.note, /отправлен в OpenRouter/u);
+  });
+});
+
+test("day 9 replaces old messages with a separate summary and keeps the last N", async () => {
+  const calls = [];
+  const requestLlm = async (request) => {
+    calls.push(request);
+    const isSummary = request.messages[0].content.includes("обновляешь краткую память");
+    const isCompressed = request.messages.some((message) =>
+      message.content.startsWith("Summary старой части диалога:"),
+    );
+
+    if (isSummary) {
+      return {
+        answer: "- Проект называется AI Advent.\n- Приложение запускается локально и содержит 10 вкладок.",
+        model: request.model,
+        usage: { prompt_tokens: 80, completion_tokens: 24, total_tokens: 104 },
+        cost: 0.00001,
+        latencyMs: 20,
+        httpRequest: buildOpenRouterRequest(request),
+      };
+    }
+
+    return {
+      answer: isCompressed
+        ? "AI Advent: локальный проект с 10 вкладками, OpenRouter и Qwen."
+        : "AI Advent: локальный проект с 10 вкладками, OpenRouter и Qwen.",
+      model: request.model,
+      usage: isCompressed
+        ? { prompt_tokens: 120, completion_tokens: 20, total_tokens: 140 }
+        : { prompt_tokens: 210, completion_tokens: 20, total_tokens: 230 },
+      cost: 0.00002,
+      latencyMs: 30,
+      httpRequest: buildOpenRouterRequest(request),
+    };
+  };
+  const history = [
+    { role: "user", content: getDay9ScriptPrompt(0) },
+    { role: "assistant", content: "Запомнил название проекта." },
+    { role: "user", content: getDay9ScriptPrompt(1) },
+    { role: "assistant", content: "Запомнил способ запуска и число вкладок." },
+    { role: "user", content: getDay9ScriptPrompt(2) },
+    { role: "assistant", content: "Запомнил OpenRouter и Qwen." },
+  ];
+  const app = createApp({
+    settingsStore: createMemorySettingsStore("test-secret-key"),
+    requestLlm,
+    environmentApiKey: "",
+  });
+
+  await withServer(app, async (origin) => {
+    const response = await fetch(`${origin}/api/day9/compare`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        systemPrompt: DEFAULT_DAY9_SYSTEM_PROMPT,
+        message: getDay9ScriptPrompt(3),
+        model: "qwen/test",
+        maxTokens: 300,
+        summaryMaxTokens: 220,
+        keepLast: 4,
+        temperature: 0.2,
+        fullHistory: history,
+        compressedHistory: history,
+        summary: "",
+        summarizedMessageCount: 0,
+      }),
+    });
+    const result = await response.json();
+
+    assert.equal(response.status, 200);
+    assert.deepEqual(result.agent, { name: "ContextCompressionAgent", type: "agent" });
+    assert.equal(calls.length, 3);
+    assert.equal(calls[0].temperature, 0);
+    assert.equal(calls[1].messages.length, 8);
+    assert.equal(calls[2].messages.length, 7);
+    assert.equal(result.summary.summarizedNow, 2);
+    assert.equal(result.summary.summarizedMessageCount, 2);
+    assert.equal(result.summary.keptRecentMessages, 4);
+    assert.match(result.summary.text, /AI Advent/u);
+    assert.equal(result.tokenCounts.actualFullInput, 210);
+    assert.equal(result.tokenCounts.actualCompressedInput, 120);
+    assert.equal(result.tokenCounts.actualSaved, 90);
+    assert.equal(
+      result.responses.compressed.httpRequest.json.messages[1].role,
+      "system",
+    );
+    assert.match(
+      result.responses.compressed.httpRequest.json.messages[1].content,
+      /Summary старой части диалога/u,
+    );
   });
 });
 

@@ -5,9 +5,27 @@ import { runDay3Method } from "./day3.mjs";
 import { runDay4Experiment } from "./day4.mjs";
 import { runDay5Experiment } from "./day5.mjs";
 import { runDay8Experiment } from "./day8.mjs";
+import { ContextCompressionAgent } from "./day9.mjs";
 import { askOpenRouter } from "./openrouter.mjs";
 import { createSettingsStore } from "./settings.mjs";
 import { DAY7_CONVERSATION_ID } from "../shared/day7.js";
+
+function isMessageHistory(value) {
+  return (
+    Array.isArray(value) &&
+    value.length <= 200 &&
+    value.every(
+      (message) =>
+        message &&
+        (message.role === "user" || message.role === "assistant") &&
+        typeof message.content === "string",
+    )
+  );
+}
+
+function normalizeHistory(history) {
+  return history.map(({ role, content }) => ({ role, content }));
+}
 
 export function createApp({
   settingsStore = createSettingsStore(),
@@ -443,6 +461,87 @@ export function createApp({
       temperature,
     });
     return response.json(result);
+  });
+
+  app.post("/api/day9/compare", async (request, response) => {
+    const systemPrompt =
+      typeof request.body?.systemPrompt === "string" ? request.body.systemPrompt.trim() : "";
+    const message = typeof request.body?.message === "string" ? request.body.message.trim() : "";
+    const model = typeof request.body?.model === "string" ? request.body.model.trim() : "";
+    const summary = typeof request.body?.summary === "string" ? request.body.summary.trim() : "";
+    const fullHistory = request.body?.fullHistory;
+    const compressedHistory = request.body?.compressedHistory;
+    const maxTokens = Number(request.body?.maxTokens);
+    const summaryMaxTokens = Number(request.body?.summaryMaxTokens);
+    const keepLast = Number(request.body?.keepLast);
+    const summarizedMessageCount = Number(request.body?.summarizedMessageCount);
+    const rawTemperature = request.body?.temperature;
+    const temperature = Number(rawTemperature);
+
+    if (!systemPrompt || !message || !model) {
+      return response.status(400).json({
+        error: "Заполни системную инструкцию, сообщение и модель.",
+      });
+    }
+    if (!isMessageHistory(fullHistory) || !isMessageHistory(compressedHistory)) {
+      return response.status(400).json({
+        error: "Каждая история должна содержать не более 200 сообщений user/assistant.",
+      });
+    }
+    if (!Number.isInteger(maxTokens) || maxTokens < 1 || maxTokens > 8192) {
+      return response.status(400).json({ error: "maxTokens должен быть целым числом от 1 до 8192." });
+    }
+    if (!Number.isInteger(summaryMaxTokens) || summaryMaxTokens < 1 || summaryMaxTokens > 2048) {
+      return response.status(400).json({
+        error: "Лимит summary должен быть целым числом от 1 до 2048.",
+      });
+    }
+    if (!Number.isInteger(keepLast) || keepLast < 1 || keepLast > 40) {
+      return response.status(400).json({ error: "N должен быть целым числом от 1 до 40." });
+    }
+    if (
+      !Number.isInteger(summarizedMessageCount) ||
+      summarizedMessageCount < 0 ||
+      summarizedMessageCount > compressedHistory.length
+    ) {
+      return response.status(400).json({ error: "Некорректная позиция summary в истории." });
+    }
+    if (
+      rawTemperature == null ||
+      rawTemperature === "" ||
+      !Number.isFinite(temperature) ||
+      temperature < 0 ||
+      temperature > 2
+    ) {
+      return response.status(400).json({ error: "temperature должна быть числом от 0 до 2." });
+    }
+
+    const apiKey = await resolveApiKey();
+    if (!apiKey) {
+      return response.status(401).json({ error: "Сначала добавь API-ключ OpenRouter в настройках." });
+    }
+
+    const agent = new ContextCompressionAgent({
+      apiKey,
+      fullHistory: normalizeHistory(fullHistory),
+      compressedHistory: normalizeHistory(compressedHistory),
+      keepLast,
+      maxTokens,
+      model,
+      requestLlm,
+      summarizedMessageCount,
+      summary,
+      summaryMaxTokens,
+      systemPrompt,
+      temperature,
+    });
+    const result = await agent.compare(message);
+
+    return response.json({
+      agent: { name: "ContextCompressionAgent", type: "agent" },
+      input: message,
+      ...result,
+    });
   });
 
   app.use((error, _request, response, _next) => {
