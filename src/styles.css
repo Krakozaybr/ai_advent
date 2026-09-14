@@ -769,6 +769,62 @@ h1 {
   background: #f8f6ef;
 }
 
+.day10-settings-grid {
+  display: grid;
+  grid-template-columns: minmax(220px, 1.5fr) repeat(4, minmax(120px, 0.55fr));
+  gap: 14px;
+}
+
+.day10-facts-panel,
+.day10-branch-panel {
+  display: grid;
+  gap: 14px;
+  margin-bottom: 20px;
+  padding: 18px;
+  border: 1px solid #c8d5c9;
+  border-radius: 16px;
+  background: #f0f6ee;
+}
+
+.day10-facts-panel textarea {
+  min-height: 180px;
+  font-family: "SFMono-Regular", Consolas, "Liberation Mono", monospace;
+  font-size: 0.78rem;
+}
+
+.branch-tree {
+  display: grid;
+  justify-items: start;
+  gap: 8px;
+}
+
+.branch-children {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  margin-left: 24px;
+  padding: 10px 0 0 18px;
+  border-left: 2px solid #a9bfad;
+}
+
+.branch-node {
+  min-height: 38px;
+  padding: 8px 13px;
+  border: 1px solid #a9bfad;
+  border-radius: 999px;
+  color: #35533c;
+  background: #fffefa;
+  font: inherit;
+  font-size: 0.78rem;
+  font-weight: 750;
+  cursor: pointer;
+}
+
+.branch-node.active {
+  color: #fff;
+  background: #35533c;
+}
+
 .context-meter {
   height: 12px;
   margin: 20px 0 8px;
@@ -1061,6 +1117,7 @@ pre {
   .day8-settings-grid,
   .day9-settings-grid,
   .day9-answer-comparison,
+  .day10-settings-grid,
   .token-grid {
     grid-template-columns: 1fr;
   }

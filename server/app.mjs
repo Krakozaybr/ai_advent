@@ -6,6 +6,7 @@ import { runDay4Experiment } from "./day4.mjs";
 import { runDay5Experiment } from "./day5.mjs";
 import { runDay8Experiment } from "./day8.mjs";
 import { ContextCompressionAgent } from "./day9.mjs";
+import { ContextStrategyAgent } from "./day10.mjs";
 import { askOpenRouter } from "./openrouter.mjs";
 import { createSettingsStore } from "./settings.mjs";
 import { DAY7_CONVERSATION_ID } from "../shared/day7.js";
@@ -25,6 +26,23 @@ function isMessageHistory(value) {
 
 function normalizeHistory(history) {
   return history.map(({ role, content }) => ({ role, content }));
+}
+
+function normalizeFacts(value) {
+  if (!value || Array.isArray(value) || typeof value !== "object") {
+    return null;
+  }
+  const entries = Object.entries(value);
+  if (
+    entries.length > 30 ||
+    entries.some(
+      ([key, fact]) =>
+        !key.trim() || !["string", "number", "boolean"].includes(typeof fact),
+    )
+  ) {
+    return null;
+  }
+  return Object.fromEntries(entries.map(([key, fact]) => [key.trim(), String(fact)]));
 }
 
 export function createApp({
@@ -539,6 +557,89 @@ export function createApp({
 
     return response.json({
       agent: { name: "ContextCompressionAgent", type: "agent" },
+      input: message,
+      ...result,
+    });
+  });
+
+  app.post("/api/day10/chat", async (request, response) => {
+    const strategy = request.body?.strategy;
+    const systemPrompt =
+      typeof request.body?.systemPrompt === "string" ? request.body.systemPrompt.trim() : "";
+    const message = typeof request.body?.message === "string" ? request.body.message.trim() : "";
+    const model = typeof request.body?.model === "string" ? request.body.model.trim() : "";
+    const branchId =
+      typeof request.body?.branchId === "string" ? request.body.branchId.trim() : "main";
+    const history = request.body?.history;
+    const facts = normalizeFacts(request.body?.facts);
+    const maxTokens = Number(request.body?.maxTokens);
+    const factsMaxTokens = Number(request.body?.factsMaxTokens);
+    const keepLast = Number(request.body?.keepLast);
+    const rawTemperature = request.body?.temperature;
+    const temperature = Number(rawTemperature);
+
+    if (!Object.hasOwn({ sliding: true, facts: true, branching: true }, strategy)) {
+      return response.status(400).json({ error: "Неизвестная стратегия Дня 10." });
+    }
+    if (!systemPrompt || !message || !model || !branchId) {
+      return response.status(400).json({
+        error: "Заполни системную инструкцию, сообщение, модель и ветку.",
+      });
+    }
+    if (!isMessageHistory(history)) {
+      return response.status(400).json({
+        error: "История должна содержать не более 200 сообщений user/assistant.",
+      });
+    }
+    if (facts == null) {
+      return response.status(400).json({
+        error: "Facts должны быть JSON-объектом максимум из 30 простых значений.",
+      });
+    }
+    if (!Number.isInteger(maxTokens) || maxTokens < 1 || maxTokens > 8192) {
+      return response.status(400).json({ error: "maxTokens должен быть целым числом от 1 до 8192." });
+    }
+    if (!Number.isInteger(factsMaxTokens) || factsMaxTokens < 1 || factsMaxTokens > 2048) {
+      return response.status(400).json({
+        error: "Лимит facts должен быть целым числом от 1 до 2048.",
+      });
+    }
+    if (!Number.isInteger(keepLast) || keepLast < 1 || keepLast > 40) {
+      return response.status(400).json({ error: "N должен быть целым числом от 1 до 40." });
+    }
+    if (
+      rawTemperature == null ||
+      rawTemperature === "" ||
+      !Number.isFinite(temperature) ||
+      temperature < 0 ||
+      temperature > 2
+    ) {
+      return response.status(400).json({ error: "temperature должна быть числом от 0 до 2." });
+    }
+
+    const apiKey = await resolveApiKey();
+    if (!apiKey) {
+      return response.status(401).json({ error: "Сначала добавь API-ключ OpenRouter в настройках." });
+    }
+
+    const agent = new ContextStrategyAgent({
+      apiKey,
+      facts,
+      factsMaxTokens,
+      history: normalizeHistory(history),
+      keepLast,
+      maxTokens,
+      model,
+      requestLlm,
+      strategy,
+      systemPrompt,
+      temperature,
+    });
+    const result = await agent.respond(message);
+
+    return response.json({
+      agent: { name: "ContextStrategyAgent", type: "agent" },
+      branchId,
       input: message,
       ...result,
     });

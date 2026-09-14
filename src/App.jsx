@@ -10,6 +10,7 @@ import { Day6 } from "./Day6.jsx";
 import { Day7 } from "./Day7.jsx";
 import { Day8 } from "./Day8.jsx";
 import { Day9 } from "./Day9.jsx";
+import { Day10 } from "./Day10.jsx";
 import { SettingsPanel } from "./SettingsPanel.jsx";
 
 const DAY_COMPONENTS = {
@@ -22,6 +23,7 @@ const DAY_COMPONENTS = {
   7: Day7,
   8: Day8,
   9: Day9,
+  10: Day10,
 };
 
 export function App() {
@@ -44,7 +46,7 @@ export function App() {
           <p className="lead">От первого запроса к стратегиям управления контекстом.</p>
         </div>
         <div className="header-actions">
-          <span className="stage-badge">Готовы Дни 1–9</span>
+          <span className="stage-badge">Готовы Дни 1–10</span>
           <button
             className="settings-button"
             onClick={() => setShowSettings((value) => !value)}

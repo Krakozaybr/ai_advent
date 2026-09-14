@@ -23,6 +23,10 @@ import {
   DEFAULT_DAY9_SYSTEM_PROMPT,
   getDay9ScriptPrompt,
 } from "../shared/day9.js";
+import {
+  DEFAULT_DAY10_SYSTEM_PROMPT,
+  getDay10ScriptPrompt,
+} from "../shared/day10.js";
 
 function createMemorySettingsStore(initialApiKey = "") {
   let apiKey = initialApiKey;
@@ -882,6 +886,102 @@ test("day 9 replaces old messages with a separate summary and keeps the last N",
       result.responses.compressed.httpRequest.json.messages[1].content,
       /Summary старой части диалога/u,
     );
+  });
+});
+
+test("day 10 builds different contexts for sliding, facts and branching", async () => {
+  const calls = [];
+  const requestLlm = async (request) => {
+    calls.push(request);
+    const isFactExtraction = request.messages[0].content.includes("Sticky Facts агента");
+    if (isFactExtraction) {
+      return {
+        answer: "```json\n{\"project\":\"AI Advent\",\"budget\":\"50 долларов\"}\n```",
+        model: request.model,
+        usage: { prompt_tokens: 55, completion_tokens: 18, total_tokens: 73 },
+        cost: 0.00001,
+        latencyMs: 15,
+        httpRequest: buildOpenRouterRequest(request),
+      };
+    }
+    return {
+      answer: "Требование принято.",
+      model: request.model,
+      usage: { prompt_tokens: request.messages.length * 20, completion_tokens: 8, total_tokens: request.messages.length * 20 + 8 },
+      cost: 0.00002,
+      latencyMs: 25,
+      httpRequest: buildOpenRouterRequest(request),
+    };
+  };
+  const history = Array.from({ length: 3 }, (_, index) => [
+    { role: "user", content: getDay10ScriptPrompt("sliding", index) },
+    { role: "assistant", content: `Запомнил требование ${index + 1}.` },
+  ]).flat();
+  const app = createApp({
+    settingsStore: createMemorySettingsStore("test-secret-key"),
+    requestLlm,
+    environmentApiKey: "",
+  });
+  const baseBody = {
+    branchId: "main",
+    systemPrompt: DEFAULT_DAY10_SYSTEM_PROMPT,
+    message: getDay10ScriptPrompt("sliding", 3),
+    model: "qwen/test",
+    keepLast: 4,
+    maxTokens: 320,
+    factsMaxTokens: 260,
+    temperature: 0.2,
+    history,
+    facts: {},
+  };
+
+  await withServer(app, async (origin) => {
+    const slidingResponse = await fetch(`${origin}/api/day10/chat`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ ...baseBody, strategy: "sliding" }),
+    });
+    const sliding = await slidingResponse.json();
+
+    assert.equal(slidingResponse.status, 200);
+    assert.equal(sliding.strategy, "sliding");
+    assert.equal(sliding.context.totalHistoryMessages, 6);
+    assert.equal(sliding.context.sentHistoryMessages, 4);
+    assert.equal(calls[0].messages.length, 6);
+    assert.ok(sliding.tokenCounts.estimatedSentInput < sliding.tokenCounts.estimatedFullInput);
+
+    const factsResponse = await fetch(`${origin}/api/day10/chat`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ ...baseBody, strategy: "facts" }),
+    });
+    const facts = await factsResponse.json();
+
+    assert.equal(factsResponse.status, 200);
+    assert.equal(facts.strategy, "facts");
+    assert.deepEqual(facts.facts, { project: "AI Advent", budget: "50 долларов" });
+    assert.equal(calls[1].temperature, 0);
+    assert.equal(calls[2].messages.length, 7);
+    assert.match(calls[2].messages[1].content, /Sticky Facts/u);
+    assert.equal(facts.context.factsCount, 2);
+
+    const branchingResponse = await fetch(`${origin}/api/day10/chat`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        ...baseBody,
+        strategy: "branching",
+        branchId: "branch-a",
+      }),
+    });
+    const branching = await branchingResponse.json();
+
+    assert.equal(branchingResponse.status, 200);
+    assert.equal(branching.strategy, "branching");
+    assert.equal(branching.branchId, "branch-a");
+    assert.equal(branching.context.sentHistoryMessages, history.length);
+    assert.equal(calls[3].messages.length, history.length + 2);
+    assert.equal(branching.tokenCounts.estimatedSaved, 0);
   });
 });
 
