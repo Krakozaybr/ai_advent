@@ -8,11 +8,14 @@ import { runDay8Experiment } from "./day8.mjs";
 import { ContextCompressionAgent } from "./day9.mjs";
 import { ContextStrategyAgent } from "./day10.mjs";
 import { MemoryLayerAgent } from "./day11.mjs";
+import { PersonalizedAgent } from "./day12.mjs";
 import { createMemoryStore } from "./memory-store.mjs";
 import { askOpenRouter } from "./openrouter.mjs";
+import { createProfileStore } from "./profile-store.mjs";
 import { createSettingsStore } from "./settings.mjs";
 import { DAY7_CONVERSATION_ID } from "../shared/day7.js";
 import { DAY11_MEMORY_LAYERS, DAY11_SCOPE_ID } from "../shared/day11.js";
+import { DAY12_DEFAULT_PROFILES, DAY12_SCOPE_ID } from "../shared/day12.js";
 
 function isMessageHistory(value) {
   return (
@@ -52,12 +55,14 @@ export function createApp({
   settingsStore = createSettingsStore(),
   conversationStore,
   memoryStore,
+  profileStore,
   requestLlm = askOpenRouter,
   environmentApiKey = process.env.OPENROUTER_API_KEY || "",
 } = {}) {
   const app = express();
   let resolvedConversationStore = conversationStore;
   let resolvedMemoryStore = memoryStore;
+  let resolvedProfileStore = profileStore;
 
   function getConversationStore() {
     if (!resolvedConversationStore) {
@@ -71,6 +76,13 @@ export function createApp({
       resolvedMemoryStore = createMemoryStore();
     }
     return resolvedMemoryStore;
+  }
+
+  function getProfileStore() {
+    if (!resolvedProfileStore) {
+      resolvedProfileStore = createProfileStore();
+    }
+    return resolvedProfileStore;
   }
 
   async function resolveApiKey() {
@@ -746,6 +758,102 @@ export function createApp({
       agent: { name: "MemoryLayerAgent", type: "agent" },
       input: message,
       state: store.getState(DAY11_SCOPE_ID),
+      ...result,
+    });
+  });
+
+  app.get("/api/day12/state", (_request, response) => {
+    const profiles = getProfileStore().ensureDefaults(DAY12_SCOPE_ID, DAY12_DEFAULT_PROFILES);
+    const memory = getMemoryStore().getState(DAY11_SCOPE_ID);
+    response.json({
+      profiles,
+      memory: {
+        messages: memory.messages.length,
+        items: Object.values(memory.layers).reduce((sum, items) => sum + items.length, 0),
+      },
+      persistence: { type: "SQLite", file: "data/agent.sqlite" },
+    });
+  });
+
+  app.put("/api/day12/profiles/:id", (request, response) => {
+    const fields = ["name", "expertise", "style", "format", "constraints", "language"];
+    const profile = Object.fromEntries(
+      fields.map((field) => [
+        field,
+        typeof request.body?.[field] === "string" ? request.body[field].trim() : "",
+      ]),
+    );
+    if (fields.some((field) => !profile[field] || profile[field].length > 1_000)) {
+      return response.status(400).json({
+        error: "Заполни все поля профиля; каждое поле должно быть короче 1000 символов.",
+      });
+    }
+
+    getProfileStore().ensureDefaults(DAY12_SCOPE_ID, DAY12_DEFAULT_PROFILES);
+    const updated = getProfileStore().update(DAY12_SCOPE_ID, request.params.id, profile);
+    if (!updated) {
+      return response.status(404).json({ error: "Профиль не найден." });
+    }
+    return response.json(updated);
+  });
+
+  app.post("/api/day12/compare", async (request, response) => {
+    const systemPrompt =
+      typeof request.body?.systemPrompt === "string" ? request.body.systemPrompt.trim() : "";
+    const message = typeof request.body?.message === "string" ? request.body.message.trim() : "";
+    const model = typeof request.body?.model === "string" ? request.body.model.trim() : "";
+    const profileIds = request.body?.profileIds;
+    const maxTokens = Number(request.body?.maxTokens);
+    const rawTemperature = request.body?.temperature;
+    const temperature = Number(rawTemperature);
+
+    if (!systemPrompt || !message || !model) {
+      return response.status(400).json({ error: "Заполни инструкцию, сообщение и модель." });
+    }
+    if (
+      !Array.isArray(profileIds) ||
+      profileIds.length !== 2 ||
+      profileIds.some((id) => typeof id !== "string")
+    ) {
+      return response.status(400).json({ error: "Для сравнения нужны два профиля." });
+    }
+    if (!Number.isInteger(maxTokens) || maxTokens < 1 || maxTokens > 8192) {
+      return response.status(400).json({ error: "maxTokens должен быть целым числом от 1 до 8192." });
+    }
+    if (
+      rawTemperature == null ||
+      rawTemperature === "" ||
+      !Number.isFinite(temperature) ||
+      temperature < 0 ||
+      temperature > 2
+    ) {
+      return response.status(400).json({ error: "temperature должна быть числом от 0 до 2." });
+    }
+
+    const apiKey = await resolveApiKey();
+    if (!apiKey) {
+      return response.status(401).json({ error: "Сначала добавь API-ключ OpenRouter в настройках." });
+    }
+    const profilesStore = getProfileStore();
+    profilesStore.ensureDefaults(DAY12_SCOPE_ID, DAY12_DEFAULT_PROFILES);
+    const profiles = profileIds.map((id) => profilesStore.get(DAY12_SCOPE_ID, id));
+    if (profiles.some((profile) => !profile)) {
+      return response.status(404).json({ error: "Один из профилей не найден." });
+    }
+
+    const agent = new PersonalizedAgent({
+      apiKey,
+      maxTokens,
+      memoryState: getMemoryStore().getState(DAY11_SCOPE_ID),
+      model,
+      requestLlm,
+      systemPrompt,
+      temperature,
+    });
+    const result = await agent.compare(message, profiles);
+    return response.json({
+      agent: { name: "PersonalizedAgent", type: "agent" },
+      input: message,
       ...result,
     });
   });

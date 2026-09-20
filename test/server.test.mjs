@@ -7,6 +7,7 @@ import { LlmAgent } from "../server/agent.mjs";
 import { createApp } from "../server/app.mjs";
 import { createConversationStore } from "../server/conversation-store.mjs";
 import { createMemoryStore } from "../server/memory-store.mjs";
+import { createProfileStore } from "../server/profile-store.mjs";
 import { buildOpenRouterRequest } from "../server/openrouter.mjs";
 import { createSettingsStore } from "../server/settings.mjs";
 import { estimateMessagesTokens } from "../server/token-counter.mjs";
@@ -29,6 +30,10 @@ import {
   getDay10ScriptPrompt,
 } from "../shared/day10.js";
 import { DEFAULT_DAY11_SYSTEM_PROMPT } from "../shared/day11.js";
+import {
+  DAY12_DEFAULT_PROFILES,
+  DEFAULT_DAY12_SYSTEM_PROMPT,
+} from "../shared/day12.js";
 
 function createMemorySettingsStore(initialApiKey = "") {
   let apiKey = initialApiKey;
@@ -1072,6 +1077,82 @@ test("day 11 stores three memory layers separately and compares equal prompts", 
     } catch {
       // Store may already be closed after the persistence check.
     }
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("day 12 applies two persisted profiles over the same memory", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "ai-advent-day12-"));
+  const filePath = join(directory, "agent.sqlite");
+  const memoryStore = createMemoryStore(filePath);
+  const profileStore = createProfileStore(filePath);
+  const calls = [];
+  const requestLlm = async (request) => {
+    calls.push(request);
+    const profileMessage = request.messages[1].content;
+    return {
+      answer: profileMessage.includes("Начинающий") ? "Простое объяснение с аналогией." : "HTTP-контракт и пример кода.",
+      model: request.model,
+      usage: { prompt_tokens: 70, completion_tokens: 10, total_tokens: 80 },
+      cost: 0.00001,
+      latencyMs: 15,
+      httpRequest: buildOpenRouterRequest(request),
+    };
+  };
+
+  try {
+    memoryStore.upsertItem("day11-default", "longTerm", "language", "Русский");
+    const app = createApp({
+      settingsStore: createMemorySettingsStore("test-secret-key"),
+      memoryStore,
+      profileStore,
+      requestLlm,
+      environmentApiKey: "",
+    });
+
+    await withServer(app, async (origin) => {
+      const state = await (await fetch(`${origin}/api/day12/state`)).json();
+      assert.equal(state.profiles.length, 2);
+      assert.equal(state.memory.items, 1);
+
+      const changedProfile = {
+        ...DAY12_DEFAULT_PROFILES[0],
+        style: "Объясняй через бытовую аналогию.",
+      };
+      const updateResponse = await fetch(`${origin}/api/day12/profiles/beginner`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(changedProfile),
+      });
+      assert.equal(updateResponse.status, 200);
+      assert.equal((await updateResponse.json()).style, changedProfile.style);
+
+      const response = await fetch(`${origin}/api/day12/compare`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          profileIds: ["beginner", "expert"],
+          systemPrompt: DEFAULT_DAY12_SYSTEM_PROMPT,
+          message: "Объясни REST API.",
+          model: "qwen/test",
+          maxTokens: 300,
+          temperature: 0.2,
+        }),
+      });
+      const result = await response.json();
+
+      assert.equal(response.status, 200);
+      assert.equal(calls.length, 2);
+      assert.equal(calls[0].messages.at(-1).content, calls[1].messages.at(-1).content);
+      assert.match(calls[0].messages[1].content, /бытовую аналогию/u);
+      assert.match(calls[1].messages[1].content, /Опытный backend-разработчик/u);
+      assert.match(calls[0].messages[2].content, /Долговременная память/u);
+      assert.equal(result.runs.length, 2);
+      assert.equal(result.memory.items, 1);
+    });
+  } finally {
+    memoryStore.close();
+    profileStore.close();
     await rm(directory, { recursive: true, force: true });
   }
 });

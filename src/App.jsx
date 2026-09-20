@@ -12,6 +12,7 @@ import { Day8 } from "./Day8.jsx";
 import { Day9 } from "./Day9.jsx";
 import { Day10 } from "./Day10.jsx";
 import { Day11 } from "./Day11.jsx";
+import { Day12 } from "./Day12.jsx";
 import { SettingsPanel } from "./SettingsPanel.jsx";
 
 const DAY_COMPONENTS = {
@@ -26,6 +27,7 @@ const DAY_COMPONENTS = {
   9: Day9,
   10: Day10,
   11: Day11,
+  12: Day12,
 };
 
 export function App() {
@@ -43,12 +45,12 @@ export function App() {
     <main className="app-shell">
       <header className="page-header">
         <div>
-          <p className="eyebrow">11 учебных экспериментов</p>
+          <p className="eyebrow">12 учебных экспериментов</p>
           <h1>AI Advent</h1>
-          <p className="lead">От первого запроса к явной модели памяти агента.</p>
+          <p className="lead">От первого запроса к памяти и персонализации агента.</p>
         </div>
         <div className="header-actions">
-          <span className="stage-badge">Готовы Дни 1–11</span>
+          <span className="stage-badge">Готовы Дни 1–12</span>
           <button
             className="settings-button"
             onClick={() => setShowSettings((value) => !value)}

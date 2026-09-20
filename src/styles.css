@@ -927,6 +927,26 @@ h1 {
   background: #f8f6ef;
 }
 
+.profile-panel {
+  display: grid;
+  gap: 18px;
+  margin-bottom: 24px;
+}
+
+.profile-editor {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 14px;
+}
+
+.profile-editor textarea {
+  min-height: 88px;
+}
+
+.day12-run-form {
+  margin-top: 24px;
+}
+
 .day10-facts-panel,
 .day10-branch-panel {
   display: grid;
@@ -1130,7 +1150,7 @@ pre {
 
 .day-tabs {
   display: grid;
-  grid-template-columns: repeat(11, minmax(70px, 1fr));
+  grid-template-columns: repeat(12, minmax(70px, 1fr));
   gap: 8px;
   margin-bottom: 18px;
   overflow-x: auto;
@@ -1254,7 +1274,7 @@ pre {
   }
 
   .day-tabs {
-    grid-template-columns: repeat(11, 70px);
+    grid-template-columns: repeat(12, 70px);
   }
 
   .day-card {
@@ -1274,6 +1294,7 @@ pre {
   .memory-editor-grid,
   .day11-settings-grid,
   .day11-answer-comparison,
+  .profile-editor,
   .token-grid {
     grid-template-columns: 1fr;
   }
