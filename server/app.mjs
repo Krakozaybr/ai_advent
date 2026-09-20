@@ -12,6 +12,7 @@ import { PersonalizedAgent } from "./day12.mjs";
 import { TaskStateAgent } from "./day13.mjs";
 import { InvariantAgent } from "./day14.mjs";
 import { createInvariantStore } from "./invariant-store.mjs";
+import { createLifecycleStore } from "./lifecycle-store.mjs";
 import { createMemoryStore } from "./memory-store.mjs";
 import { askOpenRouter } from "./openrouter.mjs";
 import { createProfileStore } from "./profile-store.mjs";
@@ -25,6 +26,12 @@ import {
   DAY14_DEFAULT_INVARIANTS,
   DAY14_SCOPE_ID,
 } from "../shared/day14.js";
+import {
+  DAY15_DEFAULT_LIFECYCLE,
+  DAY15_GUARDS,
+  DAY15_SCOPE_ID,
+  DAY15_STATES,
+} from "../shared/day15.js";
 
 function isMessageHistory(value) {
   return (
@@ -67,6 +74,7 @@ export function createApp({
   profileStore,
   taskStore,
   invariantStore,
+  lifecycleStore,
   requestLlm = askOpenRouter,
   environmentApiKey = process.env.OPENROUTER_API_KEY || "",
 } = {}) {
@@ -76,6 +84,7 @@ export function createApp({
   let resolvedProfileStore = profileStore;
   let resolvedTaskStore = taskStore;
   let resolvedInvariantStore = invariantStore;
+  let resolvedLifecycleStore = lifecycleStore;
 
   function getConversationStore() {
     if (!resolvedConversationStore) {
@@ -110,6 +119,13 @@ export function createApp({
       resolvedInvariantStore = createInvariantStore();
     }
     return resolvedInvariantStore;
+  }
+
+  function getLifecycleStore() {
+    if (!resolvedLifecycleStore) {
+      resolvedLifecycleStore = createLifecycleStore();
+    }
+    return resolvedLifecycleStore;
   }
 
   function getDay13State() {
@@ -1093,6 +1109,44 @@ export function createApp({
       input: message,
       ...result,
     });
+  });
+
+  app.get("/api/day15/state", (_request, response) => {
+    const state = getLifecycleStore().ensure(DAY15_SCOPE_ID, DAY15_DEFAULT_LIFECYCLE);
+    response.json({
+      ...state,
+      persistence: { type: "SQLite", file: "data/agent.sqlite" },
+    });
+  });
+
+  app.patch("/api/day15/guards/:guard", (request, response) => {
+    const guard = request.params.guard;
+    const value = request.body?.value;
+    if (!Object.hasOwn(DAY15_GUARDS, guard) || typeof value !== "boolean") {
+      return response.status(400).json({ error: "Укажи существующее условие и boolean-значение." });
+    }
+    const store = getLifecycleStore();
+    store.ensure(DAY15_SCOPE_ID, DAY15_DEFAULT_LIFECYCLE);
+    return response.json(store.setGuard(DAY15_SCOPE_ID, guard, value));
+  });
+
+  app.post("/api/day15/action", (request, response) => {
+    const action = request.body?.action;
+    const store = getLifecycleStore();
+    store.ensure(DAY15_SCOPE_ID, DAY15_DEFAULT_LIFECYCLE);
+    if (action === "transition") {
+      const target = request.body?.target;
+      if (!DAY15_STATES.includes(target)) {
+        return response.status(400).json({ error: "Выбери существующее состояние." });
+      }
+      return response.json(store.transition(DAY15_SCOPE_ID, target));
+    }
+    if (action === "pause") return response.json(store.setPaused(DAY15_SCOPE_ID, true));
+    if (action === "resume") return response.json(store.setPaused(DAY15_SCOPE_ID, false));
+    if (action === "reset") {
+      return response.json(store.reset(DAY15_SCOPE_ID, DAY15_DEFAULT_LIFECYCLE));
+    }
+    return response.status(400).json({ error: "Неизвестное действие с жизненным циклом." });
   });
 
   app.use((error, _request, response, _next) => {

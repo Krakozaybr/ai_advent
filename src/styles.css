@@ -1238,7 +1238,7 @@ pre {
 
 .day-tabs {
   display: grid;
-  grid-template-columns: repeat(14, minmax(70px, 1fr));
+  grid-template-columns: repeat(15, minmax(70px, 1fr));
   gap: 8px;
   margin-bottom: 18px;
   overflow-x: auto;
@@ -1304,6 +1304,101 @@ pre {
   display: grid;
   gap: 10px;
   padding-left: 22px;
+}
+
+.lifecycle-title {
+  margin: 6px 0 0;
+}
+
+.lifecycle-next {
+  margin-bottom: 0;
+}
+
+.lifecycle-guards,
+.lifecycle-transitions {
+  display: grid;
+  gap: 16px;
+  margin-bottom: 20px;
+  padding: 20px;
+  border: 1px solid #d6d3c7;
+  border-radius: 18px;
+  background: #fffefa;
+}
+
+.guard-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.guard-card {
+  display: flex;
+  grid-template-columns: none;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 14px;
+  border: 1px solid #d8d3c4;
+  border-radius: 12px;
+  background: #f8f6ef;
+  cursor: pointer;
+}
+
+.guard-card.checked {
+  border-color: #8eae95;
+  background: #f0f6ee;
+}
+
+.guard-card input {
+  width: 18px;
+  min-height: 18px;
+  margin-top: 2px;
+}
+
+.guard-card span,
+.guard-card small {
+  display: block;
+}
+
+.guard-card small {
+  margin-top: 5px;
+  color: #6d756e;
+  font-weight: 500;
+  line-height: 1.4;
+}
+
+.transition-buttons {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.transition-result {
+  margin-bottom: 20px;
+  padding: 16px;
+  border: 1px solid;
+  border-radius: 14px;
+}
+
+.transition-result p {
+  margin: 6px 0 0;
+}
+
+.transition-result.accepted {
+  border-color: #8eae95;
+  background: #f0f6ee;
+}
+
+.transition-result.rejected {
+  border-color: #d99782;
+  background: #fff7f3;
+}
+
+.event-accepted strong {
+  color: #3f744d;
+}
+
+.event-rejected strong {
+  color: #a94b2a;
 }
 
 .day-tab {
@@ -1423,7 +1518,7 @@ pre {
   }
 
   .day-tabs {
-    grid-template-columns: repeat(14, 70px);
+    grid-template-columns: repeat(15, 70px);
   }
 
   .day-card {
@@ -1447,6 +1542,8 @@ pre {
   .task-phase-track,
   .task-state-card .field-grid,
   .invariant-editor,
+  .guard-grid,
+  .transition-buttons,
   .token-grid {
     grid-template-columns: 1fr;
   }

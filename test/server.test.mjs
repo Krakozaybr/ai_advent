@@ -10,6 +10,7 @@ import { createMemoryStore } from "../server/memory-store.mjs";
 import { createProfileStore } from "../server/profile-store.mjs";
 import { createTaskStore } from "../server/task-store.mjs";
 import { createInvariantStore } from "../server/invariant-store.mjs";
+import { createLifecycleStore } from "../server/lifecycle-store.mjs";
 import { buildOpenRouterRequest } from "../server/openrouter.mjs";
 import { createSettingsStore } from "../server/settings.mjs";
 import { estimateMessagesTokens } from "../server/token-counter.mjs";
@@ -42,6 +43,7 @@ import {
   DAY14_SAFE_PROMPT,
   DEFAULT_DAY14_SYSTEM_PROMPT,
 } from "../shared/day14.js";
+import { DAY15_SCOPE_ID } from "../shared/day15.js";
 
 function createMemorySettingsStore(initialApiKey = "") {
   let apiKey = initialApiKey;
@@ -1316,6 +1318,83 @@ test("day 14 blocks conflicts before LLM and sends invariants with allowed reque
     });
   } finally {
     invariantStore.close();
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("day 15 rejects skipped transitions and persists the controlled lifecycle", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "ai-advent-day15-"));
+  const filePath = join(directory, "agent.sqlite");
+  let lifecycleStore = createLifecycleStore(filePath);
+
+  async function post(origin, body) {
+    const response = await fetch(`${origin}/api/day15/action`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    });
+    assert.equal(response.status, 200);
+    return response.json();
+  }
+
+  async function setGuard(origin, guard) {
+    const response = await fetch(`${origin}/api/day15/guards/${guard}`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ value: true }),
+    });
+    assert.equal(response.status, 200);
+    return response.json();
+  }
+
+  try {
+    const app = createApp({ lifecycleStore, environmentApiKey: "" });
+    await withServer(app, async (origin) => {
+      const initial = await (await fetch(`${origin}/api/day15/state`)).json();
+      assert.equal(initial.lifecycle.state, "planning");
+
+      const skipped = await post(origin, { action: "transition", target: "done" });
+      assert.equal(skipped.ok, false);
+      assert.match(skipped.reason, /запрещён/u);
+
+      const missingGuard = await post(origin, { action: "transition", target: "execution" });
+      assert.equal(missingGuard.ok, false);
+      assert.match(missingGuard.reason, /План утверждён/u);
+
+      await setGuard(origin, "planApproved");
+      const execution = await post(origin, { action: "transition", target: "execution" });
+      assert.equal(execution.ok, true);
+      assert.equal(execution.lifecycle.state, "execution");
+
+      await post(origin, { action: "pause" });
+      const whilePaused = await post(origin, { action: "transition", target: "validation" });
+      assert.equal(whilePaused.ok, false);
+      assert.match(whilePaused.reason, /на паузе/u);
+      const resumed = await post(origin, { action: "resume" });
+      assert.equal(resumed.lifecycle.paused, false);
+
+      await setGuard(origin, "implementationComplete");
+      const validation = await post(origin, { action: "transition", target: "validation" });
+      assert.equal(validation.lifecycle.state, "validation");
+
+      await setGuard(origin, "validationPassed");
+      const done = await post(origin, { action: "transition", target: "done" });
+      assert.equal(done.ok, true);
+      assert.equal(done.lifecycle.state, "done");
+      assert.ok(done.events.some((event) => event.accepted === false));
+    });
+
+    lifecycleStore.close();
+    lifecycleStore = createLifecycleStore(filePath);
+    const restored = lifecycleStore.getState(DAY15_SCOPE_ID);
+    assert.equal(restored.lifecycle.state, "done");
+    assert.equal(restored.lifecycle.guards.validationPassed, true);
+  } finally {
+    try {
+      lifecycleStore.close();
+    } catch {
+      // Store may already be closed before the persistence check.
+    }
     await rm(directory, { recursive: true, force: true });
   }
 });
