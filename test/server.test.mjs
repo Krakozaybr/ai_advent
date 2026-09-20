@@ -6,6 +6,7 @@ import test from "node:test";
 import { LlmAgent } from "../server/agent.mjs";
 import { createApp } from "../server/app.mjs";
 import { createConversationStore } from "../server/conversation-store.mjs";
+import { createMemoryStore } from "../server/memory-store.mjs";
 import { buildOpenRouterRequest } from "../server/openrouter.mjs";
 import { createSettingsStore } from "../server/settings.mjs";
 import { estimateMessagesTokens } from "../server/token-counter.mjs";
@@ -27,6 +28,7 @@ import {
   DEFAULT_DAY10_SYSTEM_PROMPT,
   getDay10ScriptPrompt,
 } from "../shared/day10.js";
+import { DEFAULT_DAY11_SYSTEM_PROMPT } from "../shared/day11.js";
 
 function createMemorySettingsStore(initialApiKey = "") {
   let apiKey = initialApiKey;
@@ -983,6 +985,95 @@ test("day 10 builds different contexts for sliding, facts and branching", async 
     assert.equal(calls[3].messages.length, history.length + 2);
     assert.equal(branching.tokenCounts.estimatedSaved, 0);
   });
+});
+
+test("day 11 stores three memory layers separately and compares equal prompts", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "ai-advent-day11-"));
+  const filePath = join(directory, "agent.sqlite");
+  const scopeId = "day11-default";
+  const memoryStore = createMemoryStore(filePath);
+  const calls = [];
+  const requestLlm = async (request) => {
+    calls.push(request);
+    const hasMemory = request.messages.length > 2;
+    return {
+      answer: hasMemory
+        ? "План на JavaScript с дедлайном в пятницу."
+        : "Уточните стек и срок проекта.",
+      model: request.model,
+      usage: {
+        prompt_tokens: hasMemory ? 90 : 25,
+        completion_tokens: 12,
+        total_tokens: hasMemory ? 102 : 37,
+      },
+      cost: 0.00001,
+      latencyMs: 20,
+      httpRequest: buildOpenRouterRequest(request),
+    };
+  };
+
+  try {
+    memoryStore.upsertItem(scopeId, "shortTerm", "request", "Подготовить план проекта");
+    memoryStore.upsertItem(scopeId, "working", "deadline", "Пятница");
+    memoryStore.upsertItem(scopeId, "longTerm", "stack", "JavaScript");
+
+    const app = createApp({
+      settingsStore: createMemorySettingsStore("test-secret-key"),
+      memoryStore,
+      requestLlm,
+      environmentApiKey: "",
+    });
+
+    await withServer(app, async (origin) => {
+      const initialState = await (await fetch(`${origin}/api/day11/state`)).json();
+      assert.equal(initialState.layers.shortTerm[0].key, "request");
+      assert.equal(initialState.layers.working[0].key, "deadline");
+      assert.equal(initialState.layers.longTerm[0].key, "stack");
+
+      const response = await fetch(`${origin}/api/day11/compare`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          systemPrompt: DEFAULT_DAY11_SYSTEM_PROMPT,
+          message: "Составь короткий план.",
+          model: "qwen/test",
+          maxTokens: 300,
+          temperature: 0.2,
+        }),
+      });
+      const result = await response.json();
+
+      assert.equal(response.status, 200);
+      assert.deepEqual(result.agent, { name: "MemoryLayerAgent", type: "agent" });
+      assert.equal(calls.length, 2);
+      assert.equal(calls[0].messages.length, 2);
+      assert.equal(calls[1].messages.length, 5);
+      assert.equal(calls[0].messages.at(-1).content, calls[1].messages.at(-1).content);
+      assert.match(calls[1].messages[1].content, /Краткосрочные записи/u);
+      assert.match(calls[1].messages[2].content, /Рабочая память/u);
+      assert.match(calls[1].messages[3].content, /Долговременная память/u);
+      assert.equal(result.state.messages.length, 2);
+      assert.equal(result.responses.withMemory.answer, "План на JavaScript с дедлайном в пятницу.");
+      assert.equal(result.tokenCounts.actualWithoutMemory, 25);
+      assert.equal(result.tokenCounts.actualWithMemory, 90);
+    });
+
+    memoryStore.close();
+    const reopenedStore = createMemoryStore(filePath);
+    const persisted = reopenedStore.getState(scopeId);
+    assert.equal(persisted.messages.length, 2);
+    assert.equal(persisted.layers.shortTerm[0].value, "Подготовить план проекта");
+    assert.equal(persisted.layers.working[0].value, "Пятница");
+    assert.equal(persisted.layers.longTerm[0].value, "JavaScript");
+    reopenedStore.close();
+  } finally {
+    try {
+      memoryStore.close();
+    } catch {
+      // Store may already be closed after the persistence check.
+    }
+    await rm(directory, { recursive: true, force: true });
+  }
 });
 
 function receivedMessages(request) {

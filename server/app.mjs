@@ -7,9 +7,12 @@ import { runDay5Experiment } from "./day5.mjs";
 import { runDay8Experiment } from "./day8.mjs";
 import { ContextCompressionAgent } from "./day9.mjs";
 import { ContextStrategyAgent } from "./day10.mjs";
+import { MemoryLayerAgent } from "./day11.mjs";
+import { createMemoryStore } from "./memory-store.mjs";
 import { askOpenRouter } from "./openrouter.mjs";
 import { createSettingsStore } from "./settings.mjs";
 import { DAY7_CONVERSATION_ID } from "../shared/day7.js";
+import { DAY11_MEMORY_LAYERS, DAY11_SCOPE_ID } from "../shared/day11.js";
 
 function isMessageHistory(value) {
   return (
@@ -48,17 +51,26 @@ function normalizeFacts(value) {
 export function createApp({
   settingsStore = createSettingsStore(),
   conversationStore,
+  memoryStore,
   requestLlm = askOpenRouter,
   environmentApiKey = process.env.OPENROUTER_API_KEY || "",
 } = {}) {
   const app = express();
   let resolvedConversationStore = conversationStore;
+  let resolvedMemoryStore = memoryStore;
 
   function getConversationStore() {
     if (!resolvedConversationStore) {
       resolvedConversationStore = createConversationStore();
     }
     return resolvedConversationStore;
+  }
+
+  function getMemoryStore() {
+    if (!resolvedMemoryStore) {
+      resolvedMemoryStore = createMemoryStore();
+    }
+    return resolvedMemoryStore;
   }
 
   async function resolveApiKey() {
@@ -641,6 +653,99 @@ export function createApp({
       agent: { name: "ContextStrategyAgent", type: "agent" },
       branchId,
       input: message,
+      ...result,
+    });
+  });
+
+  app.get("/api/day11/state", (_request, response) => {
+    response.json({
+      scopeId: DAY11_SCOPE_ID,
+      persistence: { type: "SQLite", file: "data/agent.sqlite" },
+      ...getMemoryStore().getState(DAY11_SCOPE_ID),
+    });
+  });
+
+  app.post("/api/day11/memory", (request, response) => {
+    const layer = request.body?.layer;
+    const key = typeof request.body?.key === "string" ? request.body.key.trim() : "";
+    const value = typeof request.body?.value === "string" ? request.body.value.trim() : "";
+
+    if (!Object.hasOwn(DAY11_MEMORY_LAYERS, layer)) {
+      return response.status(400).json({ error: "Выбери существующий слой памяти." });
+    }
+    if (!key || key.length > 80 || !value || value.length > 2_000) {
+      return response.status(400).json({
+        error: "Ключ должен содержать до 80 символов, значение — до 2000 символов.",
+      });
+    }
+
+    getMemoryStore().upsertItem(DAY11_SCOPE_ID, layer, key, value);
+    return response.json(getMemoryStore().getState(DAY11_SCOPE_ID));
+  });
+
+  app.delete("/api/day11/memory/:layer/:key", (request, response) => {
+    const { layer, key } = request.params;
+    if (!Object.hasOwn(DAY11_MEMORY_LAYERS, layer)) {
+      return response.status(400).json({ error: "Выбери существующий слой памяти." });
+    }
+    getMemoryStore().deleteItem(DAY11_SCOPE_ID, layer, key);
+    return response.json(getMemoryStore().getState(DAY11_SCOPE_ID));
+  });
+
+  app.delete("/api/day11/state", (_request, response) => {
+    getMemoryStore().clear(DAY11_SCOPE_ID);
+    return response.json(getMemoryStore().getState(DAY11_SCOPE_ID));
+  });
+
+  app.post("/api/day11/compare", async (request, response) => {
+    const systemPrompt =
+      typeof request.body?.systemPrompt === "string" ? request.body.systemPrompt.trim() : "";
+    const message = typeof request.body?.message === "string" ? request.body.message.trim() : "";
+    const model = typeof request.body?.model === "string" ? request.body.model.trim() : "";
+    const maxTokens = Number(request.body?.maxTokens);
+    const rawTemperature = request.body?.temperature;
+    const temperature = Number(rawTemperature);
+
+    if (!systemPrompt || !message || !model) {
+      return response.status(400).json({
+        error: "Заполни системную инструкцию, сообщение и модель.",
+      });
+    }
+    if (!Number.isInteger(maxTokens) || maxTokens < 1 || maxTokens > 8192) {
+      return response.status(400).json({ error: "maxTokens должен быть целым числом от 1 до 8192." });
+    }
+    if (
+      rawTemperature == null ||
+      rawTemperature === "" ||
+      !Number.isFinite(temperature) ||
+      temperature < 0 ||
+      temperature > 2
+    ) {
+      return response.status(400).json({ error: "temperature должна быть числом от 0 до 2." });
+    }
+
+    const apiKey = await resolveApiKey();
+    if (!apiKey) {
+      return response.status(401).json({ error: "Сначала добавь API-ключ OpenRouter в настройках." });
+    }
+
+    const store = getMemoryStore();
+    const agent = new MemoryLayerAgent({
+      apiKey,
+      maxTokens,
+      memoryState: store.getState(DAY11_SCOPE_ID),
+      model,
+      requestLlm,
+      systemPrompt,
+      temperature,
+    });
+    const result = await agent.compare(message);
+    store.appendExchange(DAY11_SCOPE_ID, message, result.responses.withMemory.answer);
+
+    return response.json({
+      agent: { name: "MemoryLayerAgent", type: "agent" },
+      input: message,
+      state: store.getState(DAY11_SCOPE_ID),
       ...result,
     });
   });

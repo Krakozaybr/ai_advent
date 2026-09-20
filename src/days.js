@@ -9,4 +9,5 @@ export const days = [
   { number: 8, title: "Работа с токенами", description: "Подсчёт токенов и демонстрация переполнения." },
   { number: 9, title: "Сжатие истории", description: "Summary старых сообщений и экономия контекста." },
   { number: 10, title: "Стратегии контекста", description: "Sliding Window, Sticky Facts и Branching." },
+  { number: 11, title: "Модель памяти", description: "Краткосрочная, рабочая и долговременная память агента." },
 ];
