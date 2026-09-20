@@ -10,6 +10,8 @@ import { ContextStrategyAgent } from "./day10.mjs";
 import { MemoryLayerAgent } from "./day11.mjs";
 import { PersonalizedAgent } from "./day12.mjs";
 import { TaskStateAgent } from "./day13.mjs";
+import { InvariantAgent } from "./day14.mjs";
+import { createInvariantStore } from "./invariant-store.mjs";
 import { createMemoryStore } from "./memory-store.mjs";
 import { askOpenRouter } from "./openrouter.mjs";
 import { createProfileStore } from "./profile-store.mjs";
@@ -19,6 +21,10 @@ import { DAY7_CONVERSATION_ID } from "../shared/day7.js";
 import { DAY11_MEMORY_LAYERS, DAY11_SCOPE_ID } from "../shared/day11.js";
 import { DAY12_DEFAULT_PROFILES, DAY12_SCOPE_ID } from "../shared/day12.js";
 import { DAY13_DEFAULT_TASK, DAY13_SCOPE_ID } from "../shared/day13.js";
+import {
+  DAY14_DEFAULT_INVARIANTS,
+  DAY14_SCOPE_ID,
+} from "../shared/day14.js";
 
 function isMessageHistory(value) {
   return (
@@ -60,6 +66,7 @@ export function createApp({
   memoryStore,
   profileStore,
   taskStore,
+  invariantStore,
   requestLlm = askOpenRouter,
   environmentApiKey = process.env.OPENROUTER_API_KEY || "",
 } = {}) {
@@ -68,6 +75,7 @@ export function createApp({
   let resolvedMemoryStore = memoryStore;
   let resolvedProfileStore = profileStore;
   let resolvedTaskStore = taskStore;
+  let resolvedInvariantStore = invariantStore;
 
   function getConversationStore() {
     if (!resolvedConversationStore) {
@@ -95,6 +103,13 @@ export function createApp({
       resolvedTaskStore = createTaskStore();
     }
     return resolvedTaskStore;
+  }
+
+  function getInvariantStore() {
+    if (!resolvedInvariantStore) {
+      resolvedInvariantStore = createInvariantStore();
+    }
+    return resolvedInvariantStore;
   }
 
   function getDay13State() {
@@ -970,6 +985,113 @@ export function createApp({
       input: message,
       response: agentResponse,
       state: getDay13State(),
+    });
+  });
+
+  app.get("/api/day14/state", (_request, response) => {
+    const invariants = getInvariantStore().ensureDefaults(
+      DAY14_SCOPE_ID,
+      DAY14_DEFAULT_INVARIANTS,
+    );
+    response.json({
+      invariants,
+      persistence: { type: "SQLite", file: "data/agent.sqlite" },
+    });
+  });
+
+  app.post("/api/day14/invariants", (request, response) => {
+    const category =
+      typeof request.body?.category === "string" ? request.body.category.trim() : "";
+    const rule = typeof request.body?.rule === "string" ? request.body.rule.trim() : "";
+    const forbiddenTerms = Array.isArray(request.body?.forbiddenTerms)
+      ? request.body.forbiddenTerms
+          .filter((term) => typeof term === "string")
+          .map((term) => term.trim())
+          .filter(Boolean)
+      : [];
+    if (
+      !category ||
+      !rule ||
+      forbiddenTerms.length === 0 ||
+      forbiddenTerms.length > 20 ||
+      category.length > 80 ||
+      rule.length > 1_000 ||
+      forbiddenTerms.some((term) => term.length > 80)
+    ) {
+      return response.status(400).json({
+        error: "Заполни категорию, правило и от 1 до 20 запрещённых терминов.",
+      });
+    }
+    const store = getInvariantStore();
+    store.ensureDefaults(DAY14_SCOPE_ID, DAY14_DEFAULT_INVARIANTS);
+    return response.json({
+      invariants: store.add(DAY14_SCOPE_ID, { category, rule, forbiddenTerms }),
+    });
+  });
+
+  app.delete("/api/day14/invariants/:id", (request, response) => {
+    const store = getInvariantStore();
+    store.ensureDefaults(DAY14_SCOPE_ID, DAY14_DEFAULT_INVARIANTS);
+    return response.json({
+      invariants: store.delete(DAY14_SCOPE_ID, request.params.id),
+    });
+  });
+
+  app.post("/api/day14/chat", async (request, response) => {
+    const systemPrompt =
+      typeof request.body?.systemPrompt === "string" ? request.body.systemPrompt.trim() : "";
+    const message = typeof request.body?.message === "string" ? request.body.message.trim() : "";
+    const model = typeof request.body?.model === "string" ? request.body.model.trim() : "";
+    const maxTokens = Number(request.body?.maxTokens);
+    const rawTemperature = request.body?.temperature;
+    const temperature = Number(rawTemperature);
+    if (!systemPrompt || !message || !model) {
+      return response.status(400).json({ error: "Заполни инструкцию, сообщение и модель." });
+    }
+    if (!Number.isInteger(maxTokens) || maxTokens < 1 || maxTokens > 8192) {
+      return response.status(400).json({ error: "maxTokens должен быть целым числом от 1 до 8192." });
+    }
+    if (
+      rawTemperature == null ||
+      rawTemperature === "" ||
+      !Number.isFinite(temperature) ||
+      temperature < 0 ||
+      temperature > 2
+    ) {
+      return response.status(400).json({ error: "temperature должна быть числом от 0 до 2." });
+    }
+
+    const store = getInvariantStore();
+    const invariants = store.ensureDefaults(DAY14_SCOPE_ID, DAY14_DEFAULT_INVARIANTS);
+    const options = {
+      apiKey: "",
+      invariants,
+      maxTokens,
+      model,
+      requestLlm,
+      systemPrompt,
+      temperature,
+    };
+    const policyAgent = new InvariantAgent(options);
+    const conflicts = policyAgent.check(message);
+    if (conflicts.length > 0) {
+      const result = await policyAgent.respond(message);
+      return response.json({
+        agent: { name: "InvariantAgent", type: "agent" },
+        input: message,
+        ...result,
+      });
+    }
+
+    const apiKey = await resolveApiKey();
+    if (!apiKey) {
+      return response.status(401).json({ error: "Сначала добавь API-ключ OpenRouter в настройках." });
+    }
+    const result = await new InvariantAgent({ ...options, apiKey }).respond(message);
+    return response.json({
+      agent: { name: "InvariantAgent", type: "agent" },
+      input: message,
+      ...result,
     });
   });
 

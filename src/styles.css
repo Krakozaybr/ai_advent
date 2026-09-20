@@ -1238,11 +1238,72 @@ pre {
 
 .day-tabs {
   display: grid;
-  grid-template-columns: repeat(13, minmax(70px, 1fr));
+  grid-template-columns: repeat(14, minmax(70px, 1fr));
   gap: 8px;
   margin-bottom: 18px;
   overflow-x: auto;
   padding-bottom: 4px;
+}
+
+.invariant-panel {
+  display: grid;
+  gap: 16px;
+  margin: 22px 0;
+  padding: 20px;
+  border: 1px solid #d6d3c7;
+  border-radius: 18px;
+  background: #fffefa;
+}
+
+.invariant-list {
+  display: grid;
+  gap: 10px;
+}
+
+.invariant-card {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 14px;
+  border-radius: 12px;
+  background: #f3f2ea;
+}
+
+.invariant-card p {
+  margin: 6px 0;
+}
+
+.invariant-card small,
+.conflict-list small {
+  color: #6d756e;
+  overflow-wrap: anywhere;
+}
+
+.invariant-editor {
+  display: grid;
+  grid-template-columns: 0.7fr 1.4fr 1fr auto;
+  align-items: end;
+  gap: 12px;
+}
+
+.invariant-examples {
+  justify-content: flex-start;
+}
+
+.invariant-blocked {
+  border-color: #d99782;
+  background: #fff7f3;
+}
+
+.invariant-allowed {
+  border-color: #9eb9a6;
+}
+
+.conflict-list {
+  display: grid;
+  gap: 10px;
+  padding-left: 22px;
 }
 
 .day-tab {
@@ -1362,7 +1423,7 @@ pre {
   }
 
   .day-tabs {
-    grid-template-columns: repeat(13, 70px);
+    grid-template-columns: repeat(14, 70px);
   }
 
   .day-card {
@@ -1385,6 +1446,7 @@ pre {
   .profile-editor,
   .task-phase-track,
   .task-state-card .field-grid,
+  .invariant-editor,
   .token-grid {
     grid-template-columns: 1fr;
   }

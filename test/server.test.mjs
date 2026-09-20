@@ -9,6 +9,7 @@ import { createConversationStore } from "../server/conversation-store.mjs";
 import { createMemoryStore } from "../server/memory-store.mjs";
 import { createProfileStore } from "../server/profile-store.mjs";
 import { createTaskStore } from "../server/task-store.mjs";
+import { createInvariantStore } from "../server/invariant-store.mjs";
 import { buildOpenRouterRequest } from "../server/openrouter.mjs";
 import { createSettingsStore } from "../server/settings.mjs";
 import { estimateMessagesTokens } from "../server/token-counter.mjs";
@@ -36,6 +37,11 @@ import {
   DEFAULT_DAY12_SYSTEM_PROMPT,
 } from "../shared/day12.js";
 import { DEFAULT_DAY13_SYSTEM_PROMPT } from "../shared/day13.js";
+import {
+  DAY14_CONFLICT_PROMPT,
+  DAY14_SAFE_PROMPT,
+  DEFAULT_DAY14_SYSTEM_PROMPT,
+} from "../shared/day14.js";
 
 function createMemorySettingsStore(initialApiKey = "") {
   let apiKey = initialApiKey;
@@ -1235,6 +1241,81 @@ test("day 13 persists task state, pause and restored dialogue", async () => {
   } finally {
     memoryStore.close();
     taskStore.close();
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("day 14 blocks conflicts before LLM and sends invariants with allowed requests", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "ai-advent-day14-"));
+  const filePath = join(directory, "agent.sqlite");
+  const invariantStore = createInvariantStore(filePath);
+  const calls = [];
+  const requestLlm = async (request) => {
+    calls.push(request);
+    return {
+      answer: "Создайте JavaScript-модуль с репозиторием SQLite.",
+      model: request.model,
+      usage: { prompt_tokens: 70, completion_tokens: 10, total_tokens: 80 },
+      cost: 0.00001,
+      latencyMs: 15,
+      httpRequest: buildOpenRouterRequest(request),
+    };
+  };
+
+  try {
+    const app = createApp({
+      settingsStore: createMemorySettingsStore(),
+      invariantStore,
+      requestLlm,
+      environmentApiKey: "",
+    });
+    await withServer(app, async (origin) => {
+      const state = await (await fetch(`${origin}/api/day14/state`)).json();
+      assert.equal(state.invariants.length, 3);
+
+      const conflictResponse = await fetch(`${origin}/api/day14/chat`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          systemPrompt: DEFAULT_DAY14_SYSTEM_PROMPT,
+          message: DAY14_CONFLICT_PROMPT,
+          model: "qwen/test",
+          maxTokens: 300,
+          temperature: 0.2,
+        }),
+      });
+      const conflict = await conflictResponse.json();
+      assert.equal(conflictResponse.status, 200);
+      assert.equal(conflict.blocked, true);
+      assert.equal(conflict.conflicts.length, 3);
+      assert.equal(conflict.response, null);
+      assert.equal(calls.length, 0);
+
+      await fetch(`${origin}/api/settings`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ apiKey: "sk-or-v1-test-key" }),
+      });
+      const allowedResponse = await fetch(`${origin}/api/day14/chat`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          systemPrompt: DEFAULT_DAY14_SYSTEM_PROMPT,
+          message: DAY14_SAFE_PROMPT,
+          model: "qwen/test",
+          maxTokens: 300,
+          temperature: 0.2,
+        }),
+      });
+      const allowed = await allowedResponse.json();
+      assert.equal(allowedResponse.status, 200);
+      assert.equal(allowed.blocked, false);
+      assert.equal(calls.length, 1);
+      assert.match(calls[0].messages[1].content, /Сервер и интерфейс пишем на JavaScript/u);
+      assert.equal(calls[0].messages.at(-1).content, DAY14_SAFE_PROMPT);
+    });
+  } finally {
+    invariantStore.close();
     await rm(directory, { recursive: true, force: true });
   }
 });
