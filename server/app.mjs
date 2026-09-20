@@ -9,13 +9,16 @@ import { ContextCompressionAgent } from "./day9.mjs";
 import { ContextStrategyAgent } from "./day10.mjs";
 import { MemoryLayerAgent } from "./day11.mjs";
 import { PersonalizedAgent } from "./day12.mjs";
+import { TaskStateAgent } from "./day13.mjs";
 import { createMemoryStore } from "./memory-store.mjs";
 import { askOpenRouter } from "./openrouter.mjs";
 import { createProfileStore } from "./profile-store.mjs";
 import { createSettingsStore } from "./settings.mjs";
+import { createTaskStore } from "./task-store.mjs";
 import { DAY7_CONVERSATION_ID } from "../shared/day7.js";
 import { DAY11_MEMORY_LAYERS, DAY11_SCOPE_ID } from "../shared/day11.js";
 import { DAY12_DEFAULT_PROFILES, DAY12_SCOPE_ID } from "../shared/day12.js";
+import { DAY13_DEFAULT_TASK, DAY13_SCOPE_ID } from "../shared/day13.js";
 
 function isMessageHistory(value) {
   return (
@@ -56,6 +59,7 @@ export function createApp({
   conversationStore,
   memoryStore,
   profileStore,
+  taskStore,
   requestLlm = askOpenRouter,
   environmentApiKey = process.env.OPENROUTER_API_KEY || "",
 } = {}) {
@@ -63,6 +67,7 @@ export function createApp({
   let resolvedConversationStore = conversationStore;
   let resolvedMemoryStore = memoryStore;
   let resolvedProfileStore = profileStore;
+  let resolvedTaskStore = taskStore;
 
   function getConversationStore() {
     if (!resolvedConversationStore) {
@@ -83,6 +88,24 @@ export function createApp({
       resolvedProfileStore = createProfileStore();
     }
     return resolvedProfileStore;
+  }
+
+  function getTaskStore() {
+    if (!resolvedTaskStore) {
+      resolvedTaskStore = createTaskStore();
+    }
+    return resolvedTaskStore;
+  }
+
+  function getDay13State() {
+    const tasks = getTaskStore();
+    tasks.ensure(DAY13_SCOPE_ID, DAY13_DEFAULT_TASK);
+    const memory = getMemoryStore().getState(DAY13_SCOPE_ID);
+    return {
+      ...tasks.getState(DAY13_SCOPE_ID),
+      messages: memory.messages,
+      persistence: { type: "SQLite", file: "data/agent.sqlite" },
+    };
   }
 
   async function resolveApiKey() {
@@ -855,6 +878,98 @@ export function createApp({
       agent: { name: "PersonalizedAgent", type: "agent" },
       input: message,
       ...result,
+    });
+  });
+
+  app.get("/api/day13/state", (_request, response) => {
+    response.json(getDay13State());
+  });
+
+  app.put("/api/day13/task", (request, response) => {
+    const title = typeof request.body?.title === "string" ? request.body.title.trim() : "";
+    const currentStep =
+      typeof request.body?.currentStep === "string" ? request.body.currentStep.trim() : "";
+    const expectedAction =
+      typeof request.body?.expectedAction === "string" ? request.body.expectedAction.trim() : "";
+    if (
+      !title ||
+      !currentStep ||
+      !expectedAction ||
+      [title, currentStep, expectedAction].some((value) => value.length > 1_000)
+    ) {
+      return response.status(400).json({ error: "Заполни название, текущий шаг и ожидаемое действие." });
+    }
+    getTaskStore().ensure(DAY13_SCOPE_ID, DAY13_DEFAULT_TASK);
+    getTaskStore().update(DAY13_SCOPE_ID, { title, currentStep, expectedAction });
+    return response.json(getDay13State());
+  });
+
+  app.post("/api/day13/action", (request, response) => {
+    const action = request.body?.action;
+    const tasks = getTaskStore();
+    tasks.ensure(DAY13_SCOPE_ID, DAY13_DEFAULT_TASK);
+    let result;
+    if (action === "advance") result = tasks.advance(DAY13_SCOPE_ID);
+    else if (action === "pause") result = tasks.setPaused(DAY13_SCOPE_ID, true);
+    else if (action === "resume") result = tasks.setPaused(DAY13_SCOPE_ID, false);
+    else if (action === "reset") {
+      getMemoryStore().clear(DAY13_SCOPE_ID);
+      result = { ok: true, ...tasks.reset(DAY13_SCOPE_ID, DAY13_DEFAULT_TASK) };
+    } else {
+      return response.status(400).json({ error: "Неизвестное действие с задачей." });
+    }
+    return response.status(result.ok ? 200 : 409).json({ ...result, ...getDay13State() });
+  });
+
+  app.post("/api/day13/chat", async (request, response) => {
+    const systemPrompt =
+      typeof request.body?.systemPrompt === "string" ? request.body.systemPrompt.trim() : "";
+    const message = typeof request.body?.message === "string" ? request.body.message.trim() : "";
+    const model = typeof request.body?.model === "string" ? request.body.model.trim() : "";
+    const maxTokens = Number(request.body?.maxTokens);
+    const rawTemperature = request.body?.temperature;
+    const temperature = Number(rawTemperature);
+    if (!systemPrompt || !message || !model) {
+      return response.status(400).json({ error: "Заполни инструкцию, сообщение и модель." });
+    }
+    if (!Number.isInteger(maxTokens) || maxTokens < 1 || maxTokens > 8192) {
+      return response.status(400).json({ error: "maxTokens должен быть целым числом от 1 до 8192." });
+    }
+    if (
+      rawTemperature == null ||
+      rawTemperature === "" ||
+      !Number.isFinite(temperature) ||
+      temperature < 0 ||
+      temperature > 2
+    ) {
+      return response.status(400).json({ error: "temperature должна быть числом от 0 до 2." });
+    }
+    const apiKey = await resolveApiKey();
+    if (!apiKey) {
+      return response.status(401).json({ error: "Сначала добавь API-ключ OpenRouter в настройках." });
+    }
+
+    const tasks = getTaskStore();
+    const task = tasks.ensure(DAY13_SCOPE_ID, DAY13_DEFAULT_TASK);
+    const memory = getMemoryStore();
+    const history = memory.getState(DAY13_SCOPE_ID).messages;
+    const agent = new TaskStateAgent({
+      apiKey,
+      history,
+      maxTokens,
+      model,
+      requestLlm,
+      systemPrompt,
+      task,
+      temperature,
+    });
+    const agentResponse = await agent.respond(message);
+    memory.appendExchange(DAY13_SCOPE_ID, message, agentResponse.answer);
+    return response.json({
+      agent: { name: "TaskStateAgent", type: "agent" },
+      input: message,
+      response: agentResponse,
+      state: getDay13State(),
     });
   });
 

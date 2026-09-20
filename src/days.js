@@ -11,4 +11,5 @@ export const days = [
   { number: 10, title: "Стратегии контекста", description: "Sliding Window, Sticky Facts и Branching." },
   { number: 11, title: "Модель памяти", description: "Краткосрочная, рабочая и долговременная память агента." },
   { number: 12, title: "Персонализация", description: "Профиль пользователя влияет на каждый ответ." },
+  { number: 13, title: "Состояние задачи", description: "Этап, шаг, ожидаемое действие и пауза." },
 ];

@@ -8,6 +8,7 @@ import { createApp } from "../server/app.mjs";
 import { createConversationStore } from "../server/conversation-store.mjs";
 import { createMemoryStore } from "../server/memory-store.mjs";
 import { createProfileStore } from "../server/profile-store.mjs";
+import { createTaskStore } from "../server/task-store.mjs";
 import { buildOpenRouterRequest } from "../server/openrouter.mjs";
 import { createSettingsStore } from "../server/settings.mjs";
 import { estimateMessagesTokens } from "../server/token-counter.mjs";
@@ -34,6 +35,7 @@ import {
   DAY12_DEFAULT_PROFILES,
   DEFAULT_DAY12_SYSTEM_PROMPT,
 } from "../shared/day12.js";
+import { DEFAULT_DAY13_SYSTEM_PROMPT } from "../shared/day13.js";
 
 function createMemorySettingsStore(initialApiKey = "") {
   let apiKey = initialApiKey;
@@ -1153,6 +1155,86 @@ test("day 12 applies two persisted profiles over the same memory", async () => {
   } finally {
     memoryStore.close();
     profileStore.close();
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("day 13 persists task state, pause and restored dialogue", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "ai-advent-day13-"));
+  const filePath = join(directory, "agent.sqlite");
+  const memoryStore = createMemoryStore(filePath);
+  const taskStore = createTaskStore(filePath);
+  let receivedRequest;
+  const requestLlm = async (request) => {
+    receivedRequest = request;
+    return {
+      answer: "Сейчас идёт реализация. Следующий шаг — завершить код.",
+      model: request.model,
+      usage: { prompt_tokens: 80, completion_tokens: 12, total_tokens: 92 },
+      cost: 0.00001,
+      latencyMs: 18,
+      httpRequest: buildOpenRouterRequest(request),
+    };
+  };
+
+  try {
+    const app = createApp({
+      settingsStore: createMemorySettingsStore("test-secret-key"),
+      memoryStore,
+      taskStore,
+      requestLlm,
+      environmentApiKey: "",
+    });
+    await withServer(app, async (origin) => {
+      const initial = await (await fetch(`${origin}/api/day13/state`)).json();
+      assert.equal(initial.task.phase, "planning");
+      assert.equal(initial.task.paused, false);
+
+      const pause = await fetch(`${origin}/api/day13/action`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action: "pause" }),
+      });
+      assert.equal(pause.status, 200);
+      assert.equal((await pause.json()).task.paused, true);
+
+      const resume = await fetch(`${origin}/api/day13/action`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action: "resume" }),
+      });
+      assert.equal(resume.status, 200);
+
+      const advance = await fetch(`${origin}/api/day13/action`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action: "advance" }),
+      });
+      assert.equal(advance.status, 200);
+      assert.equal((await advance.json()).task.phase, "execution");
+
+      const chat = await fetch(`${origin}/api/day13/chat`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          systemPrompt: DEFAULT_DAY13_SYSTEM_PROMPT,
+          message: "Что дальше?",
+          model: "qwen/test",
+          maxTokens: 300,
+          temperature: 0.2,
+        }),
+      });
+      const result = await chat.json();
+      assert.equal(chat.status, 200);
+      assert.match(receivedRequest.messages[1].content, /Этап: execution/u);
+      assert.match(receivedRequest.messages[1].content, /Завершить реализацию/u);
+      assert.equal(result.state.messages.length, 2);
+      assert.equal(result.state.task.phase, "execution");
+      assert.ok(result.state.events.length >= 3);
+    });
+  } finally {
+    memoryStore.close();
+    taskStore.close();
     await rm(directory, { recursive: true, force: true });
   }
 });

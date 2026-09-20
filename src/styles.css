@@ -947,6 +947,94 @@ h1 {
   margin-top: 24px;
 }
 
+.task-phase-track {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(120px, 1fr));
+  gap: 8px;
+  margin-bottom: 18px;
+}
+
+.task-phase {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 11px;
+  border: 1px solid #d8d3c4;
+  border-radius: 12px;
+  color: #7a817a;
+  background: #f8f6ef;
+  font-size: 0.76rem;
+}
+
+.task-phase span {
+  display: grid;
+  width: 25px;
+  height: 25px;
+  flex: 0 0 auto;
+  place-items: center;
+  border-radius: 50%;
+  background: #e8e5db;
+  font-weight: 850;
+}
+
+.task-phase.complete,
+.task-phase.active {
+  border-color: #8eae95;
+  color: #35533c;
+}
+
+.task-phase.complete span,
+.task-phase.active span {
+  color: #fff;
+  background: #4e855d;
+}
+
+.task-phase.active {
+  box-shadow: 0 0 0 3px rgb(78 133 93 / 12%);
+}
+
+.task-state-card {
+  display: grid;
+  gap: 16px;
+  margin-bottom: 18px;
+  padding: 20px;
+  border: 1px solid #b9ccb9;
+  border-radius: 16px;
+  background: #f0f6ee;
+}
+
+.task-state-card.paused {
+  border-color: #d9b592;
+  background: #fff5e7;
+}
+
+.task-state-card .field-grid {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.task-state-card textarea {
+  min-height: 92px;
+}
+
+.task-state-heading {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.task-state-heading h3 {
+  margin: 0;
+}
+
+.task-events {
+  margin-bottom: 24px;
+}
+
+.task-events li {
+  margin-bottom: 6px;
+}
+
 .day10-facts-panel,
 .day10-branch-panel {
   display: grid;
@@ -1150,7 +1238,7 @@ pre {
 
 .day-tabs {
   display: grid;
-  grid-template-columns: repeat(12, minmax(70px, 1fr));
+  grid-template-columns: repeat(13, minmax(70px, 1fr));
   gap: 8px;
   margin-bottom: 18px;
   overflow-x: auto;
@@ -1274,7 +1362,7 @@ pre {
   }
 
   .day-tabs {
-    grid-template-columns: repeat(12, 70px);
+    grid-template-columns: repeat(13, 70px);
   }
 
   .day-card {
@@ -1295,6 +1383,8 @@ pre {
   .day11-settings-grid,
   .day11-answer-comparison,
   .profile-editor,
+  .task-phase-track,
+  .task-state-card .field-grid,
   .token-grid {
     grid-template-columns: 1fr;
   }
