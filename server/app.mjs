@@ -14,6 +14,7 @@ import { InvariantAgent } from "./day14.mjs";
 import { createInvariantStore } from "./invariant-store.mjs";
 import { createLifecycleStore } from "./lifecycle-store.mjs";
 import { createMemoryStore } from "./memory-store.mjs";
+import { createMemoryMcpClient } from "./memory-mcp-client.mjs";
 import { askOpenRouter } from "./openrouter.mjs";
 import { createProfileStore } from "./profile-store.mjs";
 import { createSettingsStore } from "./settings.mjs";
@@ -71,6 +72,7 @@ export function createApp({
   settingsStore = createSettingsStore(),
   conversationStore,
   memoryStore,
+  memoryMcpClient,
   profileStore,
   taskStore,
   invariantStore,
@@ -81,6 +83,7 @@ export function createApp({
   const app = express();
   let resolvedConversationStore = conversationStore;
   let resolvedMemoryStore = memoryStore;
+  let resolvedMemoryMcpClient = memoryMcpClient;
   let resolvedProfileStore = profileStore;
   let resolvedTaskStore = taskStore;
   let resolvedInvariantStore = invariantStore;
@@ -98,6 +101,13 @@ export function createApp({
       resolvedMemoryStore = createMemoryStore();
     }
     return resolvedMemoryStore;
+  }
+
+  function getMemoryMcpClient() {
+    if (!resolvedMemoryMcpClient) {
+      resolvedMemoryMcpClient = createMemoryMcpClient();
+    }
+    return resolvedMemoryMcpClient;
   }
 
   function getProfileStore() {
@@ -727,6 +737,11 @@ export function createApp({
     response.json({
       scopeId: DAY11_SCOPE_ID,
       persistence: { type: "SQLite", file: "data/agent.sqlite" },
+      mcp: {
+        server: "ai-advent-memory",
+        transport: "stdio",
+        tools: ["memory_list", "memory_save", "memory_delete"],
+      },
       ...getMemoryStore().getState(DAY11_SCOPE_ID),
     });
   });
@@ -800,6 +815,7 @@ export function createApp({
       apiKey,
       maxTokens,
       memoryState: store.getState(DAY11_SCOPE_ID),
+      memoryTools: getMemoryMcpClient(),
       model,
       requestLlm,
       systemPrompt,

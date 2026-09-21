@@ -8,6 +8,9 @@ export function buildOpenRouterRequest({
   maxTokens,
   stop,
   temperature,
+  tools,
+  toolChoice,
+  parallelToolCalls,
 }) {
   const json = {
     model,
@@ -25,6 +28,15 @@ export function buildOpenRouterRequest({
   }
   if (plugins?.length) {
     json.plugins = plugins;
+  }
+  if (tools?.length) {
+    json.tools = tools;
+  }
+  if (toolChoice != null) {
+    json.tool_choice = toolChoice;
+  }
+  if (parallelToolCalls != null) {
+    json.parallel_tool_calls = parallelToolCalls;
   }
 
   return {
@@ -44,6 +56,9 @@ export async function askOpenRouter({
   stop,
   temperature,
   plugins,
+  tools,
+  toolChoice,
+  parallelToolCalls,
   timeoutMs = 45_000,
 }) {
   const startedAt = performance.now();
@@ -53,6 +68,9 @@ export async function askOpenRouter({
     prompt,
     maxTokens,
     plugins,
+    tools,
+    toolChoice,
+    parallelToolCalls,
     stop,
     temperature,
   });
@@ -86,8 +104,9 @@ export async function askOpenRouter({
     throw error;
   }
 
-  return {
-    answer: data.choices?.[0]?.message?.content || "",
+  const message = data.choices?.[0]?.message || {};
+  const result = {
+    answer: message.content || "",
     model: data.model || model,
     usage: data.usage || null,
     cost: data.usage?.cost ?? null,
@@ -95,4 +114,8 @@ export async function askOpenRouter({
     httpRequest,
     latencyMs: Math.round(performance.now() - startedAt),
   };
+  if (message.tool_calls?.length) {
+    result.toolCalls = message.tool_calls;
+  }
+  return result;
 }

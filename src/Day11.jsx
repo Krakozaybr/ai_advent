@@ -20,7 +20,7 @@ const ASSIGNMENT = `Опишите и реализуйте модель памя
 - рабочая — данные текущей задачи;
 - долговременная — профиль, решения и знания.
 
-Разные типы памяти должны храниться отдельно. Пользователь явно выбирает, что и куда сохранить.
+Разные типы памяти должны храниться отдельно. Агент явно выбирает слой через MCP-инструмент, а пользователь видит, редактирует и удаляет записи.
 
 Проверьте, какие данные попадают в каждый слой и как они влияют на ответы агента.
 
@@ -32,6 +32,7 @@ function createEmptyState() {
   return {
     messages: [],
     layers: { shortTerm: [], working: [], longTerm: [] },
+    mcp: { server: "ai-advent-memory", transport: "stdio", tools: [] },
   };
 }
 
@@ -197,7 +198,7 @@ export function Day11({ hasApiKey, onOpenSettings }) {
         }),
       });
       setResult(nextResult);
-      setState(nextResult.state);
+      setState((current) => ({ ...nextResult.state, mcp: current.mcp }));
     } catch (requestError) {
       setError(requestError.message);
     } finally {
@@ -213,7 +214,7 @@ export function Day11({ hasApiKey, onOpenSettings }) {
         <div>
           <p className="eyebrow">День 11</p>
           <h2>Модель памяти агента</h2>
-          <p className="muted">Три слоя SQLite и сравнение ответа с памятью и без неё.</p>
+          <p className="muted">Три слоя SQLite, локальный MCP-сервер и сравнение ответа с памятью и без неё.</p>
         </div>
         <span className={hasApiKey ? "status ready" : "status missing"}>
           {hasApiKey ? "Ключ готов" : "Нет ключа"}
@@ -232,12 +233,17 @@ export function Day11({ hasApiKey, onOpenSettings }) {
       <details className="agent-architecture" open>
         <summary>Сценарий для видео</summary>
         <ol>
-          <li>Выбери каждый слой и сохрани предложенную запись.</li>
-          <li>Покажи, что данные разложены по трём отдельным панелям.</li>
-          <li>Отправь подготовленный вопрос: приложение сделает два одинаковых запроса.</li>
-          <li>Сравни ответы и раскрой технические детали обоих запросов.</li>
+          <li>Очисти память и отправь подготовленное сообщение со словом «Запомни».</li>
+          <li>Покажи MCP-вызов memory_save: выбранный слой, ключ, значение и причину.</li>
+          <li>Покажи, что новая запись появилась в рабочей памяти автоматически.</li>
+          <li>При необходимости исправь запись вручную и сравни два ответа.</li>
         </ol>
       </details>
+
+      <section className="day11-mcp-overview">
+        <div><p className="eyebrow">Локальный MCP</p><h3>{state.mcp?.server || "ai-advent-memory"}</h3><p>Express запускает сервер памяти отдельным процессом через <code>stdio</code>. Модель получает только безопасный инструмент <code>memory_save</code>.</p></div>
+        <div className="mcp-tool-chips">{(state.mcp?.tools || []).map((tool) => <code key={tool}>{tool}</code>)}</div>
+      </section>
 
       <section className="day11-memory-section">
         <div className="day11-memory-grid">
@@ -352,9 +358,29 @@ export function Day11({ hasApiKey, onOpenSettings }) {
           <div className="token-grid">
             <div><span>Без памяти</span><strong>≈ {formatTokens(result.tokenCounts.estimatedWithoutMemory)}</strong></div>
             <div><span>С памятью</span><strong>≈ {formatTokens(result.tokenCounts.estimatedWithMemory)}</strong></div>
-            <div><span>Сообщений диалога</span><strong>{result.context.shortTermMessages}</strong></div>
-            <div><span>Записей по слоям</span><strong>{Object.values(result.context.layerItems).reduce((sum, count) => sum + count, 0)}</strong></div>
+            <div><span>Диалог до запроса</span><strong>{result.context.shortTermMessages}</strong></div>
+            <div><span>Записей до MCP</span><strong>{Object.values(result.context.layerItems).reduce((sum, count) => sum + count, 0)}</strong></div>
           </div>
+          <section className="mcp-call-log">
+            <div className="result-heading"><div><p className="eyebrow">MCP tool calls</p><h3>Что агент сохранил сам</h3></div><span className="status ready">stdio</span></div>
+            {result.mcp.toolCalls.length === 0 ? (
+              <p className="muted">В этом запросе агент не нашёл нового факта для сохранения.</p>
+            ) : (
+              <div className="mcp-call-list">
+                {result.mcp.toolCalls.map((call) => (
+                  <article className={call.isError ? "mcp-call error" : "mcp-call"} key={call.id}>
+                    <div className="mcp-call-heading"><code>{call.name}</code><span>{call.isError ? "Ошибка" : "Сохранено"}</span></div>
+                    <dl>
+                      <div><dt>Слой</dt><dd>{call.arguments.layer || "—"}</dd></div>
+                      <div><dt>Ключ</dt><dd>{call.arguments.key || "—"}</dd></div>
+                      <div><dt>Значение</dt><dd>{call.arguments.value || "—"}</dd></div>
+                      <div><dt>Причина</dt><dd>{call.arguments.reason || "—"}</dd></div>
+                    </dl>
+                  </article>
+                ))}
+              </div>
+            )}
+          </section>
         </section>
       )}
     </section>

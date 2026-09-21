@@ -7,6 +7,7 @@ import { LlmAgent } from "../server/agent.mjs";
 import { createApp } from "../server/app.mjs";
 import { createConversationStore } from "../server/conversation-store.mjs";
 import { createMemoryStore } from "../server/memory-store.mjs";
+import { createMemoryMcpClient } from "../server/memory-mcp-client.mjs";
 import { createProfileStore } from "../server/profile-store.mjs";
 import { createTaskStore } from "../server/task-store.mjs";
 import { createInvariantStore } from "../server/invariant-store.mjs";
@@ -1008,18 +1009,62 @@ test("day 11 stores three memory layers separately and compares equal prompts", 
   const scopeId = "day11-default";
   const memoryStore = createMemoryStore(filePath);
   const calls = [];
+  const mcpCalls = [];
+  const memoryMcpClient = {
+    async getOpenRouterTools() {
+      return [{
+        type: "function",
+        function: {
+          name: "memory_save",
+          description: "Сохранить факт",
+          parameters: { type: "object" },
+        },
+      }];
+    },
+    async callTool(name, argumentsValue) {
+      mcpCalls.push({ name, arguments: argumentsValue });
+      memoryStore.upsertItem(scopeId, argumentsValue.layer, argumentsValue.key, argumentsValue.value);
+      const result = { ok: true, action: "saved", ...argumentsValue };
+      return { isError: false, text: JSON.stringify(result), structuredContent: result };
+    },
+  };
   const requestLlm = async (request) => {
     calls.push(request);
     const hasMemory = request.messages.length > 2;
+    const hasToolResult = request.messages.some((message) => message.role === "tool");
+    if (request.tools?.length && !hasToolResult) {
+      return {
+        answer: "",
+        model: request.model,
+        usage: { prompt_tokens: 90, completion_tokens: 8, total_tokens: 98 },
+        cost: 0.00001,
+        latencyMs: 20,
+        finishReason: "tool_calls",
+        toolCalls: [{
+          id: "call-memory-1",
+          type: "function",
+          function: {
+            name: "memory_save",
+            arguments: JSON.stringify({
+              layer: "working",
+              key: "delivery_deadline",
+              value: "Демонстрацию подготовить к пятнице",
+              reason: "Это ограничение текущей задачи",
+            }),
+          },
+        }],
+        httpRequest: buildOpenRouterRequest(request),
+      };
+    }
     return {
       answer: hasMemory
         ? "План на JavaScript с дедлайном в пятницу."
         : "Уточните стек и срок проекта.",
       model: request.model,
       usage: {
-        prompt_tokens: hasMemory ? 90 : 25,
+        prompt_tokens: hasToolResult ? 110 : hasMemory ? 90 : 25,
         completion_tokens: 12,
-        total_tokens: hasMemory ? 102 : 37,
+        total_tokens: hasToolResult ? 122 : hasMemory ? 102 : 37,
       },
       cost: 0.00001,
       latencyMs: 20,
@@ -1035,6 +1080,7 @@ test("day 11 stores three memory layers separately and compares equal prompts", 
     const app = createApp({
       settingsStore: createMemorySettingsStore("test-secret-key"),
       memoryStore,
+      memoryMcpClient,
       requestLlm,
       environmentApiKey: "",
     });
@@ -1060,17 +1106,30 @@ test("day 11 stores three memory layers separately and compares equal prompts", 
 
       assert.equal(response.status, 200);
       assert.deepEqual(result.agent, { name: "MemoryLayerAgent", type: "agent" });
-      assert.equal(calls.length, 2);
+      assert.equal(calls.length, 3);
       assert.equal(calls[0].messages.length, 2);
-      assert.equal(calls[1].messages.length, 5);
+      assert.equal(calls[1].messages.length, 6);
       assert.equal(calls[0].messages.at(-1).content, calls[1].messages.at(-1).content);
-      assert.match(calls[1].messages[1].content, /Краткосрочные записи/u);
-      assert.match(calls[1].messages[2].content, /Рабочая память/u);
-      assert.match(calls[1].messages[3].content, /Долговременная память/u);
+      assert.match(calls[1].messages[1].content, /MCP-инструмент memory_save/u);
+      assert.match(calls[1].messages[2].content, /Краткосрочные записи/u);
+      assert.match(calls[1].messages[3].content, /Рабочая память/u);
+      assert.match(calls[1].messages[4].content, /Долговременная память/u);
+      assert.equal(calls[1].tools[0].function.name, "memory_save");
+      assert.equal(calls[1].parallelToolCalls, false);
+      assert.equal(calls[2].messages.at(-1).role, "tool");
+      assert.equal(mcpCalls.length, 1);
       assert.equal(result.state.messages.length, 2);
+      assert.equal(result.mcp.transport, "stdio");
+      assert.equal(result.mcp.toolCalls[0].arguments.layer, "working");
+      assert.equal(
+        result.state.layers.working.find((item) => item.key === "delivery_deadline").value,
+        "Демонстрацию подготовить к пятнице",
+      );
       assert.equal(result.responses.withMemory.answer, "План на JavaScript с дедлайном в пятницу.");
+      assert.equal(result.responses.withMemory.httpRequest.json.tool_choice, "auto");
+      assert.equal(result.responses.withMemory.httpRequest.json.tools[0].function.name, "memory_save");
       assert.equal(result.tokenCounts.actualWithoutMemory, 25);
-      assert.equal(result.tokenCounts.actualWithMemory, 90);
+      assert.equal(result.tokenCounts.actualWithMemory, 200);
     });
 
     memoryStore.close();
@@ -1087,6 +1146,43 @@ test("day 11 stores three memory layers separately and compares equal prompts", 
     } catch {
       // Store may already be closed after the persistence check.
     }
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("memory MCP server exposes tools over stdio and writes to SQLite", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "ai-advent-memory-mcp-"));
+  const filePath = join(directory, "agent.sqlite");
+  const client = createMemoryMcpClient({ databasePath: filePath });
+  let store;
+
+  try {
+    const tools = await client.listTools();
+    assert.deepEqual(
+      tools.map((tool) => tool.name).sort(),
+      ["memory_delete", "memory_list", "memory_save"],
+    );
+    const openRouterTools = await client.getOpenRouterTools();
+    assert.equal(openRouterTools.length, 1);
+    assert.equal(openRouterTools[0].function.name, "memory_save");
+
+    const result = await client.callTool("memory_save", {
+      layer: "longTerm",
+      key: "preferred_language",
+      value: "Русский",
+      reason: "Пользователь явно выбрал язык ответов",
+    });
+    assert.equal(result.isError, false);
+    assert.equal(result.structuredContent.action, "saved");
+
+    store = createMemoryStore(filePath);
+    assert.equal(
+      store.getState("day11-default").layers.longTerm[0].value,
+      "Русский",
+    );
+  } finally {
+    store?.close();
+    await client.close();
     await rm(directory, { recursive: true, force: true });
   }
 });

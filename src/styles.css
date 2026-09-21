@@ -788,6 +788,46 @@ h1 {
   margin-bottom: 24px;
 }
 
+.day11-mcp-overview {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 20px;
+  margin-bottom: 18px;
+  padding: 18px;
+  border: 1px solid #b9ccb9;
+  border-radius: 16px;
+  background: #f0f6ee;
+}
+
+.day11-mcp-overview h3,
+.day11-mcp-overview p {
+  margin-bottom: 6px;
+}
+
+.day11-mcp-overview p:last-child {
+  margin-bottom: 0;
+  color: #596159;
+  line-height: 1.55;
+}
+
+.mcp-tool-chips {
+  display: flex;
+  flex: 0 0 auto;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 7px;
+}
+
+.mcp-tool-chips code,
+.mcp-call-heading code {
+  padding: 5px 8px;
+  border-radius: 7px;
+  color: #35533c;
+  background: #dff1e3;
+  font-size: 0.76rem;
+}
+
 .day11-memory-grid {
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));
@@ -925,6 +965,68 @@ h1 {
   border: 1px solid #ddd8ca;
   border-radius: 14px;
   background: #f8f6ef;
+}
+
+.mcp-call-log {
+  margin-top: 20px;
+  padding-top: 20px;
+  border-top: 1px solid #ddd8ca;
+}
+
+.mcp-call-list {
+  display: grid;
+  gap: 12px;
+  margin-top: 14px;
+}
+
+.mcp-call {
+  padding: 15px;
+  border: 1px solid #9eb9a6;
+  border-radius: 13px;
+  background: #f0f6ee;
+}
+
+.mcp-call.error {
+  border-color: #d99782;
+  background: #fff7f3;
+}
+
+.mcp-call-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.mcp-call-heading span {
+  color: #4e855d;
+  font-size: 0.76rem;
+  font-weight: 800;
+}
+
+.mcp-call dl {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px 16px;
+  margin: 14px 0 0;
+}
+
+.mcp-call dl div {
+  min-width: 0;
+}
+
+.mcp-call dt {
+  color: #747b74;
+  font-size: 0.68rem;
+  font-weight: 800;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.mcp-call dd {
+  margin: 4px 0 0;
+  overflow-wrap: anywhere;
+  line-height: 1.45;
 }
 
 .profile-panel {
@@ -1538,6 +1640,7 @@ pre {
   .memory-editor-grid,
   .day11-settings-grid,
   .day11-answer-comparison,
+  .mcp-call dl,
   .profile-editor,
   .task-phase-track,
   .task-state-card .field-grid,
@@ -1546,6 +1649,14 @@ pre {
   .transition-buttons,
   .token-grid {
     grid-template-columns: 1fr;
+  }
+
+  .day11-mcp-overview {
+    flex-direction: column;
+  }
+
+  .mcp-tool-chips {
+    justify-content: flex-start;
   }
 
   .single-run-form .primary-button {
