@@ -64,8 +64,9 @@ function ChatMessage({ item }) {
   );
 }
 
-function MemoryLayer({ id, items, messageCount, onDelete }) {
+function MemoryLayer({ disabled, id, items, messageCount, onClear, onDelete }) {
   const layer = DAY11_MEMORY_LAYERS[id];
+  const itemCount = items.length + (messageCount || 0);
   return (
     <article className="memory-layer-card">
       <div className="memory-layer-heading">
@@ -73,7 +74,7 @@ function MemoryLayer({ id, items, messageCount, onDelete }) {
           <h3>{layer.title}</h3>
           <p>{layer.description}</p>
         </div>
-        <span>{items.length + (messageCount || 0)}</span>
+        <span>{itemCount}</span>
       </div>
       {messageCount > 0 && (
         <p className="memory-dialogue-count">Диалог: {messageCount} сообщ.</p>
@@ -97,6 +98,14 @@ function MemoryLayer({ id, items, messageCount, onDelete }) {
           ))}
         </ul>
       )}
+      <button
+        className="secondary-button memory-layer-clear"
+        disabled={disabled || itemCount === 0}
+        onClick={() => onClear(id)}
+        type="button"
+      >
+        Очистить слой
+      </button>
     </article>
   );
 }
@@ -115,6 +124,7 @@ export function Day11({ hasApiKey, onOpenSettings }) {
   const [activeResultVariant, setActiveResultVariant] = useState("withMemory");
   const [isLoading, setIsLoading] = useState(true);
   const [isSaving, setIsSaving] = useState(false);
+  const [clearingLayer, setClearingLayer] = useState(null);
   const [isSending, setIsSending] = useState(false);
   const [error, setError] = useState("");
 
@@ -165,6 +175,28 @@ export function Day11({ hasApiKey, onOpenSettings }) {
     }
   }
 
+  async function clearLayer(layer) {
+    const layerTitle = DAY11_MEMORY_LAYERS[layer].title;
+    const details = layer === "shortTerm" ? " Текущий диалог тоже будет удалён." : "";
+    if (!window.confirm(`Очистить слой «${layerTitle}»?${details}`)) {
+      return;
+    }
+    setClearingLayer(layer);
+    setError("");
+    try {
+      const nextState = await apiRequest(`/api/day11/memory/${encodeURIComponent(layer)}`, {
+        method: "DELETE",
+      });
+      setState(nextState);
+      setResult(null);
+      setActiveResultVariant("withMemory");
+    } catch (requestError) {
+      setError(requestError.message);
+    } finally {
+      setClearingLayer(null);
+    }
+  }
+
   async function clearAll() {
     if (!window.confirm("Очистить диалог и все три слоя памяти Дня 11?")) {
       return;
@@ -209,7 +241,7 @@ export function Day11({ hasApiKey, onOpenSettings }) {
     }
   }
 
-  const disabled = isLoading || isSaving || isSending;
+  const disabled = isLoading || isSaving || isSending || clearingLayer !== null;
 
   return (
     <section className="experiment-card">
@@ -252,10 +284,12 @@ export function Day11({ hasApiKey, onOpenSettings }) {
         <div className="day11-memory-grid">
           {Object.keys(DAY11_MEMORY_LAYERS).map((layer) => (
             <MemoryLayer
+              disabled={disabled}
               id={layer}
               items={state.layers[layer]}
               key={layer}
               messageCount={layer === "shortTerm" ? state.messages.length : 0}
+              onClear={clearLayer}
               onDelete={deleteMemory}
             />
           ))}

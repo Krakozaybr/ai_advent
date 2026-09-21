@@ -1130,6 +1130,37 @@ test("day 11 stores three memory layers separately and compares equal prompts", 
       assert.equal(result.responses.withMemory.httpRequest.json.tools[0].function.name, "memory_save");
       assert.equal(result.tokenCounts.actualWithoutMemory, 25);
       assert.equal(result.tokenCounts.actualWithMemory, 200);
+
+      const clearShortTermResponse = await fetch(`${origin}/api/day11/memory/shortTerm`, {
+        method: "DELETE",
+      });
+      const stateAfterShortTermClear = await clearShortTermResponse.json();
+      assert.equal(clearShortTermResponse.status, 200);
+      assert.equal(stateAfterShortTermClear.messages.length, 0);
+      assert.equal(stateAfterShortTermClear.layers.shortTerm.length, 0);
+      assert.equal(stateAfterShortTermClear.layers.working.length, 2);
+      assert.equal(stateAfterShortTermClear.layers.longTerm.length, 1);
+
+      const clearWorkingResponse = await fetch(`${origin}/api/day11/memory/working`, {
+        method: "DELETE",
+      });
+      const stateAfterWorkingClear = await clearWorkingResponse.json();
+      assert.equal(clearWorkingResponse.status, 200);
+      assert.equal(stateAfterWorkingClear.layers.working.length, 0);
+      assert.equal(stateAfterWorkingClear.layers.longTerm.length, 1);
+
+      const clearLongTermResponse = await fetch(`${origin}/api/day11/memory/longTerm`, {
+        method: "DELETE",
+      });
+      const stateAfterLongTermClear = await clearLongTermResponse.json();
+      assert.equal(clearLongTermResponse.status, 200);
+      assert.equal(stateAfterLongTermClear.layers.working.length, 0);
+      assert.equal(stateAfterLongTermClear.layers.longTerm.length, 0);
+
+      memoryStore.upsertItem(scopeId, "shortTerm", "request", "Подготовить план проекта");
+      memoryStore.upsertItem(scopeId, "working", "deadline", "Пятница");
+      memoryStore.upsertItem(scopeId, "longTerm", "stack", "JavaScript");
+      memoryStore.appendExchange(scopeId, "Составь короткий план.", result.responses.withMemory.answer);
     });
 
     memoryStore.close();

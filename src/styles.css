@@ -931,6 +931,11 @@ h1 {
   font-size: 0.72rem;
 }
 
+.memory-layer-clear {
+  width: 100%;
+  margin-top: 14px;
+}
+
 .memory-editor {
   display: grid;
   gap: 14px;

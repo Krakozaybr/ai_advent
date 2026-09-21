@@ -131,6 +131,21 @@ export function createMemoryStore(filePath = DEFAULT_DATABASE_PATH) {
       return listItems(scopeId, layer);
     },
 
+    clearLayer(scopeId, layer) {
+      assertLayer(layer);
+      database.exec("BEGIN IMMEDIATE");
+      try {
+        if (layer === "shortTerm") {
+          clearMessagesStatement.run(scopeId);
+        }
+        statements[layer].clear.run(scopeId);
+        database.exec("COMMIT");
+      } catch (error) {
+        database.exec("ROLLBACK");
+        throw error;
+      }
+    },
+
     appendExchange(scopeId, userContent, assistantContent) {
       database.exec("BEGIN IMMEDIATE");
       try {

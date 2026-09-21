@@ -773,6 +773,15 @@ export function createApp({
     return response.json(getMemoryStore().getState(DAY11_SCOPE_ID));
   });
 
+  app.delete("/api/day11/memory/:layer", (request, response) => {
+    const { layer } = request.params;
+    if (!Object.hasOwn(DAY11_MEMORY_LAYERS, layer)) {
+      return response.status(400).json({ error: "Выбери существующий слой памяти." });
+    }
+    getMemoryStore().clearLayer(DAY11_SCOPE_ID, layer);
+    return response.json(getMemoryStore().getState(DAY11_SCOPE_ID));
+  });
+
   app.delete("/api/day11/state", (_request, response) => {
     getMemoryStore().clear(DAY11_SCOPE_ID);
     return response.json(getMemoryStore().getState(DAY11_SCOPE_ID));
