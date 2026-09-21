@@ -952,19 +952,14 @@ h1 {
   grid-template-columns: minmax(240px, 1.5fr) repeat(2, minmax(130px, 0.55fr));
 }
 
-.day11-answer-comparison {
-  display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 14px;
+.day11-result-tabs {
   margin-top: 20px;
 }
 
-.day11-answer-comparison article {
+.day11-result-panel {
+  display: grid;
+  gap: 16px;
   min-width: 0;
-  padding: 16px;
-  border: 1px solid #ddd8ca;
-  border-radius: 14px;
-  background: #f8f6ef;
 }
 
 .mcp-call-log {
@@ -1639,7 +1634,6 @@ pre {
   .day11-memory-grid,
   .memory-editor-grid,
   .day11-settings-grid,
-  .day11-answer-comparison,
   .mcp-call dl,
   .profile-editor,
   .task-phase-track,

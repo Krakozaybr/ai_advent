@@ -112,6 +112,7 @@ export function Day11({ hasApiKey, onOpenSettings }) {
   const [maxTokens, setMaxTokens] = useState(400);
   const [temperature, setTemperature] = useState(0.2);
   const [result, setResult] = useState(null);
+  const [activeResultVariant, setActiveResultVariant] = useState("withMemory");
   const [isLoading, setIsLoading] = useState(true);
   const [isSaving, setIsSaving] = useState(false);
   const [isSending, setIsSending] = useState(false);
@@ -173,6 +174,7 @@ export function Day11({ hasApiKey, onOpenSettings }) {
       const nextState = await apiRequest("/api/day11/state", { method: "DELETE" });
       setState(nextState);
       setResult(null);
+      setActiveResultVariant("withMemory");
       setMessage(DAY11_DEFAULT_PROMPT);
     } catch (requestError) {
       setError(requestError.message);
@@ -198,6 +200,7 @@ export function Day11({ hasApiKey, onOpenSettings }) {
         }),
       });
       setResult(nextResult);
+      setActiveResultVariant("withMemory");
       setState((current) => ({ ...nextResult.state, mcp: current.mcp }));
     } catch (requestError) {
       setError(requestError.message);
@@ -341,46 +344,80 @@ export function Day11({ hasApiKey, onOpenSettings }) {
             <div><p className="eyebrow">Сравнение</p><h3>Один вопрос, разный контекст</h3></div>
             <button className="secondary-button" onClick={() => downloadResult(result)} type="button">Скачать JSON</button>
           </div>
-          <div className="day11-answer-comparison">
-            <article>
-              <p className="eyebrow">Без памяти</p>
-              <div className="markdown-body"><MarkdownContent>{result.responses.withoutMemory.answer}</MarkdownContent></div>
-              <ResultMetrics result={result.responses.withoutMemory} />
-              <RequestDetails request={result.responses.withoutMemory.httpRequest} title="Технические детали запроса без памяти" />
-            </article>
-            <article>
-              <p className="eyebrow">Со всеми слоями</p>
-              <div className="markdown-body"><MarkdownContent>{result.responses.withMemory.answer}</MarkdownContent></div>
-              <ResultMetrics result={result.responses.withMemory} />
-              <RequestDetails request={result.responses.withMemory.httpRequest} title="Технические детали запроса с памятью" />
-            </article>
+          <div className="variant-tabs day11-result-tabs" role="tablist" aria-label="Вариант ответа">
+            <button
+              aria-controls="day11-result-panel"
+              aria-selected={activeResultVariant === "withoutMemory"}
+              className={activeResultVariant === "withoutMemory" ? "variant-tab active" : "variant-tab"}
+              onClick={() => setActiveResultVariant("withoutMemory")}
+              role="tab"
+              type="button"
+            >
+              Без памяти
+            </button>
+            <button
+              aria-controls="day11-result-panel"
+              aria-selected={activeResultVariant === "withMemory"}
+              className={activeResultVariant === "withMemory" ? "variant-tab active" : "variant-tab"}
+              onClick={() => setActiveResultVariant("withMemory")}
+              role="tab"
+              type="button"
+            >
+              С памятью
+              {result.mcp.toolCalls.length > 0 && ` · MCP ${result.mcp.toolCalls.length}`}
+            </button>
           </div>
+          <section className="variant-panel day11-result-panel" id="day11-result-panel" role="tabpanel">
+            {activeResultVariant === "withoutMemory" ? (
+              <>
+                <div className="variant-heading">
+                  <p className="eyebrow">Без памяти</p>
+                  <h3>Только текущий запрос</h3>
+                  <p className="muted">История диалога и записи из слоёв памяти не передавались модели.</p>
+                </div>
+                <div className="markdown-body"><MarkdownContent>{result.responses.withoutMemory.answer}</MarkdownContent></div>
+                <ResultMetrics result={result.responses.withoutMemory} />
+                <RequestDetails request={result.responses.withoutMemory.httpRequest} title="Технические детали запроса без памяти" />
+              </>
+            ) : (
+              <>
+                <div className="variant-heading">
+                  <p className="eyebrow">С памятью</p>
+                  <h3>Все три слоя и MCP</h3>
+                  <p className="muted">Модель получила историю диалога, рабочие данные и долговременную память.</p>
+                </div>
+                <div className="markdown-body"><MarkdownContent>{result.responses.withMemory.answer}</MarkdownContent></div>
+                <ResultMetrics result={result.responses.withMemory} />
+                <RequestDetails request={result.responses.withMemory.httpRequest} title="Технические детали запроса с памятью" />
+                <section className="mcp-call-log">
+                  <div className="result-heading"><div><p className="eyebrow">MCP tool calls</p><h3>Что агент сохранил сам</h3></div><span className="status ready">stdio</span></div>
+                  {result.mcp.toolCalls.length === 0 ? (
+                    <p className="muted">В этом запросе агент не нашёл нового факта для сохранения.</p>
+                  ) : (
+                    <div className="mcp-call-list">
+                      {result.mcp.toolCalls.map((call) => (
+                        <article className={call.isError ? "mcp-call error" : "mcp-call"} key={call.id}>
+                          <div className="mcp-call-heading"><code>{call.name}</code><span>{call.isError ? "Ошибка" : "Сохранено"}</span></div>
+                          <dl>
+                            <div><dt>Слой</dt><dd>{call.arguments.layer || "—"}</dd></div>
+                            <div><dt>Ключ</dt><dd>{call.arguments.key || "—"}</dd></div>
+                            <div><dt>Значение</dt><dd>{call.arguments.value || "—"}</dd></div>
+                            <div><dt>Причина</dt><dd>{call.arguments.reason || "—"}</dd></div>
+                          </dl>
+                        </article>
+                      ))}
+                    </div>
+                  )}
+                </section>
+              </>
+            )}
+          </section>
           <div className="token-grid">
             <div><span>Без памяти</span><strong>≈ {formatTokens(result.tokenCounts.estimatedWithoutMemory)}</strong></div>
             <div><span>С памятью</span><strong>≈ {formatTokens(result.tokenCounts.estimatedWithMemory)}</strong></div>
             <div><span>Диалог до запроса</span><strong>{result.context.shortTermMessages}</strong></div>
             <div><span>Записей до MCP</span><strong>{Object.values(result.context.layerItems).reduce((sum, count) => sum + count, 0)}</strong></div>
           </div>
-          <section className="mcp-call-log">
-            <div className="result-heading"><div><p className="eyebrow">MCP tool calls</p><h3>Что агент сохранил сам</h3></div><span className="status ready">stdio</span></div>
-            {result.mcp.toolCalls.length === 0 ? (
-              <p className="muted">В этом запросе агент не нашёл нового факта для сохранения.</p>
-            ) : (
-              <div className="mcp-call-list">
-                {result.mcp.toolCalls.map((call) => (
-                  <article className={call.isError ? "mcp-call error" : "mcp-call"} key={call.id}>
-                    <div className="mcp-call-heading"><code>{call.name}</code><span>{call.isError ? "Ошибка" : "Сохранено"}</span></div>
-                    <dl>
-                      <div><dt>Слой</dt><dd>{call.arguments.layer || "—"}</dd></div>
-                      <div><dt>Ключ</dt><dd>{call.arguments.key || "—"}</dd></div>
-                      <div><dt>Значение</dt><dd>{call.arguments.value || "—"}</dd></div>
-                      <div><dt>Причина</dt><dd>{call.arguments.reason || "—"}</dd></div>
-                    </dl>
-                  </article>
-                ))}
-              </div>
-            )}
-          </section>
         </section>
       )}
     </section>
