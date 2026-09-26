@@ -1,0 +1,448 @@
+package ai.advent.v3
+
+import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.buildJsonObject
+import kotlinx.serialization.json.jsonPrimitive
+import kotlinx.serialization.json.JsonNull
+import kotlinx.serialization.json.jsonObject
+import kotlinx.serialization.json.put
+import java.io.Closeable
+import java.nio.file.Files
+import java.nio.file.Path
+import java.sql.Connection
+import java.sql.DriverManager
+import java.sql.SQLException
+import java.time.Instant
+import java.util.UUID
+
+data class StartedRun(val boardId: String, val laneId: String, val runId: String, val threadId: String?) {
+    override fun toString(): String = super.toString()
+}
+
+class ActiveRunException : IllegalStateException("A request is already running in this lane")
+
+class BoardStore(private val file: Path) : Closeable {
+    private val lock = Any()
+
+    init {
+        Files.createDirectories(file.toAbsolutePath().parent)
+        Class.forName("org.sqlite.JDBC")
+        connect().use { db ->
+            db.createStatement().use { statement ->
+                statement.execute("PRAGMA journal_mode=WAL")
+                statement.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS boards (
+                        id TEXT PRIMARY KEY,
+                        title TEXT NOT NULL,
+                        created_at TEXT NOT NULL
+                    )
+                    """.trimIndent(),
+                )
+                statement.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS lanes (
+                        id TEXT PRIMARY KEY,
+                        board_id TEXT NOT NULL REFERENCES boards(id),
+                        title TEXT NOT NULL,
+                        codex_thread_id TEXT,
+                        created_at TEXT NOT NULL
+                    )
+                    """.trimIndent(),
+                )
+                statement.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS messages (
+                        id TEXT PRIMARY KEY,
+                        lane_id TEXT NOT NULL REFERENCES lanes(id),
+                        role TEXT NOT NULL,
+                        content TEXT NOT NULL,
+                        run_id TEXT,
+                        created_at TEXT NOT NULL
+                    )
+                    """.trimIndent(),
+                )
+                statement.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS runs (
+                        id TEXT PRIMARY KEY,
+                        board_id TEXT NOT NULL,
+                        lane_id TEXT NOT NULL REFERENCES lanes(id),
+                        assistant_message_id TEXT NOT NULL REFERENCES messages(id),
+                        status TEXT NOT NULL,
+                        started_at TEXT NOT NULL,
+                        completed_at TEXT,
+                        error TEXT
+                    )
+                    """.trimIndent(),
+                )
+                statement.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS run_events (
+                        run_id TEXT NOT NULL REFERENCES runs(id),
+                        sequence INTEGER NOT NULL,
+                        event_json TEXT NOT NULL,
+                        PRIMARY KEY (run_id, sequence)
+                    )
+                    """.trimIndent(),
+                )
+                statement.execute(
+                    "CREATE UNIQUE INDEX IF NOT EXISTS one_running_run_per_lane " +
+                        "ON runs(lane_id) WHERE status = 'running'",
+                )
+            }
+            ensureBoard(db)
+            markInterruptedRuns(db)
+        }
+    }
+
+    fun board(): JsonObject = synchronized(lock) {
+        connect().use { db ->
+            val board = db.prepareStatement(
+                "SELECT id, title FROM boards ORDER BY created_at LIMIT 1",
+            ).use { query ->
+                query.executeQuery().use { result ->
+                    check(result.next()) { "Board has not been initialized" }
+                    buildJsonObject {
+                        put("id", result.getString("id"))
+                        put("title", result.getString("title"))
+                    }
+                }
+            }
+            val lanes = mutableListOf<JsonObject>()
+            db.prepareStatement(
+                "SELECT id, title, codex_thread_id FROM lanes WHERE board_id = ? ORDER BY created_at",
+            ).use { query ->
+                query.setString(1, board["id"]!!.jsonPrimitive.content)
+                query.executeQuery().use { result ->
+                    while (result.next()) {
+                        val laneId = result.getString("id")
+                        lanes += buildJsonObject {
+                            put("id", laneId)
+                            put("title", result.getString("title"))
+                            result.getString("codex_thread_id")?.let { put("codexThreadId", it) }
+                            put("messages", messages(db, laneId))
+                            put("activeRun", activeRun(db, laneId) ?: JsonNull)
+                        }
+                    }
+                }
+            }
+            buildJsonObject {
+                put("board", board)
+                put("lanes", kotlinx.serialization.json.JsonArray(lanes))
+            }
+        }
+    }
+
+    fun firstLaneId(): String = synchronized(lock) {
+        connect().use { db ->
+            db.createStatement().use { statement ->
+                statement.executeQuery("SELECT id FROM lanes ORDER BY created_at LIMIT 1").use { result ->
+                    check(result.next()) { "Board has no lane" }
+                    result.getString("id")
+                }
+            }
+        }
+    }
+
+    fun startRun(laneId: String, prompt: String): StartedRun = synchronized(lock) {
+        connect().use { db ->
+            db.autoCommit = false
+            try {
+                val lane = db.prepareStatement(
+                    "SELECT board_id, codex_thread_id FROM lanes WHERE id = ?",
+                ).use { query ->
+                    query.setString(1, laneId)
+                    query.executeQuery().use { result ->
+                        check(result.next()) { "Unknown lane" }
+                        result.getString("board_id") to result.getString("codex_thread_id")
+                    }
+                }
+                val isActive = db.prepareStatement(
+                    "SELECT 1 FROM runs WHERE lane_id = ? AND status = 'running' LIMIT 1",
+                ).use { query ->
+                    query.setString(1, laneId)
+                    query.executeQuery().use { it.next() }
+                }
+                if (isActive) throw ActiveRunException()
+
+                val now = Instant.now().toString()
+                val userMessageId = UUID.randomUUID().toString()
+                val answerId = UUID.randomUUID().toString()
+                val runId = UUID.randomUUID().toString()
+                db.prepareStatement(
+                    "INSERT INTO messages(id, lane_id, role, content, created_at) VALUES (?, ?, 'user', ?, ?)",
+                ).use { query ->
+                    query.setString(1, userMessageId)
+                    query.setString(2, laneId)
+                    query.setString(3, prompt)
+                    query.setString(4, now)
+                    query.executeUpdate()
+                }
+                db.prepareStatement(
+                    "INSERT INTO messages(id, lane_id, role, content, run_id, created_at) " +
+                        "VALUES (?, ?, 'assistant', '', ?, ?)",
+                ).use { query ->
+                    query.setString(1, answerId)
+                    query.setString(2, laneId)
+                    query.setString(3, runId)
+                    query.setString(4, now)
+                    query.executeUpdate()
+                }
+                db.prepareStatement(
+                    "INSERT INTO runs(id, board_id, lane_id, assistant_message_id, status, started_at) " +
+                        "VALUES (?, ?, ?, ?, 'running', ?)",
+                ).use { query ->
+                    query.setString(1, runId)
+                    query.setString(2, lane.first)
+                    query.setString(3, laneId)
+                    query.setString(4, answerId)
+                    query.setString(5, now)
+                    query.executeUpdate()
+                }
+                insertEvent(db, lane.first, laneId, runId, "run.started", buildJsonObject {})
+                db.commit()
+                StartedRun(lane.first, laneId, runId, lane.second)
+            } catch (error: SQLException) {
+                db.rollback()
+                if (error.message.orEmpty().contains("one_running_run_per_lane")) throw ActiveRunException()
+                throw error
+            } catch (error: Exception) {
+                db.rollback()
+                throw error
+            } finally {
+                db.autoCommit = true
+            }
+        }
+    }
+
+    fun saveThread(laneId: String, threadId: String) = synchronized(lock) {
+        connect().use { db ->
+            db.prepareStatement("UPDATE lanes SET codex_thread_id = ? WHERE id = ?").use { query ->
+                query.setString(1, threadId)
+                query.setString(2, laneId)
+                check(query.executeUpdate() == 1) { "Unknown lane" }
+            }
+        }
+    }
+
+    fun appendText(runId: String, delta: String) = synchronized(lock) {
+        connect().use { db ->
+            val run = runDetails(db, runId)
+            db.prepareStatement("UPDATE messages SET content = content || ? WHERE id = ?").use { query ->
+                query.setString(1, delta)
+                query.setString(2, run.answerMessageId)
+                query.executeUpdate()
+            }
+            insertEvent(db, run.boardId, run.laneId, runId, "text.delta", buildJsonObject { put("text", delta) })
+        }
+    }
+
+    fun completeRun(runId: String) = finishRun(runId, "completed", null, "run.completed")
+
+    fun failRun(runId: String, reason: String) = finishRun(runId, "failed", reason, "run.failed")
+
+    fun eventsAfter(runId: String, sequence: Long): List<Pair<Long, JsonObject>> = synchronized(lock) {
+        connect().use { db ->
+            db.prepareStatement(
+                "SELECT sequence, event_json FROM run_events WHERE run_id = ? AND sequence > ? ORDER BY sequence",
+            ).use { query ->
+                query.setString(1, runId)
+                query.setLong(2, sequence)
+                query.executeQuery().use { result ->
+                    buildList {
+                        while (result.next()) {
+                            add(result.getLong("sequence") to kotlinx.serialization.json.Json
+                                .parseToJsonElement(result.getString("event_json")).jsonObject)
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    fun isTerminal(runId: String): Boolean = synchronized(lock) {
+        connect().use { db ->
+            db.prepareStatement("SELECT status FROM runs WHERE id = ?").use { query ->
+                query.setString(1, runId)
+                query.executeQuery().use { result ->
+                    !result.next() || result.getString("status") != "running"
+                }
+            }
+        }
+    }
+
+    fun runExists(runId: String): Boolean = synchronized(lock) {
+        connect().use { db ->
+            db.prepareStatement("SELECT 1 FROM runs WHERE id = ?").use { query ->
+                query.setString(1, runId)
+                query.executeQuery().use { it.next() }
+            }
+        }
+    }
+
+    private fun finishRun(runId: String, status: String, reason: String?, eventType: String) = synchronized(lock) {
+        connect().use { db ->
+            db.autoCommit = false
+            try {
+                val details = runDetails(db, runId)
+                db.prepareStatement(
+                    "UPDATE runs SET status = ?, completed_at = ?, error = ? WHERE id = ? AND status = 'running'",
+                ).use { query ->
+                    query.setString(1, status)
+                    query.setString(2, Instant.now().toString())
+                    query.setString(3, reason)
+                    query.setString(4, runId)
+                    if (query.executeUpdate() == 1) {
+                        val data = buildJsonObject { if (reason != null) put("error", reason) }
+                        insertEvent(db, details.boardId, details.laneId, runId, eventType, data)
+                    }
+                }
+                db.commit()
+            } catch (error: Exception) {
+                db.rollback()
+                throw error
+            } finally {
+                db.autoCommit = true
+            }
+        }
+    }
+
+    private fun insertEvent(
+        db: Connection,
+        boardId: String,
+        laneId: String,
+        runId: String,
+        type: String,
+        data: JsonObject,
+    ) {
+        val sequence = db.prepareStatement("SELECT COALESCE(MAX(sequence), 0) + 1 FROM run_events WHERE run_id = ?")
+            .use { query ->
+                query.setString(1, runId)
+                query.executeQuery().use { result -> result.next(); result.getLong(1) }
+            }
+        val event = buildJsonObject {
+            put("boardId", boardId)
+            put("laneId", laneId)
+            put("runId", runId)
+            put("sequence", sequence)
+            put("type", type)
+            put("data", data)
+        }
+        db.prepareStatement("INSERT INTO run_events(run_id, sequence, event_json) VALUES (?, ?, ?)").use { query ->
+            query.setString(1, runId)
+            query.setLong(2, sequence)
+            query.setString(3, kotlinx.serialization.json.Json.encodeToString(JsonObject.serializer(), event))
+            query.executeUpdate()
+        }
+    }
+
+    private fun messages(db: Connection, laneId: String) = kotlinx.serialization.json.JsonArray(
+        db.prepareStatement(
+            """SELECT m.id, m.role, m.content, m.created_at, r.status AS run_status, r.error AS run_error
+               FROM messages m LEFT JOIN runs r ON r.id = m.run_id
+               WHERE m.lane_id = ? ORDER BY m.created_at, m.rowid""",
+        ).use { query ->
+            query.setString(1, laneId)
+            query.executeQuery().use { result ->
+                buildList {
+                    while (result.next()) {
+                        add(buildJsonObject {
+                            put("id", result.getString("id"))
+                            put("role", result.getString("role"))
+                            put("content", result.getString("content"))
+                            put("createdAt", result.getString("created_at"))
+                            result.getString("run_status")?.let { put("runStatus", it) }
+                            result.getString("run_error")?.let { put("runError", it) }
+                        })
+                    }
+                }
+            }
+        },
+    )
+
+    private fun activeRun(db: Connection, laneId: String) = db.prepareStatement(
+        """SELECT r.id, r.status, COALESCE(MAX(e.sequence), 0) AS sequence
+           FROM runs r LEFT JOIN run_events e ON e.run_id = r.id
+           WHERE r.lane_id = ? AND r.status = 'running' GROUP BY r.id LIMIT 1""",
+    ).use { query ->
+        query.setString(1, laneId)
+        query.executeQuery().use { result ->
+            if (result.next()) buildJsonObject {
+                put("id", result.getString("id"))
+                put("status", result.getString("status"))
+                put("sequence", result.getLong("sequence"))
+            } else null
+        }
+    }
+
+    private data class RunDetails(
+        val boardId: String,
+        val laneId: String,
+        val answerMessageId: String,
+    ) {
+        override fun toString(): String = super.toString()
+    }
+
+    private fun runDetails(db: Connection, runId: String) = db.prepareStatement(
+        "SELECT board_id, lane_id, assistant_message_id FROM runs WHERE id = ?",
+    ).use { query ->
+        query.setString(1, runId)
+        query.executeQuery().use { result ->
+            check(result.next()) { "Unknown run" }
+            RunDetails(result.getString("board_id"), result.getString("lane_id"), result.getString("assistant_message_id"))
+        }
+    }
+
+    private fun ensureBoard(db: Connection) {
+        val exists = db.createStatement().use { statement ->
+            statement.executeQuery("SELECT 1 FROM boards LIMIT 1").use { it.next() }
+        }
+        if (exists) return
+        val now = Instant.now().toString()
+        val boardId = UUID.randomUUID().toString()
+        val laneId = UUID.randomUUID().toString()
+        db.prepareStatement("INSERT INTO boards(id, title, created_at) VALUES (?, 'AI Advent', ?)").use { query ->
+            query.setString(1, boardId)
+            query.setString(2, now)
+            query.executeUpdate()
+        }
+        db.prepareStatement("INSERT INTO lanes(id, board_id, title, created_at) VALUES (?, ?, 'Лента 1', ?)").use { query ->
+            query.setString(1, laneId)
+            query.setString(2, boardId)
+            query.setString(3, now)
+            query.executeUpdate()
+        }
+    }
+
+    private fun markInterruptedRuns(db: Connection) {
+        db.prepareStatement("SELECT id FROM runs WHERE status = 'running'").use { query ->
+            query.executeQuery().use { result ->
+                val interrupted = buildList { while (result.next()) add(result.getString("id")) }
+                interrupted.forEach { runId ->
+                    db.prepareStatement(
+                        "UPDATE runs SET status = 'failed', completed_at = ?, error = 'Сервер перезапустился до завершения ответа' " +
+                            "WHERE id = ?",
+                    ).use { update ->
+                        update.setString(1, Instant.now().toString())
+                        update.setString(2, runId)
+                        update.executeUpdate()
+                    }
+                    val run = runDetails(db, runId)
+                    insertEvent(
+                        db,
+                        run.boardId,
+                        run.laneId,
+                        runId,
+                        "run.failed",
+                        buildJsonObject { put("error", "Сервер перезапустился до завершения ответа") },
+                    )
+                }
+            }
+        }
+    }
+
+    private fun connect(): Connection = DriverManager.getConnection("jdbc:sqlite:${file.toAbsolutePath()}")
+
+    override fun close() = Unit
+}

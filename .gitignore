@@ -4,4 +4,9 @@ day*/result.json
 legacy/cli-days-1-5/day*/result.json
 dist/
 data/
+v3/data/
+v3/backend/.gradle/
+v3/backend/build/
+v3/frontend/node_modules/
+v3/frontend/dist/
 .DS_Store
