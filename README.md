@@ -67,3 +67,6 @@ npm run dev
 
 Сохранённая CLI-версия Days 1–5 находится в
 [`legacy/cli-days-1-5`](legacy/cli-days-1-5/README.md).
+
+Формулировки будущих заданий для Дней 16–20 сохранены в
+[`docs/days-16-20-assignments.md`](docs/days-16-20-assignments.md).
