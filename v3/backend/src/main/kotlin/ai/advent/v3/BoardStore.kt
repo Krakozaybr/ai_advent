@@ -112,11 +112,14 @@ class BoardStore(private val file: Path, private val initialBoardTitle: String =
             }
             ensureColumn(db, "lanes", "origin_lane_id", "TEXT")
             ensureColumn(db, "lanes", "origin_message_id", "TEXT")
+            ensureColumn(db, "lanes", "origin_message_role", "TEXT")
+            ensureColumn(db, "lanes", "origin_message_content", "TEXT")
             ensureColumn(db, "lanes", "origin_kind", "TEXT")
             ensureColumn(db, "lanes", "codex_context_seeded", "INTEGER NOT NULL DEFAULT 1")
             ensureColumn(db, "lanes", "position_x", "INTEGER")
             ensureColumn(db, "lanes", "position_y", "INTEGER")
             ensureColumn(db, "lanes", "width", "INTEGER")
+            backfillLaneLayout(db)
             ensureBoard(db, initialBoardTitle)
             markInterruptedRuns(db)
         }
@@ -138,6 +141,7 @@ class BoardStore(private val file: Path, private val initialBoardTitle: String =
             val lanes = mutableListOf<JsonObject>()
             db.prepareStatement(
                 "SELECT id, title, codex_thread_id, origin_lane_id, origin_message_id, origin_kind, " +
+                    "origin_message_role, origin_message_content, " +
                     "position_x, position_y, width " +
                     "FROM lanes WHERE board_id = ? ORDER BY created_at, rowid",
             ).use { query ->
@@ -158,7 +162,18 @@ class BoardStore(private val file: Path, private val initialBoardTitle: String =
                             result.getString("origin_lane_id")?.let { originLaneId ->
                                 val originMessageId = result.getString("origin_message_id")
                                 if (originMessageId != null) {
-                                    put("originMessage", message(db, originLaneId, originMessageId) ?: JsonNull)
+                                    val snapshotRole = result.getString("origin_message_role")
+                                    val snapshotContent = result.getString("origin_message_content")
+                                    val snapshot = if (snapshotRole != null && snapshotContent != null) {
+                                        buildJsonObject {
+                                            put("id", originMessageId)
+                                            put("role", snapshotRole)
+                                            put("content", snapshotContent)
+                                        }
+                                    } else {
+                                        message(db, originLaneId, originMessageId)
+                                    }
+                                    put("originMessage", snapshot ?: JsonNull)
                                 }
                             }
                             put("messages", messages(db, laneId))
@@ -383,6 +398,16 @@ class BoardStore(private val file: Path, private val initialBoardTitle: String =
                     query.executeQuery().use { it.next() }
                 }
                 check(selectedMessageExists) { "Unknown message" }
+                val originSnapshot = throughMessageId?.let { selectedId ->
+                    db.prepareStatement("SELECT role, content FROM messages WHERE id = ? AND lane_id = ?").use { query ->
+                        query.setString(1, selectedId)
+                        query.setString(2, sourceLaneId)
+                        query.executeQuery().use { result ->
+                            check(result.next()) { "Unknown message" }
+                            result.getString("role") to result.getString("content")
+                        }
+                    }
+                }
                 val count = db.prepareStatement("SELECT COUNT(*) FROM lanes WHERE board_id = ?").use { query ->
                     query.setString(1, source.first)
                     query.executeQuery().use { result -> result.next(); result.getInt(1) }
@@ -390,7 +415,8 @@ class BoardStore(private val file: Path, private val initialBoardTitle: String =
                 val laneId = UUID.randomUUID().toString()
                 db.prepareStatement(
                     "INSERT INTO lanes(id, board_id, title, created_at, origin_lane_id, origin_message_id, " +
-                        "origin_kind, codex_context_seeded) VALUES (?, ?, ?, ?, ?, ?, ?, 0)",
+                        "origin_kind, codex_context_seeded, origin_message_role, origin_message_content, " +
+                        "position_x, position_y, width) VALUES (?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?, 24, 440)",
                 ).use { query ->
                     query.setString(1, laneId)
                     query.setString(2, source.first)
@@ -399,6 +425,9 @@ class BoardStore(private val file: Path, private val initialBoardTitle: String =
                     query.setString(5, sourceLaneId)
                     query.setString(6, throughMessageId)
                     query.setString(7, kind)
+                    query.setString(8, originSnapshot?.first)
+                    query.setString(9, originSnapshot?.second)
+                    query.setInt(10, 24 + count * 460)
                     query.executeUpdate()
                 }
                 val sourceMessages = db.prepareStatement(
@@ -701,6 +730,41 @@ class BoardStore(private val file: Path, private val initialBoardTitle: String =
             }
         }
         if (!exists) db.createStatement().use { it.execute("ALTER TABLE $table ADD COLUMN $column $definition") }
+    }
+
+    private fun backfillLaneLayout(db: Connection) {
+        var nextX = db.createStatement().use { statement ->
+            statement.executeQuery("SELECT COALESCE(MAX(position_x + COALESCE(width, 440)), 4) + 20 FROM lanes")
+                .use { result -> result.next(); maxOf(24, result.getInt(1)) }
+        }
+        val missing = db.createStatement().use { statement ->
+            statement.executeQuery(
+                "SELECT id, position_x, position_y, width FROM lanes WHERE position_x IS NULL OR position_y IS NULL OR width IS NULL ORDER BY created_at, rowid",
+            ).use { result ->
+                buildList {
+                    while (result.next()) {
+                        add(
+                            listOf(
+                                result.getString("id"),
+                                result.getInt("position_x").takeUnless { result.wasNull() },
+                                result.getInt("position_y").takeUnless { result.wasNull() },
+                                result.getInt("width").takeUnless { result.wasNull() },
+                            ),
+                        )
+                    }
+                }
+            }
+        }
+        missing.forEach { lane ->
+            db.prepareStatement("UPDATE lanes SET position_x = ?, position_y = ?, width = ? WHERE id = ?").use { query ->
+                query.setInt(1, lane[1] as? Int ?: nextX)
+                query.setInt(2, lane[2] as? Int ?: 24)
+                query.setInt(3, lane[3] as? Int ?: 440)
+                query.setString(4, lane[0] as String)
+                query.executeUpdate()
+            }
+            if (lane[1] == null) nextX += 460
+        }
     }
 
     private fun finishRun(runId: String, status: String, reason: String?, eventType: String) = synchronized(lock) {

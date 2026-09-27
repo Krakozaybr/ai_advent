@@ -217,7 +217,8 @@ class ApplicationTest {
         sendAndWait(sourceId, "Первый вопрос")
         sendAndWait(sourceId, "Второй вопрос")
         val originalBoard = client.get("/api/boards/$boardId").bodyAsText().let(Json::parseToJsonElement).jsonObject
-        val sourceMessages = originalBoard["lanes"]!!.jsonArray[0].jsonObject["messages"]!!.jsonArray
+        val sourceLane = originalBoard["lanes"]!!.jsonArray[0].jsonObject
+        val sourceMessages = sourceLane["messages"]!!.jsonArray
         val branchPointId = sourceMessages[1].jsonObject["id"]!!.jsonPrimitive.content
 
         val branchResponse = client.post("/api/lanes/$sourceId/branches") {
@@ -236,6 +237,7 @@ class ApplicationTest {
         })
         assertEquals("branch", branch["originKind"]!!.jsonPrimitive.content)
         assertEquals(branchPointId, branch["originMessageId"]!!.jsonPrimitive.content)
+        assertTrue(branch["x"]!!.jsonPrimitive.content.toInt() > sourceLane["x"]!!.jsonPrimitive.content.toInt())
 
         val cloneResponse = client.post("/api/lanes/$sourceId/clone")
         assertEquals(HttpStatusCode.Created, cloneResponse.status)
@@ -315,6 +317,7 @@ class ApplicationTest {
         assertEquals(listOf("Исправленный запрос"), editedLanes[0].jsonObject["messages"]!!.jsonArray
             .map { it.jsonObject["content"]!!.jsonPrimitive.content })
         assertEquals(branch["messages"], editedLanes[1].jsonObject["messages"])
+        assertEquals("Старый запрос", editedLanes[1].jsonObject["originMessage"]!!.jsonObject["content"]!!.jsonPrimitive.content)
         assertEquals(clone["messages"], editedLanes[2].jsonObject["messages"])
         assertTrue(editedLanes[0].jsonObject["codexThreadId"] == null)
 
@@ -327,6 +330,20 @@ class ApplicationTest {
         val newLane = client.post("/api/boards/$boardId/lanes").bodyAsText()
             .let(Json::parseToJsonElement).jsonObject["lanes"]!!.jsonArray[3].jsonObject
         val targetId = newLane["id"]!!.jsonPrimitive.content
+        val sameTarget = client.post("/api/lanes/$sourceId/messages/$selectedId/copy") {
+            header(HttpHeaders.ContentType, ContentType.Application.Json.toString())
+            setBody("""{"targetLaneId":"$sourceId"}""")
+        }
+        assertEquals(HttpStatusCode.BadRequest, sameTarget.status)
+        val otherBoardId = client.post("/api/boards").bodyAsText()
+            .let(Json::parseToJsonElement).jsonObject["board"]!!.jsonObject["id"]!!.jsonPrimitive.content
+        val otherBoardLaneId = client.post("/api/boards/$otherBoardId/lanes").bodyAsText()
+            .let(Json::parseToJsonElement).jsonObject["lanes"]!!.jsonArray[0].jsonObject["id"]!!.jsonPrimitive.content
+        val crossBoardCopy = client.post("/api/lanes/$sourceId/messages/$selectedId/copy") {
+            header(HttpHeaders.ContentType, ContentType.Application.Json.toString())
+            setBody("""{"targetLaneId":"$otherBoardLaneId"}""")
+        }
+        assertEquals(HttpStatusCode.BadRequest, crossBoardCopy.status)
         sendAndWait(targetId, "Целевая история")
         val targetBoardBeforeCopy = client.get("/api/boards/$boardId").bodyAsText()
             .let(Json::parseToJsonElement).jsonObject
@@ -399,6 +416,28 @@ class ApplicationTest {
     }
 
     @Test
+    fun `test saved lane layout survives reopening the workspace`() = testApplication {
+        val database = Files.createTempDirectory("ai-advent-v3-layout-").resolve("board.sqlite")
+        val store = WorkspaceStore(database)
+        application { module(store, FakeCodexAppServer()) }
+        val initial = client.get("/api/board").bodyAsText().let(Json::parseToJsonElement).jsonObject
+        val laneId = initial["lanes"]!!.jsonArray[0].jsonObject["id"]!!.jsonPrimitive.content
+
+        val response = client.patch("/api/lanes/$laneId/layout") {
+            header(HttpHeaders.ContentType, ContentType.Application.Json.toString())
+            setBody("""{"x":321,"y":654,"width":700}""")
+        }
+        assertEquals(HttpStatusCode.OK, response.status)
+        val reopened = WorkspaceStore(database)
+        val reopenedBoard = reopened.board(initial["board"]!!.jsonObject["id"]!!.jsonPrimitive.content)
+        val persistedLane = reopenedBoard["lanes"]!!.jsonArray[0].jsonObject
+        assertEquals(321, persistedLane["x"]!!.jsonPrimitive.content.toInt())
+        assertEquals(654, persistedLane["y"]!!.jsonPrimitive.content.toInt())
+        assertEquals(700, persistedLane["width"]!!.jsonPrimitive.content.toInt())
+        reopened.close()
+    }
+
+    @Test
     fun `test old board database migrates without replacing its lane or messages`() {
         val database = Files.createTempDirectory("ai-advent-v3-migration-").resolve("board.sqlite")
         Class.forName("org.sqlite.JDBC")
@@ -409,16 +448,19 @@ class ApplicationTest {
                 statement.execute("CREATE TABLE messages(id TEXT PRIMARY KEY, lane_id TEXT NOT NULL REFERENCES lanes(id), role TEXT NOT NULL, content TEXT NOT NULL, run_id TEXT, created_at TEXT NOT NULL)")
                 statement.execute("INSERT INTO boards VALUES ('old-board', 'Старая доска', '2026-01-01T00:00:00Z')")
                 statement.execute("INSERT INTO lanes VALUES ('old-lane', 'old-board', 'Лента 1', 'old-thread', '2026-01-01T00:00:00Z')")
+                statement.execute("INSERT INTO lanes VALUES ('old-lane-2', 'old-board', 'Лента 2', NULL, '2026-01-02T00:00:00Z')")
                 statement.execute("INSERT INTO messages VALUES ('old-message', 'old-lane', 'user', 'Не теряй меня', NULL, '2026-01-01T00:00:00Z')")
             }
         }
 
         val store = WorkspaceStore(database)
-        val lane = store.board("old-board")["lanes"]!!.jsonArray.single().jsonObject
+        val lanes = store.board("old-board")["lanes"]!!.jsonArray
+        val lane = lanes[0].jsonObject
         assertEquals("old-lane", lane["id"]!!.jsonPrimitive.content)
         assertEquals("old-thread", lane["codexThreadId"]!!.jsonPrimitive.content)
         assertEquals("Не теряй меня", lane["messages"]!!.jsonArray.single().jsonObject["content"]!!.jsonPrimitive.content)
         assertTrue(lane["originKind"] == null)
+        assertTrue(lanes[1].jsonObject["x"]!!.jsonPrimitive.content.toInt() > lanes[0].jsonObject["x"]!!.jsonPrimitive.content.toInt())
         store.close()
     }
 }
