@@ -7,6 +7,14 @@
       "command": "node",
       "args": ["${PROJECT_ROOT}/examples/mcp/catalog-server.mjs"],
       "cwd": "${PROJECT_ROOT}"
+    },
+    {
+      "id": "ai-advent-demo",
+      "name": "AI Advent · mock API",
+      "description": "Статический локальный каталог демонстрационных событий; без сети и изменений данных.",
+      "command": "node",
+      "args": ["${PROJECT_ROOT}/examples/mcp/mock-event-server.mjs"],
+      "cwd": "${PROJECT_ROOT}"
     }
   ]
 }
