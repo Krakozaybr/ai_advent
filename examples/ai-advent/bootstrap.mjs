@@ -1,9 +1,10 @@
 import { readFile, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { importedBoardFromResponse } from "./bootstrap-response.mjs";
 
 const root = dirname(fileURLToPath(import.meta.url));
-const statePath = join(root, ".bootstrap-state.json");
+const statePath = process.env.AI_ADVENT_BOOTSTRAP_STATE_PATH ?? join(root, ".bootstrap-state.json");
 const baseUrl = (process.env.BOARD_API_URL ?? "http://127.0.0.1:8787").replace(/\/$/, "");
 const DEMO = "Демонстрационное начальное состояние AI Advent; его можно изменить в интерфейсе.";
 const state = JSON.parse(await readFile(statePath, "utf8").catch(() => "{}"));
@@ -26,7 +27,7 @@ const imported = new Map();
 for (const file of boardFiles) {
   const payload = await readFile(join(root, "boards", file), "utf8");
   const result = await request("/api/boards/import", { method: "POST", body: payload });
-  imported.set(Number(file.match(/\d+/)[0]), result.board);
+  imported.set(Number(file.match(/\d+/)[0]), importedBoardFromResponse(result, file));
 }
 const plan = [
   { day: 10, tools: { "Факты · общий checkpoint": [["sticky-facts", "read_facts"], ["sticky-facts", "update_fact"]], "Ветка · проверка альтернативы": [["sticky-facts", "read_facts"], ["sticky-facts", "update_fact"]] } },
