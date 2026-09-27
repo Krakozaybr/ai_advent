@@ -4,6 +4,16 @@ const escapeHtml = (value) => String(value).replace(/[&<>"']/g, (char) => ({
   '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;',
 })[char]);
 const uid = () => crypto.randomUUID?.() ?? `${Date.now()}-${Math.random()}`;
+const MODEL_CHOICES = {
+  Codex: ['GPT-6 Astra', 'GPT-6 Sol', 'GPT-6 Luna', 'GPT-5.6 Sol', 'GPT-5.6 Terra', 'GPT-5.6 Luna', 'GPT-5.5'],
+  OpenRouter: ['Qwen 3', 'GPT-4o mini', 'DeepSeek V3'],
+};
+const SKILLS = ['Работа с файлами', 'Планирование', 'Поиск в сети'];
+const MCP_SERVERS = [
+  { name: 'Память доски', tools: [{ id: 'read_messages', description: 'Читать сообщения' }, { id: 'search_messages', description: 'Искать в истории' }, { id: 'save_fact', description: 'Сохранять факт' }] },
+  { name: 'Задачи', tools: [{ id: 'list_tasks', description: 'Список задач' }, { id: 'create_task', description: 'Создать задачу' }, { id: 'update_task', description: 'Обновить задачу' }] },
+  { name: 'Локальные файлы', tools: [{ id: 'list_files', description: 'Список файлов' }, { id: 'read_file', description: 'Читать файл' }, { id: 'write_file', description: 'Изменять файл' }] },
+];
 
 const boards = [
   {
@@ -11,7 +21,7 @@ const boards = [
     lanes: [
       {
         id: 'planning', rootId: 'planning', parentId: null, x: 160, y: 110, width: 476,
-        title: 'Планирование', provider: 'Codex', model: 'Sol', context: 42,
+        title: 'Планирование', provider: 'Codex', model: 'GPT-6 Sol', context: 42,
         approval: 'Ручное', effort: 'Высокий', speed: 'Обычная', temperature: 0.7,
         messages: [
           { id: 'p1', role: 'user', text: 'Нужно спроектировать рабочую доску для диалогов с AI. Что должно быть видно сразу?' },
@@ -21,7 +31,7 @@ const boards = [
       {
         id: 'branch', rootId: 'planning', parentId: 'planning', sourceMessageId: 'p2',
         sourceText: 'На первом экране я бы оставил сами сессии и вкладки досок.',
-        x: 706, y: 260, width: 458, title: 'Вариант с деталями', provider: 'Codex', model: 'Sol', context: 17,
+        x: 706, y: 260, width: 458, title: 'Вариант с деталями', provider: 'Codex', model: 'GPT-6 Sol', context: 17,
         approval: 'Ручное', effort: 'Средний', speed: 'Обычная', temperature: 0.7,
         messages: [
           { id: 'b1', role: 'user', text: 'А если детали выполнения раскрывать отдельно у каждого ответа?' },
@@ -43,7 +53,7 @@ const boards = [
     id: 'blank', name: 'Чистая доска', camera: null, selectedLaneId: 'first',
     lanes: [{
       id: 'first', rootId: 'first', parentId: null, x: 190, y: 140, width: 476,
-      title: 'Новая сессия', provider: 'Codex', model: 'Sol', context: 0,
+      title: 'Новая сессия', provider: 'Codex', model: 'GPT-6 Sol', context: 0,
       approval: 'Ручное', effort: 'Средний', speed: 'Обычная', temperature: 0.7, messages: [],
     }],
   },
@@ -51,7 +61,7 @@ const boards = [
 
 boards[0].lanes[1].historyPrefix = boards[0].lanes[0].messages.slice(0, 2).map((message) => ({ ...message }));
 
-const state = { activeBoardId: 'main', mode: 'free', expanded: new Set(), drafts: new Map(), drag: null, toastTimer: null };
+const state = { activeBoardId: 'main', mode: 'free', expanded: new Set(), drafts: new Map(), drag: null, openMenu: null, settingsDraft: null, toastTimer: null };
 const app = document.querySelector('#app');
 const settingsDialog = document.querySelector('#settings-dialog');
 const editDialog = document.querySelector('#edit-dialog');
@@ -82,12 +92,12 @@ function alignBranches() {
   }
 }
 
-function selectOptions(current, values) {
-  return values.map((value) => `<option value="${escapeHtml(value)}" ${current === value ? 'selected' : ''}>${escapeHtml(value)}</option>`).join('');
-}
-
-function configSelect(lane, key, label, values) {
-  return `<label class="quick-setting"><span>${label}</span><select data-config="${key}" data-lane="${lane.id}" aria-label="${label}">${selectOptions(String(lane[key]), values)}</select></label>`;
+function configMenu(lane, key, label, values, className = '') {
+  const open = state.openMenu === `${lane.id}:${key}`;
+  return `<div class="config-menu ${className}"><span class="config-label">${escapeHtml(label)}</span>
+    <button class="config-trigger" type="button" data-action="toggle-config" data-lane="${lane.id}" data-config="${key}" aria-label="${escapeHtml(label)}: ${escapeHtml(lane[key])}" aria-expanded="${open}" aria-haspopup="menu">${escapeHtml(lane[key])}${icon('chevron', 13)}</button>
+    ${open ? `<div class="config-popover" role="menu" aria-label="${escapeHtml(label)}">${values.map((value) => `<button class="config-option" type="button" role="menuitemradio" aria-checked="${String(lane[key]) === value}" data-action="config-choice" data-lane="${lane.id}" data-config="${key}" data-value="${escapeHtml(value)}"><span>${escapeHtml(value)}</span>${String(lane[key]) === value ? icon('check', 14) : ''}</button>`).join('')}</div>` : ''}
+  </div>`;
 }
 
 function toast(message) {
@@ -136,13 +146,12 @@ function renderLane(lane) {
   const selected = board().selectedLaneId === lane.id;
   const independent = !lane.parentId;
   const providerMeta = lane.provider === 'Codex'
-    ? `${configSelect(lane, 'approval', 'Подтверждение', ['Ручное', 'Авто'])}${configSelect(lane, 'effort', 'Effort', ['Низкий', 'Средний', 'Высокий'])}${configSelect(lane, 'speed', 'Скорость', ['Обычная', 'Быстрая'])}`
-    : `${configSelect(lane, 'approval', 'Подтверждение', ['Ручное', 'Авто'])}${configSelect(lane, 'temperature', 'Температура', ['0', '0.3', '0.7', '1', '1.2', '1.5', '2'])}`;
-  const modelChoices = lane.provider === 'Codex' ? ['Luna', 'Terra', 'Sol'] : ['Qwen 3', 'GPT-4o mini', 'DeepSeek V3'];
+    ? `${configMenu(lane, 'approval', 'Подтверждение', ['Ручное', 'Авто'])}${configMenu(lane, 'effort', 'Effort', ['Низкий', 'Средний', 'Высокий'])}${configMenu(lane, 'speed', 'Скорость', ['Обычная', 'Быстрая'])}`
+    : `${configMenu(lane, 'approval', 'Подтверждение', ['Ручное', 'Авто'])}${configMenu(lane, 'temperature', 'Температура', ['0', '0.3', '0.7', '1', '1.2', '1.5', '2'])}`;
   return `<section class="lane ${selected ? 'selected' : ''} ${independent ? 'independent' : 'linked'}" data-lane-id="${lane.id}" style="left:${lane.x}px;top:${lane.y}px;width:${lane.width}px">
-    <header class="lane-header">
-      <div class="lane-header-main"><span class="lane-title" data-title-lane="${lane.id}" title="Двойной щелчок — изменить название">${escapeHtml(lane.title)}</span>
-        <div class="lane-header-actions"><button class="icon-button" type="button" data-action="move-left" data-lane="${lane.id}" title="Переместить сессию влево" aria-label="Переместить сессию влево" ${adjacentSibling(lane, -1) ? '' : 'disabled'}>${icon('left', 16)}</button><button class="icon-button" type="button" data-action="move-right" data-lane="${lane.id}" title="Переместить сессию вправо" aria-label="Переместить сессию вправо" ${adjacentSibling(lane, 1) ? '' : 'disabled'}>${icon('right', 16)}</button><button class="icon-button" type="button" data-action="clone" data-lane="${lane.id}" title="Клонировать сессию" aria-label="Клонировать сессию">${icon('copy', 16)}</button><button class="icon-button" type="button" data-action="archive" data-lane="${lane.id}" title="В архив" aria-label="В архив">${icon('archive', 16)}</button><button class="icon-button" type="button" data-action="delete-session" data-lane="${lane.id}" title="Удалить сессию" aria-label="Удалить сессию">${icon('trash', 16)}</button></div>
+    <header class="lane-header" ${independent ? `data-drop-root="${lane.id}"` : ''}>
+      <div class="lane-header-main">${independent ? `<span class="drag-grip" data-drag-root="${lane.id}" title="Перетащить сессию вместе с ветками" aria-label="Перетащить сессию вместе с ветками">${icon('grip', 16)}</span>` : ''}<span class="lane-title" data-title-lane="${lane.id}" title="Двойной щелчок — изменить название">${escapeHtml(lane.title)}</span>
+        <div class="lane-header-actions"><button class="icon-button" type="button" data-action="clone" data-lane="${lane.id}" title="Клонировать сессию" aria-label="Клонировать сессию">${icon('copy', 16)}</button><button class="icon-button" type="button" data-action="archive" data-lane="${lane.id}" title="В архив" aria-label="В архив">${icon('archive', 16)}</button><button class="icon-button" type="button" data-action="delete-session" data-lane="${lane.id}" title="Удалить сессию" aria-label="Удалить сессию">${icon('trash', 16)}</button></div>
       </div>
       ${lane.parentId ? `<div class="lane-subtitle">${icon('branch', 13)} Ветка · история до точки ветвления сохранена</div>` : ''}
     </header>
@@ -155,7 +164,7 @@ function renderLane(lane) {
           <button class="send-button" type="button" data-action="send" data-lane="${lane.id}" title="Отправить корректировку" aria-label="Отправить корректировку">${icon('send', 17)}</button>
         </div>
       </div>
-      <footer class="lane-footer"><div class="footer-first"><span class="provider-name">${escapeHtml(lane.provider)} <span class="provider-sep">·</span> <select class="model-select" data-config="model" data-lane="${lane.id}" aria-label="Модель">${selectOptions(lane.model, modelChoices)}</select></span>
+      <footer class="lane-footer"><div class="footer-first"><span class="provider-name">${escapeHtml(lane.provider)} <span class="provider-sep">·</span> ${configMenu(lane, 'model', 'Модель', MODEL_CHOICES[lane.provider], 'model-menu')}</span>
         <span class="context-label">Контекст ${lane.context}%</span><button class="icon-button settings-button" type="button" data-action="settings" data-lane="${lane.id}" title="Настройки сессии" aria-label="Настройки сессии">${icon('settings', 17)}</button></div>
         <div class="context-track"><span style="width:${Math.min(100, lane.context)}%"></span></div>
         <div class="footer-second">${providerMeta}</div>
@@ -204,6 +213,15 @@ function applyCamera() {
   viewport.style.backgroundPosition = `${x}px ${y}px`;
   document.querySelector('.zoom-level').textContent = `${Math.round(zoom * 100)}%`;
   updateStickyHeaders();
+  positionMenu();
+}
+
+function positionMenu() {
+  const menu = document.querySelector('.config-popover');
+  if (!menu) return;
+  const viewport = document.querySelector('#board-viewport').getBoundingClientRect();
+  const trigger = menu.closest('.config-menu').querySelector('.config-trigger').getBoundingClientRect();
+  menu.classList.toggle('opens-down', trigger.top - menu.offsetHeight - 7 < viewport.top + 8);
 }
 
 function updateStickyHeaders() {
@@ -272,17 +290,58 @@ function autoGrow(textarea) {
   updateStickyHeaders();
 }
 
+function renderSettingsPanel() {
+  const draft = state.settingsDraft;
+  const panel = settingsDialog.querySelector('#settings-panel');
+  if (draft.tab === 'agents') {
+    panel.innerHTML = `<label class="settings-agents-label">AGENTS.md<textarea name="agentsMd" rows="8" placeholder="Инструкции для этой сессии">${escapeHtml(draft.agentsMd)}</textarea></label>`;
+  } else if (draft.tab === 'skills') {
+    panel.innerHTML = `<label class="search-label">Поиск скиллов<input type="search" data-search="skills" placeholder="Найти скилл…" value="${escapeHtml(draft.skillSearch)}"></label>
+      <div class="settings-list">${SKILLS.map((item) => `<label class="check-option" data-filter-item><input type="checkbox" data-setting="skill" value="${escapeHtml(item)}" ${draft.skills.includes(item) ? 'checked' : ''}><span>${escapeHtml(item)}</span></label>`).join('')}</div>
+      <p class="search-empty" hidden>Ничего не найдено.</p>`;
+    filterSettingsList(draft.skillSearch);
+  } else {
+    panel.innerHTML = `<label class="search-label">Поиск MCP<input type="search" data-search="mcp" placeholder="Найти сервер или инструмент…" value="${escapeHtml(draft.mcpSearch)}"></label>
+      <div class="settings-list mcp-list">${MCP_SERVERS.map((server) => {
+        const expanded = draft.expandedMcp.has(server.name);
+        const tools = draft.mcpTools[server.name];
+        return `<section class="mcp-server" data-filter-item>
+          <div class="mcp-server-main"><label class="check-option"><input type="checkbox" data-setting="mcp" value="${escapeHtml(server.name)}" ${draft.mcp.includes(server.name) ? 'checked' : ''}><span>${escapeHtml(server.name)}</span></label>
+            <span class="tool-count">${tools.length}/${server.tools.length} инструментов</span>
+            <button class="icon-button mcp-expand" type="button" data-action="toggle-mcp-tools" data-server="${escapeHtml(server.name)}" aria-label="Инструменты: ${escapeHtml(server.name)}" aria-expanded="${expanded}">${icon('chevron', 16)}</button></div>
+          <div class="mcp-tools" ${expanded ? '' : 'hidden'}>${server.tools.map((tool) => `<label class="check-option tool-option"><input type="checkbox" data-setting="mcp-tool" data-server="${escapeHtml(server.name)}" value="${escapeHtml(tool.id)}" ${tools.includes(tool.id) ? 'checked' : ''}><span><strong>${escapeHtml(tool.id)}</strong><small>${escapeHtml(tool.description)}</small></span></label>`).join('')}</div>
+        </section>`;
+      }).join('')}</div><p class="search-empty" hidden>Ничего не найдено.</p>`;
+    filterSettingsList(draft.mcpSearch);
+  }
+}
+
+function filterSettingsList(query) {
+  const normalized = query.trim().toLocaleLowerCase('ru');
+  const items = settingsDialog.querySelectorAll('#settings-panel [data-filter-item]');
+  let visible = 0;
+  items.forEach((item) => {
+    item.hidden = !item.textContent.toLocaleLowerCase('ru').includes(normalized);
+    if (!item.hidden) visible += 1;
+  });
+  const empty = settingsDialog.querySelector('#settings-panel .search-empty');
+  if (empty) empty.hidden = visible > 0;
+}
+
 function showSettings(lane) {
-  lane.skills ??= ['Работа с файлами'];
-  lane.mcp ??= [];
-  lane.agentsMd ??= '';
+  state.settingsDraft = {
+    laneId: lane.id, tab: 'agents', agentsMd: lane.agentsMd ?? '',
+    skills: [...(lane.skills ?? ['Работа с файлами'])], mcp: [...(lane.mcp ?? [])],
+    mcpTools: Object.fromEntries(MCP_SERVERS.map((server) => [server.name, [...(lane.mcpTools?.[server.name] ?? server.tools.map((tool) => tool.id))]])),
+    skillSearch: '', mcpSearch: '', expandedMcp: new Set(),
+  };
   settingsDialog.innerHTML = `<form method="dialog" id="settings-form" data-lane="${lane.id}">
     <div class="dialog-heading"><h2>Настройки сессии</h2><button type="button" class="icon-button" data-action="close-settings" aria-label="Закрыть">${icon('close', 19)}</button></div>
-    <label>AGENTS.md<textarea name="agentsMd" rows="5" placeholder="Инструкции для этой сессии">${escapeHtml(lane.agentsMd)}</textarea></label>
-    <fieldset class="setting-group"><legend>Скиллы</legend>${['Работа с файлами', 'Планирование', 'Поиск в сети'].map((item) => `<label class="check-option"><input type="checkbox" name="skills" value="${item}" ${lane.skills.includes(item) ? 'checked' : ''}><span>${item}</span></label>`).join('')}</fieldset>
-    <fieldset class="setting-group"><legend>MCP</legend>${['Память доски', 'Задачи', 'Локальные файлы'].map((item) => `<label class="check-option"><input type="checkbox" name="mcp" value="${item}" ${lane.mcp.includes(item) ? 'checked' : ''}><span>${item}</span></label>`).join('')}</fieldset>
+    <div class="settings-tabs" role="tablist" aria-label="Раздел настроек">${[['agents', 'AGENTS.md'], ['skills', 'Скиллы'], ['mcp', 'MCP']].map(([key, label]) => `<button class="settings-tab ${key === 'agents' ? 'active' : ''}" type="button" role="tab" data-action="settings-tab" data-tab="${key}" aria-selected="${key === 'agents'}">${label}</button>`).join('')}</div>
+    <div id="settings-panel" class="settings-panel" role="tabpanel"></div>
     <div class="dialog-actions"><button type="button" class="secondary-button" data-action="close-settings">Отмена</button><button type="submit" class="primary-button">Сохранить</button></div>
   </form>`;
+  renderSettingsPanel();
   settingsDialog.showModal();
 }
 
@@ -303,7 +362,7 @@ function addBoard() {
   const id = uid();
   boards.push({ id, name: `Доска ${number}`, camera: null, selectedLaneId: laneId, lanes: [{
     id: laneId, rootId: laneId, parentId: null, x: 190, y: 140, width: 476,
-    title: 'Новая сессия', provider: 'Codex', model: 'Sol', context: 0,
+    title: 'Новая сессия', provider: 'Codex', model: 'GPT-6 Sol', context: 0,
     approval: 'Ручное', effort: 'Средний', speed: 'Обычная', temperature: 0.7, messages: [],
   }] });
   state.activeBoardId = id;
@@ -350,23 +409,19 @@ function subtreeIds(lane) {
   return new Set(board().lanes.filter((item) => item.id === lane.id || isDescendant(item, lane.id)).map((item) => item.id));
 }
 
-function adjacentSibling(lane, direction) {
-  const siblings = visibleLanes().filter((item) => item.parentId === lane.parentId);
-  return siblings[siblings.indexOf(lane) + direction];
-}
-
-function moveLane(lane, direction) {
-  const target = adjacentSibling(lane, direction);
-  if (!target) return;
+function moveRootGroup(lane, target) {
+  if (lane.id === target.id || lane.parentId || target.parentId) return;
+  const moveAfter = lane.x < target.x;
   const ids = subtreeIds(lane);
   const moved = board().lanes.filter((item) => ids.has(item.id));
   board().lanes = board().lanes.filter((item) => !ids.has(item.id));
   const targetIds = subtreeIds(target);
-  const position = direction < 0
+  const position = !moveAfter
     ? board().lanes.findIndex((item) => item.id === target.id)
     : board().lanes.findLastIndex((item) => targetIds.has(item.id)) + 1;
   board().lanes.splice(position, 0, ...moved);
   render();
+  if (state.mode === 'fixed') focusLane(board().selectedLaneId, false);
 }
 
 function archiveLane(lane) {
@@ -430,7 +485,25 @@ app.addEventListener('click', async (event) => {
     if (action === 'toggle-details') { state.expanded.has(button.dataset.message) ? state.expanded.delete(button.dataset.message) : state.expanded.add(button.dataset.message); render(); return; }
     if (action === 'settings') { showSettings(lane); return; }
     if (action === 'show-archive') { showArchive(); return; }
-    if (action === 'move-left' || action === 'move-right') { moveLane(lane, action === 'move-left' ? -1 : 1); return; }
+    if (action === 'toggle-config') {
+      const key = `${lane.id}:${button.dataset.config}`;
+      state.openMenu = state.openMenu === key ? null : key;
+      render();
+      if (state.openMenu) document.querySelector('.config-popover .config-option')?.focus();
+      return;
+    }
+    if (action === 'config-choice') {
+      const key = button.dataset.config;
+      const value = key === 'temperature' ? Number(button.dataset.value) : button.dataset.value;
+      state.openMenu = null;
+      if (lane[key] !== value) {
+        lane[key] = value;
+        const labels = { model: 'модель', approval: 'подтверждение', effort: 'effort', speed: 'скорость', temperature: 'температура' };
+        lane.messages.push({ id: uid(), role: 'settings', text: `Изменены настройки сессии: ${labels[key]} — ${value}` });
+      }
+      render();
+      return;
+    }
     if (action === 'clone') { cloneLane(lane); return; }
     if (action === 'archive') { archiveLane(lane); return; }
     if (action === 'delete-session') { showDeleteSession(lane); return; }
@@ -446,6 +519,7 @@ app.addEventListener('click', async (event) => {
   }
   const laneElement = event.target.closest('.lane');
   if (laneElement && state.mode === 'fixed' && !event.target.closest('textarea,button,input')) focusLane(laneElement.dataset.laneId);
+  if (state.openMenu && !event.target.closest('.config-menu')) { state.openMenu = null; render(); }
 });
 
 app.addEventListener('dblclick', (event) => {
@@ -479,20 +553,8 @@ app.addEventListener('input', (event) => {
   }
 });
 
-app.addEventListener('change', (event) => {
-  const select = event.target.closest('select[data-config]');
-  if (!select) return;
-  const lane = laneById(select.dataset.lane);
-  const key = select.dataset.config;
-  const value = key === 'temperature' ? Number(select.value) : select.value;
-  if (lane[key] === value) return;
-  lane[key] = value;
-  const labels = { model: 'модель', approval: 'подтверждение', effort: 'effort', speed: 'скорость', temperature: 'температура' };
-  lane.messages.push({ id: uid(), role: 'settings', text: `Изменены настройки сессии: ${labels[key]} — ${value}` });
-  render();
-});
-
 app.addEventListener('keydown', (event) => {
+  if (event.key === 'Escape' && state.openMenu) { state.openMenu = null; render(); return; }
   const textarea = event.target.closest('textarea[data-composer]');
   if (!textarea || event.key !== 'Enter' || event.isComposing) return;
   event.preventDefault();
@@ -519,6 +581,11 @@ app.addEventListener('pointerdown', (event) => {
     state.drag = { kind: 'camera', x: event.clientX, y: event.clientY, initialX: camera().x, initialY: camera().y };
     return;
   }
+  const reorder = event.target.closest('[data-drop-root]');
+  if (event.button === 0 && reorder && !event.target.closest('button,input,textarea')) {
+    state.drag = { kind: 'reorder', laneId: reorder.dataset.dropRoot, x: event.clientX, y: event.clientY, active: false, targetId: null, preview: null };
+    return;
+  }
   if (event.button !== 0 || event.target.closest('button,input,textarea,.lane-title')) return;
   const resize = event.target.closest('[data-resize-lane]');
   if (resize) {
@@ -532,7 +599,28 @@ app.addEventListener('pointerdown', (event) => {
 window.addEventListener('pointermove', (event) => {
   const drag = state.drag;
   if (!drag) return;
-  if (drag.kind === 'camera') {
+  if (drag.kind === 'reorder') {
+    if (!drag.active && Math.hypot(event.clientX - drag.x, event.clientY - drag.y) < 6) return;
+    if (!drag.active) {
+      drag.active = true;
+      document.body.classList.add('is-reordering');
+      document.querySelector(`[data-lane-id="${drag.laneId}"]`)?.classList.add('lane-dragging');
+      drag.preview = document.createElement('div');
+      drag.preview.className = 'drag-preview';
+      drag.preview.textContent = laneById(drag.laneId).title;
+      document.body.append(drag.preview);
+    }
+    drag.preview.style.left = `${event.clientX + 12}px`;
+    drag.preview.style.top = `${event.clientY + 12}px`;
+    document.querySelectorAll('.drop-before,.drop-after').forEach((item) => item.classList.remove('drop-before', 'drop-after'));
+    const source = laneById(drag.laneId);
+    const target = visibleLanes().filter((item) => !item.parentId && item.id !== source.id).find((item) => {
+      const rect = document.querySelector(`[data-lane-id="${item.id}"] .lane-header`).getBoundingClientRect();
+      return event.clientX >= rect.left - 33 * camera().zoom && event.clientX <= rect.right + 33 * camera().zoom;
+    });
+    drag.targetId = target?.id ?? null;
+    if (target) document.querySelector(`[data-lane-id="${target.id}"] .lane-header`).classList.add(source.x < target.x ? 'drop-after' : 'drop-before');
+  } else if (drag.kind === 'camera') {
     camera().x = drag.initialX + event.clientX - drag.x;
     camera().y = drag.initialY + event.clientY - drag.y;
     if (state.mode === 'fixed') {
@@ -549,27 +637,82 @@ window.addEventListener('pointermove', (event) => {
   }
 });
 
-window.addEventListener('pointerup', () => { state.drag = null; });
+window.addEventListener('pointerup', () => {
+  const drag = state.drag;
+  state.drag = null;
+  if (drag?.kind !== 'reorder') return;
+  document.body.classList.remove('is-reordering');
+  drag.preview?.remove();
+  document.querySelectorAll('.lane-dragging,.drop-before,.drop-after').forEach((item) => item.classList.remove('lane-dragging', 'drop-before', 'drop-after'));
+  if (drag.active && drag.targetId) moveRootGroup(laneById(drag.laneId), laneById(drag.targetId));
+});
 window.addEventListener('resize', () => { if (state.mode === 'fixed') focusLane(board().selectedLaneId, false); });
 app.addEventListener('auxclick', (event) => { if (event.button === 1) event.preventDefault(); });
 
 settingsDialog.addEventListener('click', (event) => {
-  if (event.target.closest('[data-action="close-settings"]')) settingsDialog.close();
+  const button = event.target.closest('[data-action]');
+  if (!button) return;
+  if (button.dataset.action === 'close-settings') { settingsDialog.close(); return; }
+  if (button.dataset.action === 'settings-tab') {
+    state.settingsDraft.tab = button.dataset.tab;
+    settingsDialog.querySelectorAll('.settings-tab').forEach((tab) => {
+      const active = tab.dataset.tab === button.dataset.tab;
+      tab.classList.toggle('active', active);
+      tab.setAttribute('aria-selected', String(active));
+    });
+    renderSettingsPanel();
+  }
+  if (button.dataset.action === 'toggle-mcp-tools') {
+    const expanded = state.settingsDraft.expandedMcp;
+    expanded.has(button.dataset.server) ? expanded.delete(button.dataset.server) : expanded.add(button.dataset.server);
+    button.setAttribute('aria-expanded', String(expanded.has(button.dataset.server)));
+    button.closest('.mcp-server').querySelector('.mcp-tools').hidden = !expanded.has(button.dataset.server);
+  }
+});
+settingsDialog.addEventListener('input', (event) => {
+  if (!state.settingsDraft) return;
+  if (event.target.name === 'agentsMd') state.settingsDraft.agentsMd = event.target.value;
+  if (event.target.dataset.search) {
+    state.settingsDraft[event.target.dataset.search === 'skills' ? 'skillSearch' : 'mcpSearch'] = event.target.value;
+    filterSettingsList(event.target.value);
+  }
+});
+settingsDialog.addEventListener('change', (event) => {
+  const input = event.target;
+  if (!state.settingsDraft || !input.dataset.setting) return;
+  const draft = state.settingsDraft;
+  const key = input.dataset.setting;
+  const values = key === 'skill' ? draft.skills : key === 'mcp' ? draft.mcp : draft.mcpTools[input.dataset.server];
+  const next = new Set(values);
+  input.checked ? next.add(input.value) : next.delete(input.value);
+  if (key === 'skill') draft.skills = SKILLS.filter((item) => next.has(item));
+  else if (key === 'mcp') draft.mcp = MCP_SERVERS.map((item) => item.name).filter((item) => next.has(item));
+  else {
+    const server = MCP_SERVERS.find((item) => item.name === input.dataset.server);
+    draft.mcpTools[input.dataset.server] = server.tools.map((item) => item.id).filter((item) => next.has(item));
+    input.closest('.mcp-server').querySelector('.tool-count').textContent = `${draft.mcpTools[input.dataset.server].length}/${server.tools.length} инструментов`;
+  }
 });
 settingsDialog.addEventListener('submit', (event) => {
   event.preventDefault();
   const form = event.target;
   const lane = laneById(form.dataset.lane);
-  const data = new FormData(form);
+  const draft = state.settingsDraft;
   const changes = [];
-  const agentsMd = String(data.get('agentsMd') || '').trim();
-  if (lane.agentsMd !== agentsMd) { lane.agentsMd = agentsMd; changes.push('AGENTS.md'); }
+  const agentsMd = draft.agentsMd.trim();
+  if ((lane.agentsMd ?? '') !== agentsMd) { lane.agentsMd = agentsMd; changes.push('AGENTS.md'); }
   for (const key of ['skills', 'mcp']) {
-    const values = data.getAll(key).map(String);
-    if (JSON.stringify(lane[key]) !== JSON.stringify(values)) {
-      lane[key] = values;
+    const values = draft[key];
+    const original = lane[key] ?? (key === 'skills' ? ['Работа с файлами'] : []);
+    if (JSON.stringify(original) !== JSON.stringify(values)) {
+      lane[key] = [...values];
       changes.push(key === 'skills' ? 'скиллы' : 'MCP');
     }
+  }
+  const originalTools = Object.fromEntries(MCP_SERVERS.map((server) => [server.name, lane.mcpTools?.[server.name] ?? server.tools.map((tool) => tool.id)]));
+  if (JSON.stringify(originalTools) !== JSON.stringify(draft.mcpTools)) {
+    lane.mcpTools = Object.fromEntries(Object.entries(draft.mcpTools).map(([name, values]) => [name, [...values]]));
+    changes.push('инструменты MCP');
   }
   settingsDialog.close();
   if (changes.length) {
@@ -578,6 +721,7 @@ settingsDialog.addEventListener('submit', (event) => {
     toast('Настройки сохранены в макете.');
   }
 });
+settingsDialog.addEventListener('close', () => { state.settingsDraft = null; });
 editDialog.addEventListener('click', (event) => {
   if (event.target.closest('[data-action="close-edit"]')) editDialog.close();
 });
