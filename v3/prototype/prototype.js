@@ -9,6 +9,8 @@ const MODEL_CHOICES = {
   OpenRouter: ['Qwen 3', 'GPT-4o mini', 'DeepSeek V3'],
 };
 const MIN_LANE_WIDTH = 560;
+const GROUP_COLORS = ['#9fb7d3', '#a8cbb5', '#d8be9e', '#bcaed2', '#d6afb4', '#9bc7cc'];
+const DEFAULT_GROUP_COLOR = GROUP_COLORS[0];
 const SKILLS = ['Работа с файлами', 'Планирование', 'Поиск в сети'];
 const MCP_SERVERS = [
   { name: 'Память доски', tools: [{ id: 'read_messages', description: 'Читать сообщения' }, { id: 'search_messages', description: 'Искать в истории' }, { id: 'save_fact', description: 'Сохранять факт' }] },
@@ -22,7 +24,7 @@ const boards = [
     lanes: [
       {
         id: 'planning', rootId: 'planning', parentId: null, x: 160, y: 110, width: 560,
-        title: 'Планирование', provider: 'Codex', model: 'GPT-6 Sol', context: 42,
+        title: 'Планирование', provider: 'Codex', model: 'GPT-6 Sol', context: 42, groupColor: '#9fb7d3',
         approval: 'Требует подтверждения', effort: 'Высокий', speed: 'Обычная', temperature: 0.7,
         messages: [
           { id: 'p1', role: 'user', text: 'Нужно спроектировать рабочую доску для диалогов с AI. Что должно быть видно сразу?' },
@@ -63,7 +65,7 @@ const boards = [
     lanes: [
       {
         id: 'team-lead', rootId: 'team-lead', parentId: null, x: 160, y: 0, width: 560,
-        title: 'Подготовка релиза', provider: 'Codex', model: 'GPT-6 Sol', context: 58,
+        title: 'Подготовка релиза', provider: 'Codex', model: 'GPT-6 Sol', context: 58, groupColor: '#a8cbb5',
         approval: 'Требует подтверждения', effort: 'Высокий', speed: 'Обычная', temperature: 0.7,
         messages: [
           { id: 'team-user', role: 'user', text: 'Проверь готовность релиза: тесты, документацию и риски.' },
@@ -94,7 +96,7 @@ const boards = [
 
 boards[0].lanes[1].historyPrefix = boards[0].lanes[0].messages.slice(0, 2).map((message) => ({ ...message }));
 
-const state = { activeBoardId: 'main', boardCounter: boards.length, mode: 'free', expanded: new Set(), expandedRequests: new Set(), drafts: new Map(), drag: null, openMenu: null, settingsDraft: null, scrollTarget: null, scrollFrame: null, toastTimer: null };
+const state = { activeBoardId: 'main', boardCounter: boards.length, mode: 'free', expanded: new Set(), expandedRequests: new Set(), drafts: new Map(), drag: null, openMenu: null, colorDraft: null, settingsDraft: null, scrollTarget: null, scrollFrame: null, toastTimer: null };
 const app = document.querySelector('#app');
 const settingsDialog = document.querySelector('#settings-dialog');
 const editDialog = document.querySelector('#edit-dialog');
@@ -117,6 +119,12 @@ function laneVisible(lane) {
   return true;
 }
 const visibleLanes = () => board().lanes.filter(laneVisible);
+const rootLane = (lane) => laneById(lane.rootId) || lane;
+const hasGroup = (lane) => !lane.parentId && !lane.subagentOf && board().lanes.some((item) => item.id !== lane.id && item.rootId === lane.id && !item.archived);
+const groupColor = (lane) => {
+  const root = rootLane(lane);
+  return state.colorDraft?.laneId === root.id ? state.colorDraft.value : root.groupColor || DEFAULT_GROUP_COLOR;
+};
 const sessionCount = (count) => `${count} ${count % 10 === 1 && count % 100 !== 11 ? 'сессия' : count % 10 >= 2 && count % 10 <= 4 && (count % 100 < 12 || count % 100 > 14) ? 'сессии' : 'сессий'}`;
 
 function renderTabs() {
@@ -180,6 +188,15 @@ function modelWidget(lane) {
   </div>`;
 }
 
+function renderGroupColorControl(lane) {
+  if (!hasGroup(lane)) return '';
+  const color = groupColor(lane);
+  const open = state.colorDraft?.laneId === lane.id;
+  return `<div class="group-color-control" style="--group-color:${color}"><button class="group-color-trigger" type="button" data-action="open-group-color" data-lane="${lane.id}" aria-label="Цвет группы: ${color}" aria-expanded="${open}" aria-haspopup="dialog" title="Цвет группы"><span></span></button>
+    ${open ? `<div class="group-color-popover" role="dialog" aria-label="Цвет группы"><strong>Цвет группы</strong><div class="group-color-palette">${GROUP_COLORS.map((value) => `<button type="button" data-action="preview-group-color" data-color="${value}" aria-label="Цвет ${value}" aria-pressed="${color === value}" style="--choice-color:${value}"></button>`).join('')}</div><label class="group-color-custom">Свой цвет <input type="color" value="${color}" aria-label="Свой цвет группы"></label><div class="group-color-actions"><button type="button" data-action="cancel-group-color">Отмена</button><button type="button" data-action="apply-group-color">Применить</button></div></div>` : ''}
+  </div>`;
+}
+
 function toast(message) {
   toastElement.textContent = message;
   toastElement.classList.add('visible');
@@ -239,10 +256,10 @@ function renderLane(lane) {
   const selected = board().selectedLaneId === lane.id;
   const independent = !lane.parentId && !lane.subagentOf;
   const modelControls = lane.provider === 'Codex' ? modelWidget(lane) : configMenu(lane, 'model', 'Модель', MODEL_CHOICES.OpenRouter, 'model-menu');
-  return `<section class="lane ${selected ? 'selected' : ''} ${independent ? 'independent' : 'linked'} ${lane.subagentOf ? 'subagent-lane' : ''}" data-lane-id="${lane.id}" style="left:${lane.x}px;top:${lane.y}px;width:${lane.width}px">
+  return `<section class="lane ${selected ? 'selected' : ''} ${independent ? 'independent' : 'linked'} ${lane.subagentOf ? 'subagent-lane' : ''}" data-lane-id="${lane.id}" data-root-id="${lane.rootId}" style="left:${lane.x}px;top:${lane.y}px;width:${lane.width}px;--group-color:${groupColor(lane)}">
     <header class="lane-header" ${independent ? `data-drop-root="${lane.id}"` : ''}>
       <div class="lane-header-main">${independent ? `<span class="drag-grip" data-drag-root="${lane.id}" title="Перетащить сессию вместе с ветками" aria-label="Перетащить сессию вместе с ветками">${icon('grip', 16)}</span>` : ''}<span class="lane-title" data-title-lane="${lane.id}" title="Двойной щелчок — изменить название">${escapeHtml(lane.title)}</span>
-        <div class="lane-header-actions"><button class="icon-button" type="button" data-action="clone" data-lane="${lane.id}" title="Клонировать сессию" aria-label="Клонировать сессию">${icon('copy', 16)}</button><button class="icon-button" type="button" data-action="archive" data-lane="${lane.id}" title="В архив" aria-label="В архив">${icon('archive', 16)}</button><button class="icon-button" type="button" data-action="delete-session" data-lane="${lane.id}" title="Удалить сессию" aria-label="Удалить сессию">${icon('trash', 16)}</button></div>
+        <div class="lane-header-actions">${renderGroupColorControl(lane)}<button class="icon-button" type="button" data-action="clone" data-lane="${lane.id}" title="Клонировать сессию" aria-label="Клонировать сессию">${icon('copy', 16)}</button><button class="icon-button" type="button" data-action="archive" data-lane="${lane.id}" title="В архив" aria-label="В архив">${icon('archive', 16)}</button><button class="icon-button" type="button" data-action="delete-session" data-lane="${lane.id}" title="Удалить сессию" aria-label="Удалить сессию">${icon('trash', 16)}</button></div>
       </div>
       ${lane.parentId ? `<div class="lane-subtitle">${icon('branch', 13)} Ветка · история до точки ветвления сохранена</div>` : lane.subagentOf ? `<div class="lane-subtitle">${icon('branch', 13)} Сабагент · ${lane.active ? 'активен' : 'завершён'}${lane.pinned ? ' · закреплён' : ''}</div>` : ''}
     </header>
@@ -266,6 +283,11 @@ function render() {
   if (state.activeBoardId === 'home' || !board()) { state.activeBoardId = 'home'; renderHome(); return; }
   layoutLanes();
   const columns = visibleLanes();
+  const groupSurfaces = columns.filter(hasGroup).map((lane) => {
+    const members = columns.filter((item) => item.rootId === lane.id);
+    const lastMember = members.at(-1);
+    return `<div class="group-surface" data-group-surface="${lane.id}" style="left:${lane.x}px;width:${lastMember.x + lastMember.width - lane.x}px;--group-color:${groupColor(lane)}"></div>`;
+  }).join('');
   const rails = columns.filter((lane) => !lane.parentId && !lane.subagentOf && board().lanes.some((item) => item.subagentOf === lane.id)).map((lane) => {
     const expanded = Boolean(board().expandedSubagents?.[lane.id]);
     return `<div class="subagent-rail" style="left:${lane.x + lane.width}px" data-subagent-rail="${lane.id}"><span class="subagent-rail-line"></span><div class="subagent-rail-actions"><button type="button" data-action="toggle-subagents" data-lane="${lane.id}" title="${expanded ? 'Скрыть закреплённых сабагентов' : 'Показать закреплённых сабагентов'}" aria-label="${expanded ? 'Скрыть' : 'Показать'} закреплённых сабагентов" aria-expanded="${expanded}">${icon('chevron', 18)}</button><button type="button" data-action="subagent-settings" data-lane="${lane.id}" title="Настроить сабагентов" aria-label="Настроить сабагентов">${icon('settings', 17)}</button></div></div>`;
@@ -287,7 +309,7 @@ function render() {
   app.innerHTML = `<div class="prototype-shell">
     ${renderTabs()}
     <main class="board-viewport" id="board-viewport" aria-label="Доска с сессиями">
-      <div class="board-stage" id="board-stage"><svg class="connection-layer" id="connections" aria-hidden="true"></svg>${outerZones}${boundaries}${rails}${columns.map(renderLane).join('')}</div>
+      <div class="board-stage" id="board-stage">${groupSurfaces}<svg class="connection-layer" id="connections" aria-hidden="true"></svg>${outerZones}${boundaries}${rails}${columns.map(renderLane).join('')}</div>
       <div class="canvas-controls"><button class="mode-button" type="button" data-action="toggle-mode" title="Переключить режим перемещения">${icon(state.mode === 'free' ? 'free' : 'focus', 18)}<span>${state.mode === 'free' ? 'Свободный' : 'Фиксированный'}</span></button>
         <span class="control-divider"></span><button class="icon-button" type="button" data-action="zoom-out" title="Уменьшить" aria-label="Уменьшить">${icon('zoom-out', 18)}</button>
         <span class="zoom-level">${Math.round((board().camera?.zoom ?? 0.9) * 100)}%</span>
@@ -377,11 +399,11 @@ function renderConnections() {
   if (!svg) return;
   svg.innerHTML = visibleLanes().filter((lane) => lane.parentId).map((lane) => {
     const parent = laneById(lane.parentId);
-    const source = document.querySelector(`[data-lane-id="${parent.id}"] [data-message-id="${lane.sourceMessageId}"]`);
-    const y1 = parent.y + (source?.offsetTop ?? lane.sourceOffset ?? 190) - 8.5;
+    const headerHeight = document.querySelector(`[data-lane-id="${lane.id}"] .lane-header`)?.offsetHeight ?? 47;
+    const y1 = lane.y + headerHeight - 0.5;
     const x1 = parent.x + 1;
-    const x2 = lane.x;
-    return `<path d="M ${x1} ${y1} H ${x2}" />`;
+    const x2 = lane.x + 1;
+    return `<path data-group-id="${lane.rootId}" style="--group-color:${groupColor(lane)}" d="M ${x1} ${y1} H ${x2}" />`;
   }).join('');
 }
 
@@ -564,6 +586,20 @@ function showSubagentSettings(parent) {
   subagentsDialog.showModal();
 }
 
+function previewGroupColor(value) {
+  if (!state.colorDraft || !/^#[0-9a-f]{6}$/i.test(value)) return;
+  state.colorDraft.value = value;
+  const laneId = state.colorDraft.laneId;
+  document.querySelector(`[data-group-surface="${laneId}"]`)?.style.setProperty('--group-color', value);
+  document.querySelectorAll(`[data-root-id="${laneId}"], path[data-group-id="${laneId}"]`).forEach((element) => element.style.setProperty('--group-color', value));
+  const control = document.querySelector(`[data-lane-id="${laneId}"] .group-color-control`);
+  control?.style.setProperty('--group-color', value);
+  control?.querySelector('.group-color-trigger')?.setAttribute('aria-label', `Цвет группы: ${value}`);
+  control?.querySelectorAll('.group-color-palette button').forEach((button) => button.setAttribute('aria-pressed', String(button.dataset.color === value)));
+  const input = control?.querySelector('input[type="color"]');
+  if (input && input.value !== value) input.value = value;
+}
+
 function insertSession(referenceId, before) {
   const reference = laneById(referenceId);
   if (!reference) return;
@@ -687,8 +723,8 @@ app.addEventListener('click', async (event) => {
   const button = event.target.closest('[data-action]');
   if (button) {
     const action = button.dataset.action;
-    if (action === 'show-home') { cancelSmoothScroll(); state.activeBoardId = 'home'; render(); return; }
-    if (action === 'select-board') { cancelSmoothScroll(); const item = boards.find((candidate) => candidate.id === button.dataset.board); if (!item) return; item.closed = false; state.activeBoardId = item.id; render(); return; }
+    if (action === 'show-home') { cancelSmoothScroll(); state.colorDraft = null; state.activeBoardId = 'home'; render(); return; }
+    if (action === 'select-board') { cancelSmoothScroll(); const item = boards.find((candidate) => candidate.id === button.dataset.board); if (!item) return; state.colorDraft = null; item.closed = false; state.activeBoardId = item.id; render(); return; }
     if (action === 'close-board') { closeBoard(button.dataset.board); return; }
     if (action === 'archive-board') { archiveBoard(button.dataset.board); return; }
     if (action === 'restore-board') { const item = boards.find((candidate) => candidate.id === button.dataset.board); if (item) { item.archived = false; item.closed = false; render(); } return; }
@@ -704,6 +740,21 @@ app.addEventListener('click', async (event) => {
     }
     if (action === 'toggle-details') { state.expanded.has(button.dataset.message) ? state.expanded.delete(button.dataset.message) : state.expanded.add(button.dataset.message); render(); return; }
     if (action === 'toggle-request') { state.expandedRequests.has(button.dataset.message) ? state.expandedRequests.delete(button.dataset.message) : state.expandedRequests.add(button.dataset.message); render(); return; }
+    if (action === 'open-group-color') {
+      state.openMenu = null;
+      state.colorDraft = state.colorDraft?.laneId === lane.id ? null : { laneId: lane.id, value: lane.groupColor || DEFAULT_GROUP_COLOR };
+      render();
+      return;
+    }
+    if (action === 'preview-group-color') { previewGroupColor(button.dataset.color); return; }
+    if (action === 'cancel-group-color') { state.colorDraft = null; render(); return; }
+    if (action === 'apply-group-color') {
+      const root = laneById(state.colorDraft?.laneId);
+      if (root) root.groupColor = state.colorDraft.value;
+      state.colorDraft = null;
+      render();
+      return;
+    }
     if (action === 'choose-provider') {
       lane.provider = button.dataset.provider;
       lane.model = MODEL_CHOICES[lane.provider][lane.provider === 'Codex' ? 1 : 0];
@@ -784,6 +835,7 @@ app.addEventListener('click', async (event) => {
   }
   const laneElement = event.target.closest('.lane');
   if (laneElement && state.mode === 'fixed' && !event.target.closest('textarea,button,input')) focusLane(laneElement.dataset.laneId);
+  if (state.colorDraft && !event.target.closest('.group-color-control')) { state.colorDraft = null; render(); return; }
   if (state.openMenu && !event.target.closest('.config-menu, .model-widget')) { state.openMenu = null; render(); }
 });
 
@@ -812,6 +864,7 @@ app.addEventListener('dblclick', (event) => {
 });
 
 app.addEventListener('input', (event) => {
+  if (event.target.matches('.group-color-custom input')) { previewGroupColor(event.target.value); return; }
   if (event.target.matches('textarea[data-composer]')) {
     state.drafts.set(event.target.dataset.composer, event.target.value);
     autoGrow(event.target);
@@ -819,6 +872,7 @@ app.addEventListener('input', (event) => {
 });
 
 app.addEventListener('keydown', (event) => {
+  if (event.key === 'Escape' && state.colorDraft) { state.colorDraft = null; render(); return; }
   if (event.key === 'Escape' && state.openMenu) { state.openMenu = null; render(); return; }
   const textarea = event.target.closest('textarea[data-composer]');
   if (!textarea || event.key !== 'Enter' || event.isComposing) return;
