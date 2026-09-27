@@ -17,10 +17,11 @@ class WorkspaceStore(private val originalFile: Path) : Closeable {
     private val lock = Any()
     private val boardsDirectory = originalFile.toAbsolutePath().parent.resolve("boards")
     private val stores = linkedMapOf<String, BoardStore>()
+    private val originalBoardId: String
 
     init {
         Files.createDirectories(boardsDirectory)
-        openBoard(originalFile, "Доска 1")
+        originalBoardId = openBoard(originalFile, "Доска 1").board()["board"]!!.jsonObject["id"]!!.jsonPrimitive.content
         Files.list(boardsDirectory).use { paths ->
             paths.filter { Files.isRegularFile(it) && it.fileName.toString().endsWith(".sqlite") }
                 .sorted()
@@ -29,7 +30,12 @@ class WorkspaceStore(private val originalFile: Path) : Closeable {
     }
 
     fun boards(): JsonArray = synchronized(lock) {
-        JsonArray(stores.values.map { it.board()["board"]!!.jsonObject })
+        val ordered = stores.values.map { it to it.boardOrder() }.sortedWith(
+            compareBy<Pair<BoardStore, Pair<String, String>>> { if (it.second.first == originalBoardId) 0 else 1 }
+                .thenBy { it.second.second }
+                .thenBy { it.second.first },
+        )
+        JsonArray(ordered.map { it.first.board()["board"]!!.jsonObject })
     }
 
     fun board(boardId: String): JsonObject = synchronized(lock) {

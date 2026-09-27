@@ -37,6 +37,7 @@ application {
 tasks.test {
     useJUnitPlatform()
     reports.html.required.set(false)
+    environment("AI_ADVENT_V3_SCHEDULES_DB", layout.buildDirectory.file("test-data/schedules.sqlite").get().asFile.absolutePath)
 }
 
 tasks.named<JavaExec>("run") {

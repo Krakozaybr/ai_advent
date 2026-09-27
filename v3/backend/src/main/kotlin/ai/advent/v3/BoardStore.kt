@@ -390,6 +390,17 @@ class BoardStore(
         }
     }
 
+    fun boardOrder(): Pair<String, String> = synchronized(lock) {
+        connect().use { db ->
+            db.createStatement().use { statement ->
+                statement.executeQuery("SELECT id, created_at FROM boards ORDER BY created_at LIMIT 1").use { result ->
+                    check(result.next()) { "Board has not been initialized" }
+                    result.getString("id") to result.getString("created_at")
+                }
+            }
+        }
+    }
+
     fun createLane(provider: String): String = synchronized(lock) {
         require(provider in setOf("codex", "openrouter")) { "Unsupported provider" }
         connect().use { db ->
