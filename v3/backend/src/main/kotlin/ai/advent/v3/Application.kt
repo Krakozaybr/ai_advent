@@ -28,6 +28,8 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.JsonNull
+import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.contentOrNull
 import kotlinx.serialization.json.jsonObject
@@ -164,10 +166,21 @@ fun Application.module(
         post("/api/boards/{boardId}/schedules") {
             val boardId = call.parameters["boardId"] ?: ""
             val body = runCatching { call.receive<JsonObject>() }.getOrNull()
-            val title = body?.get("title")?.jsonPrimitive?.contentOrNull
-            val delayMs = body?.get("delayMs")?.jsonPrimitive?.longOrNull
-            val repeatEveryMs = body?.get("repeatEveryMs")?.jsonPrimitive?.longOrNull
-            if (title == null || delayMs == null) { call.respond(HttpStatusCode.BadRequest, buildJsonObject { put("error", "Укажи название и задержку до первого запуска.") }); return@post }
+            val titleValue = body?.get("title") as? JsonPrimitive
+            val title = titleValue?.takeIf { it.isString }?.contentOrNull
+            val delayValue = body?.get("delayMs") as? JsonPrimitive
+            val delayMs = delayValue?.takeUnless { it.isString }?.longOrNull
+            val repeatValue = body?.get("repeatEveryMs")
+            val repeatEveryMs = when (repeatValue) {
+                null, JsonNull -> null
+                is JsonPrimitive -> repeatValue.takeUnless { it.isString }?.longOrNull
+                else -> null
+            }
+            val invalidRepeat = repeatValue != null && repeatValue != JsonNull && repeatEveryMs == null
+            if (title == null || delayMs == null || invalidRepeat) {
+                call.respond(HttpStatusCode.BadRequest, buildJsonObject { put("error", "Укажи название, числовую задержку и числовой интервал повтора или null.") })
+                return@post
+            }
             try { store.board(boardId); call.respond(HttpStatusCode.Created, schedulerStore.create(boardId,title,delayMs,repeatEveryMs)) }
             catch (error: IllegalArgumentException) { call.respond(HttpStatusCode.BadRequest, buildJsonObject { put("error",error.message ?: "Расписание некорректно.") }) }
             catch (_: IllegalStateException) { call.respond(HttpStatusCode.NotFound, buildJsonObject { put("error", "Доска не найдена.") }) }

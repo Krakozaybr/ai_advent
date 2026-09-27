@@ -7,6 +7,10 @@ import kotlinx.serialization.json.put
 import java.io.Closeable
 import java.nio.file.Files
 import java.nio.file.Path
+import java.nio.channels.FileChannel
+import java.nio.channels.FileLock
+import java.nio.channels.OverlappingFileLockException
+import java.nio.file.StandardOpenOption
 import java.sql.Connection
 import java.sql.DriverManager
 import java.time.Instant
@@ -14,35 +18,77 @@ import java.util.UUID
 
 fun interface SchedulerClock { fun nowMillis(): Long }
 
+class SchedulerAlreadyRunningException : IllegalStateException("Другой backend уже владеет этим планировщиком.")
+
 /** Durable board-scoped schedules and an idempotent local read-only aggregation runner. */
 class SchedulerStore(private val file: Path, private val clock: SchedulerClock = SchedulerClock { System.currentTimeMillis() }) : Closeable {
     private val lock = Any()
     private val samples = listOf(12, 18, 15, 21, 14, 20, 16)
+    private lateinit var databaseFile: Path
+    private lateinit var ownershipFile: Path
+    private var ownershipChannel: FileChannel? = null
+    private var ownershipLock: FileLock? = null
+    @Volatile private var closed = false
 
     init {
-        Files.createDirectories(file.toAbsolutePath().parent)
+        val requestedFile = file.toAbsolutePath().normalize()
+        Files.createDirectories(requestedFile.parent)
+        databaseFile = if (Files.exists(requestedFile)) requestedFile.toRealPath() else requestedFile.parent.toRealPath().resolve(requestedFile.fileName)
+        ownershipFile = databaseFile.resolveSibling("${databaseFile.fileName}.scheduler.lock")
         Class.forName("org.sqlite.JDBC")
-        connect().use { db -> db.createStatement().use { statement ->
-            statement.execute("PRAGMA journal_mode=WAL")
-            statement.execute("""CREATE TABLE IF NOT EXISTS schedules (
-                id TEXT PRIMARY KEY, board_id TEXT NOT NULL, title TEXT NOT NULL,
-                repeat_every_ms INTEGER, next_run_at INTEGER NOT NULL, status TEXT NOT NULL DEFAULT 'active',
-                created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL
-            )""")
-            statement.execute("CREATE INDEX IF NOT EXISTS schedules_due ON schedules(status,next_run_at)")
-            statement.execute("""CREATE TABLE IF NOT EXISTS schedule_runs (
-                id TEXT PRIMARY KEY, schedule_id TEXT NOT NULL, board_id TEXT NOT NULL,
-                scheduled_for INTEGER NOT NULL, started_at INTEGER NOT NULL, completed_at INTEGER,
-                status TEXT NOT NULL, missed_count INTEGER NOT NULL DEFAULT 0,
-                result_json TEXT, error TEXT, UNIQUE(schedule_id,scheduled_for)
-            )""")
-        } }
-        recoverInterrupted()
+        acquireOwnership()
+        try {
+            connect().use { db -> db.createStatement().use { statement ->
+                statement.execute("PRAGMA journal_mode=WAL")
+                statement.execute("""CREATE TABLE IF NOT EXISTS schedules (
+                    id TEXT PRIMARY KEY, board_id TEXT NOT NULL, title TEXT NOT NULL,
+                    repeat_every_ms INTEGER, next_run_at INTEGER NOT NULL, status TEXT NOT NULL DEFAULT 'active',
+                    created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL
+                )""")
+                statement.execute("CREATE INDEX IF NOT EXISTS schedules_due ON schedules(status,next_run_at)")
+                statement.execute("""CREATE TABLE IF NOT EXISTS schedule_runs (
+                    id TEXT PRIMARY KEY, schedule_id TEXT NOT NULL, board_id TEXT NOT NULL,
+                    scheduled_for INTEGER NOT NULL, started_at INTEGER NOT NULL, completed_at INTEGER,
+                    status TEXT NOT NULL, missed_count INTEGER NOT NULL DEFAULT 0,
+                    result_json TEXT, error TEXT, UNIQUE(schedule_id,scheduled_for)
+                )""")
+            } }
+            recoverInterrupted()
+        } catch (error: Exception) {
+            releaseOwnership()
+            throw error
+        }
     }
 
-    private fun connect(): Connection = DriverManager.getConnection("jdbc:sqlite:${file.toAbsolutePath()}?transaction_mode=IMMEDIATE&busy_timeout=5000")
+    private fun acquireOwnership() {
+        val channel = FileChannel.open(ownershipFile,StandardOpenOption.CREATE,StandardOpenOption.WRITE)
+        try {
+            val fileLock = try { channel.tryLock() } catch (_: OverlappingFileLockException) { null }
+            if (fileLock == null) throw SchedulerAlreadyRunningException()
+            ownershipChannel = channel
+            ownershipLock = fileLock
+        } catch (error: Exception) {
+            channel.close()
+            throw error
+        }
+    }
+
+    private fun requireOwnership() {
+        check(!closed && ownershipLock?.isValid == true) { "Этот планировщик уже закрыт." }
+    }
+
+    private fun releaseOwnership() {
+        try { ownershipLock?.release() } finally {
+            ownershipLock = null
+            ownershipChannel?.close()
+            ownershipChannel = null
+        }
+    }
+
+    private fun connect(): Connection = DriverManager.getConnection("jdbc:sqlite:$databaseFile?transaction_mode=IMMEDIATE&busy_timeout=5000")
 
     fun create(boardId: String, title: String, delayMs: Long, repeatEveryMs: Long? = null): JsonObject = synchronized(lock) {
+        requireOwnership()
         require(boardId.isNotBlank()) { "Доска не указана." }
         require(title.isNotBlank() && title.length <= 120) { "Название должно содержать от 1 до 120 символов." }
         require(delayMs in 250..86_400_000) { "Первый запуск должен быть через 250 мс — 24 часа." }
@@ -69,6 +115,7 @@ class SchedulerStore(private val file: Path, private val clock: SchedulerClock =
     }
 
     fun pause(boardId: String, id: String, paused: Boolean): JsonObject? = synchronized(lock) {
+        requireOwnership()
         connect().use { db -> db.prepareStatement("UPDATE schedules SET status=?,updated_at=? WHERE board_id=? AND id=? AND status IN ('active','paused')").use { q ->
             q.setString(1,if(paused) "paused" else "active"); q.setLong(2,clock.nowMillis()); q.setString(3,boardId); q.setString(4,id); if(q.executeUpdate()!=1) return@synchronized null
         } }
@@ -79,6 +126,7 @@ class SchedulerStore(private val file: Path, private val clock: SchedulerClock =
 
     /** Claim one overdue schedule and execute a deterministic local aggregate. */
     fun runOneDue(): Boolean = synchronized(lock) {
+        requireOwnership()
         val now = clock.nowMillis()
         val claimed = connect().use { db ->
             db.autoCommit = false
@@ -142,5 +190,9 @@ class SchedulerStore(private val file: Path, private val clock: SchedulerClock =
         put("id",rs.getString("id")); put("scheduleId",rs.getString("schedule_id")); put("title",rs.getString("title")); put("scheduledFor",rs.getLong("scheduled_for")); put("startedAt",rs.getLong("started_at")); rs.getLong("completed_at").let { if(!rs.wasNull()) put("completedAt",it) }
         put("status",rs.getString("status")); put("missedCount",rs.getInt("missed_count")); rs.getString("result_json")?.let { put("result",Json.parseToJsonElement(it)) }; rs.getString("error")?.let { put("error",it) }
     }
-    override fun close() {}
+    override fun close() = synchronized(lock) {
+        if (closed) return@synchronized
+        closed = true
+        releaseOwnership()
+    }
 }

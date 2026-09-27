@@ -71,4 +71,35 @@ class SchedulerApiTest {
         schedules.close()
         workspace.close()
     }
+
+    @Test fun `schedule create rejects object values as bad requests`() = testApplication {
+        val directory = Files.createTempDirectory("schedule-validation-api")
+        val workspace = WorkspaceStore(directory.resolve("board.sqlite"))
+        val boardId = workspace.boards().jsonArray.first().jsonObject["id"]!!.jsonPrimitive.content
+        val schedules = SchedulerStore(directory.resolve("schedules.sqlite"),FakeClock())
+        application {
+            module(workspace,FakeCodex(),openRouterKeys=OpenRouterKeyStore(directory.resolve("openrouter.key")),
+                mcpRegistry=McpRegistry(emptyList()),memoryStore=MemoryStore(directory.resolve("memory.sqlite")),
+                taskStore=TaskStore(directory.resolve("tasks.sqlite")),schedulerStore=schedules)
+        }
+
+        val invalidBodies = listOf(
+            """{"title":{"text":"object"},"delayMs":250}""",
+            """{"title":"test","delayMs":{"ms":250}}""",
+            """{"title":"test","delayMs":250,"repeatEveryMs":{"ms":1000}}""",
+        )
+        invalidBodies.forEach { body ->
+            val response = client.post("/api/boards/$boardId/schedules") {
+                header(HttpHeaders.ContentType,ContentType.Application.Json.toString()); setBody(body)
+            }
+            assertEquals(HttpStatusCode.BadRequest,response.status,"body=$body response=${response.bodyAsText()}")
+        }
+        val valid = client.post("/api/boards/$boardId/schedules") {
+            header(HttpHeaders.ContentType,ContentType.Application.Json.toString()); setBody("""{"title":"valid","delayMs":250,"repeatEveryMs":null}""")
+        }
+        assertEquals(HttpStatusCode.Created,valid.status,valid.bodyAsText())
+        assertEquals(1,schedules.list(boardId)["schedules"]!!.jsonArray.size)
+        schedules.close()
+        workspace.close()
+    }
 }
