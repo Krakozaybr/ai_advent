@@ -52,6 +52,10 @@ class RunCoordinator(
         val snapshot = store.contextSnapshot(laneId)
         val lane = store.laneSnapshot(laneId)
         require(lane["activeRun"] == kotlinx.serialization.json.JsonNull) { "Дождись завершения ответа перед созданием сводки." }
+        val windowSize = lane["contextWindowSize"]?.jsonPrimitive?.intOrNull ?: 10
+        val summarizedMessages = snapshot.messages.dropLast(windowSize)
+        require(summarizedMessages.isNotEmpty()) { "Недостаточно истории: сводка должна покрывать сообщения до последних $windowSize." }
+        val summaryWatermark = summarizedMessages.last().id
         val provider = lane["provider"]?.jsonPrimitive?.content ?: "codex"
         val model = lane["model"]?.jsonPrimitive?.content.orEmpty()
         val instructions = lane["effectiveInstructions"]?.jsonPrimitive?.content.orEmpty()
@@ -59,14 +63,14 @@ class RunCoordinator(
         val summary = StringBuilder()
         val usage: JsonObject?
         if (provider == "openrouter") {
-            val details = openRouter.stream(openRouterKeys.get(), LaneConfig("openrouter", model, 0.2, 2048, null), snapshot.messages, requestPrompt, { summary.append(it) }, instructions)
+            val details = openRouter.stream(openRouterKeys.get(), LaneConfig("openrouter", model, 0.2, 2048, null), summarizedMessages, requestPrompt, { summary.append(it) }, instructions)
             usage = details["usage"] as? JsonObject
         } else {
             var actualUsage: JsonObject? = null
             codex.stream(
                 threadId = null,
                 prompt = requestPrompt,
-                contextToSeed = snapshot.messages,
+                contextToSeed = summarizedMessages,
                 shouldSeedContext = true,
                 model = model,
                 onThreadId = {},
@@ -81,11 +85,11 @@ class RunCoordinator(
         }
         require(summary.isNotBlank()) { "Провайдер вернул пустую сводку." }
         val usageSource = if (usage == null) "unavailable" else if (provider == "codex") "codex-app-server" else "openrouter"
-        val saved = store.saveContextSummary(laneId, summary.toString().trim(), snapshot.watermark, usageSource, usage, snapshot.fingerprint)
+        val saved = store.saveContextSummary(laneId, summary.toString().trim(), summaryWatermark, usageSource, usage, snapshot.fingerprint)
         if (!saved) throw StaleSummarySnapshotException()
         return buildJsonObject {
             put("summary", summary.toString().trim())
-            snapshot.watermark?.let { put("watermark", it) }
+            summaryWatermark?.let { put("watermark", it) }
             put("provider", provider)
             put("usageSource", usageSource)
             usage?.let { put("usage", it) }
@@ -142,7 +146,14 @@ class RunCoordinator(
                             actualUsage?.let { put("usage", it) }
                         }
                     }
-                    store.saveTechnicalDetails(run.runId, details)
+                    val technicalDetails = buildJsonObject {
+                        details.forEach { (key, value) -> put(key, value) }
+                        put("instructionPlan", buildJsonObject {
+                            put("effectiveInstructions", run.effectiveInstructions)
+                            put("priority", "Доска задаёт общий контекст; агент уточняет роль; инструкции ленты имеют приоритет. Режим override заменяет инструкции доски, но не назначенного агента.")
+                        })
+                    }
+                    store.saveTechnicalDetails(run.runId, technicalDetails)
                     store.completeRun(run.runId)
                 } catch (error: CancellationException) {
                     store.cancelRun(run.runId)

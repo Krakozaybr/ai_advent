@@ -26,6 +26,64 @@ import kotlin.test.assertNotNull
 
 class RunCoordinatorMcpTest {
     @Test
+    fun `assigned agent instructions reach OpenRouter and Codex and survive lane copies`() = runBlocking {
+        val temp = Files.createTempDirectory("v3-agent-instructions")
+        val store = WorkspaceStore(temp.resolve("board.sqlite"))
+        val (imported, _) = store.importPreparedBoard(ImportedBoard(
+            externalId = "agent-instructions-test",
+            title = "Agent instructions",
+            instructions = "Board instruction",
+            agents = listOf(ImportedAgent("specialist", "Specialist", "", "Agent instruction")),
+            lanes = listOf("openrouter", "codex").mapIndexed { index, provider ->
+                ImportedLane(
+                    externalId = "lane-$provider", title = provider, provider = provider, model = if (provider == "codex") "" else "test/model",
+                    temperature = null, maxTokens = null, stop = null, contextStrategy = "full", contextWindowSize = 10,
+                    contextBudgetTokens = 32_768, summary = "Imported summary", x = 24 + index * 460, y = 24, width = 440,
+                    messages = listOf(ImportedMessage("seed", "user", "Imported question", null)),
+                    originLaneExternalId = null, originMessageExternalId = null, originKind = null,
+                    agentExternalId = "specialist", instructions = "Lane instruction", instructionMode = "append",
+                )
+            },
+        ))
+        val lanes = imported["lanes"]!!.jsonArray.map { it.jsonObject }
+        val openRouterLane = lanes.first { it["provider"]!!.jsonPrimitive.content == "openrouter" }["id"]!!.jsonPrimitive.content
+        val codexLane = lanes.first { it["provider"]!!.jsonPrimitive.content == "codex" }["id"]!!.jsonPrimitive.content
+        assertEquals(lanes.first { it["id"]!!.jsonPrimitive.content == openRouterLane }["messages"]!!.jsonArray.first()
+            .jsonObject["id"]!!.jsonPrimitive.content,
+            lanes.first { it["id"]!!.jsonPrimitive.content == openRouterLane }["contextSummaryWatermark"]!!.jsonPrimitive.content)
+        val gateway = InstructionOpenRouter()
+        val codex = InstructionCodex()
+        val coordinator = RunCoordinator(store, codex, gateway,
+            OpenRouterKeyStore(temp.resolve("key")).also { it.save("test-server-key-only") })
+        try {
+            val expected = "Board instruction\n\nИнструкции назначенного агента «Specialist»:\nAgent instruction\n\nLane instruction"
+            val openRouterRun = coordinator.submit(openRouterLane, "Continue")
+            val codexRun = coordinator.submit(codexLane, "Continue")
+            waitForTerminal(store, openRouterRun)
+            waitForTerminal(store, codexRun)
+            assertEquals(expected, gateway.instructions.single())
+            assertEquals(expected, codex.instructions.single())
+
+            val board = store.board(imported["board"]!!.jsonObject["id"]!!.jsonPrimitive.content)
+            val openRouterAnswer = board["lanes"]!!.jsonArray.first { it.jsonObject["id"]!!.jsonPrimitive.content == openRouterLane }
+                .jsonObject["messages"]!!.jsonArray.last().jsonObject
+            assertEquals(expected, openRouterAnswer["requestConfig"]!!.jsonObject["effectiveInstructions"]!!.jsonPrimitive.content)
+            assertEquals(expected, openRouterAnswer["technicalDetails"]!!.jsonObject["instructionPlan"]!!.jsonObject["effectiveInstructions"]!!.jsonPrimitive.content)
+            assertTrue(openRouterAnswer["requestConfig"].toString().contains("instructionPriority"))
+
+            val seedId = lanes.first { it["id"]!!.jsonPrimitive.content == openRouterLane }["messages"]!!.jsonArray.first()
+                .jsonObject["id"]!!.jsonPrimitive.content
+            val branch = store.branchLane(openRouterLane, seedId)["lanes"]!!.jsonArray.last().jsonObject
+            val clone = store.cloneLane(openRouterLane)["lanes"]!!.jsonArray.last().jsonObject
+            assertTrue(branch["effectiveInstructions"]!!.jsonPrimitive.content.contains("Agent instruction"))
+            assertTrue(clone["effectiveInstructions"]!!.jsonPrimitive.content.contains("Agent instruction"))
+        } finally {
+            coordinator.close()
+            store.close()
+        }
+    }
+
+    @Test
     fun `approval decisions are atomic and interrupted applying approvals require manual closure`() = runBlocking {
         val temp = Files.createTempDirectory("v3-approval-recovery")
         val database = temp.resolve("board.sqlite")
@@ -442,5 +500,47 @@ private class NoopCodex : CodexGateway {
         onText: suspend (String) -> Unit, ephemeral: Boolean, onUsage: suspend (JsonObject) -> Unit, developerInstructions: String) {
         error("Codex is not part of this test")
     }
+    override fun close() = Unit
+}
+
+private class InstructionOpenRouter : OpenRouterGateway {
+    val instructions = java.util.Collections.synchronizedList(mutableListOf<String>())
+
+    override suspend fun stream(
+        apiKey: String, config: LaneConfig, history: List<ContextMessage>, prompt: String,
+        onText: suspend (String) -> Unit, instructions: String,
+    ): JsonObject {
+        this.instructions += instructions
+        onText("OpenRouter answer")
+        return buildJsonObject { put("provider", "openrouter") }
+    }
+
+    override suspend fun toolRound(
+        apiKey: String, config: LaneConfig, messages: List<JsonObject>, tools: List<JsonObject>,
+        onText: suspend (String) -> Unit, instructions: String,
+    ): OpenRouterToolRound = error("MCP tools are not part of this test")
+
+    override fun close() = Unit
+}
+
+private class InstructionCodex : CodexGateway {
+    val instructions = java.util.Collections.synchronizedList(mutableListOf<String>())
+
+    override suspend fun status() = CodexStatus(true, "test")
+    override suspend fun models() = JsonArray(emptyList())
+    override suspend fun interrupt(threadId: String) = true
+    override suspend fun beginLogin() = CodexLogin("https://example.invalid")
+    override suspend fun stream(
+        threadId: String?, prompt: String, contextToSeed: List<ContextMessage>, shouldSeedContext: Boolean, model: String,
+        onThreadId: suspend (String) -> Unit, onContextSeeded: suspend () -> Unit, onContextSeedFailed: suspend () -> Unit,
+        onText: suspend (String) -> Unit, ephemeral: Boolean, onUsage: suspend (JsonObject) -> Unit, developerInstructions: String,
+    ) {
+        instructions += developerInstructions
+        onThreadId("instruction-test-thread")
+        if (shouldSeedContext) onContextSeeded()
+        onUsage(buildJsonObject { put("total", 1) })
+        onText("Codex answer")
+    }
+
     override fun close() = Unit
 }

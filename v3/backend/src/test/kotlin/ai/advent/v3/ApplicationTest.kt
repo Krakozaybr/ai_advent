@@ -671,7 +671,7 @@ for line in sys.stdin:
         val summaryResponse = client.post("/api/lanes/$laneId/context-summary")
         assertEquals(HttpStatusCode.OK, summaryResponse.status)
         val summaryResult = summaryResponse.bodyAsText().let(Json::parseToJsonElement).jsonObject
-        assertEquals(originalMessages.last().jsonObject["id"], summaryResult["watermark"])
+        assertEquals(originalMessages.first().jsonObject["id"], summaryResult["watermark"])
         val after = client.get("/api/board").bodyAsText().let(Json::parseToJsonElement).jsonObject["lanes"]!!.jsonArray[0].jsonObject
         assertEquals(originalMessages.size, after["messages"]!!.jsonArray.size, "summary generation does not append dialogue messages")
         assertEquals(summaryResult["watermark"], after["contextSummaryWatermark"])
@@ -679,6 +679,7 @@ for line in sys.stdin:
         assertEquals(false, after["contextSummaryStale"]!!.jsonPrimitive.content.toBoolean())
         assertEquals(true, fake.runs.last().ephemeral)
         assertEquals("codex-app-server", summaryResult["usageSource"]!!.jsonPrimitive.content)
+        assertEquals(listOf(originalMessages.first().jsonObject["content"]!!.jsonPrimitive.content), fake.runs.last().contextToSeed.map { it.content })
         val finalMessageId = originalMessages.last().jsonObject["id"]!!.jsonPrimitive.content
         client.patch("/api/messages/$finalMessageId") {
             header(HttpHeaders.ContentType, ContentType.Application.Json.toString())
@@ -698,6 +699,7 @@ for line in sys.stdin:
         val initial = client.get("/api/board").bodyAsText().let(Json::parseToJsonElement).jsonObject
         val boardId = initial["board"]!!.jsonObject["id"]!!.jsonPrimitive.content
         val laneId = initial["lanes"]!!.jsonArray[0].jsonObject["id"]!!.jsonPrimitive.content
+        store.updateLaneConfig(laneId, "gpt-test", null, null, null, "summary_window", 1, 32768)
         val seedRun = store.startRun(laneId, "question before edit")
         store.appendText(seedRun.runId, "answer before edit")
         store.completeRun(seedRun.runId)

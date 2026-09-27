@@ -20,12 +20,17 @@ import java.nio.ByteBuffer
 import java.nio.charset.StandardCharsets
 import java.security.MessageDigest
 
-data class ContextMessage(val role: String, val content: String)
+data class ContextMessage(val role: String, val content: String, val id: String? = null) {
+    override fun toString(): String = super.toString()
+}
 
-private fun effectiveInstructions(board: String, lane: String, mode: String): String = when (mode) {
-    "override" -> lane
-    "append" -> listOf(board, lane).filter(String::isNotBlank).joinToString("\n\n")
-    else -> board
+private fun effectiveInstructions(board: String, lane: String, mode: String, agent: String = "", agentName: String? = null): String {
+    val agentSection = agent.takeIf(String::isNotBlank)?.let {
+        "Инструкции назначенного агента${agentName?.let { name -> " «$name»" }.orEmpty()}:\n$it"
+    }
+    val inheritedBoard = board.takeIf { mode != "override" }
+    val laneInstructions = lane.takeIf { mode == "override" || mode == "append" }
+    return listOfNotNull(inheritedBoard, agentSection, laneInstructions).filter(String::isNotBlank).joinToString("\n\n")
 }
 
 data class TranscriptSnapshot(val messages: List<ContextMessage>, val watermark: String?, val fingerprint: String)
@@ -310,7 +315,9 @@ class BoardStore(
                     "position_x, position_y, width, provider, model, temperature, max_tokens, stop, " +
                     "context_strategy, context_window_size, context_summary, context_summary_watermark, context_budget_tokens, " +
                     "context_summary_usage, context_summary_usage_source, context_summary_stale, agent_id, mcp_auto_approve, " +
-                    "instructions, instruction_mode, (SELECT instructions FROM boards WHERE id = lanes.board_id) AS board_instructions " +
+                    "instructions, instruction_mode, (SELECT instructions FROM boards WHERE id = lanes.board_id) AS board_instructions, " +
+                    "(SELECT instructions FROM agents WHERE id = lanes.agent_id) AS agent_instructions, " +
+                    "(SELECT name FROM agents WHERE id = lanes.agent_id) AS agent_name " +
                     "FROM lanes WHERE board_id = ? ORDER BY created_at, rowid",
             ).use { query ->
                 query.setString(1, board["id"]!!.jsonPrimitive.content)
@@ -322,7 +329,7 @@ class BoardStore(
                             put("title", result.getString("title"))
                             put("instructions", result.getString("instructions"))
                             put("instructionMode", result.getString("instruction_mode"))
-                            put("effectiveInstructions", effectiveInstructions(result.getString("board_instructions"), result.getString("instructions"), result.getString("instruction_mode")))
+                            put("effectiveInstructions", effectiveInstructions(result.getString("board_instructions"), result.getString("instructions"), result.getString("instruction_mode"), result.getString("agent_instructions") ?: "", result.getString("agent_name")))
                             result.getString("agent_id")?.let { put("agentId", it) }
                             put("mcpAutoApprove", result.getInt("mcp_auto_approve") != 0)
                             put("stickyFacts", JsonArray(stickyFacts(db, laneId)))
@@ -469,7 +476,8 @@ class BoardStore(
                     db.prepareStatement(
                         """INSERT INTO lanes(id, board_id, title, created_at, codex_context_seeded, position_x, position_y, width,
                            provider, model, temperature, max_tokens, stop, context_strategy, context_window_size, context_summary,
-                           context_budget_tokens, agent_id, instructions, instruction_mode) VALUES (?, ?, ?, ?, 0, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                           context_summary_watermark, context_budget_tokens, agent_id, instructions, instruction_mode)
+                           VALUES (?, ?, ?, ?, 0, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                     ).use { query ->
                         query.setString(1, laneId); query.setString(2, boardId); query.setString(3, lane.title)
                         query.setString(4, Instant.now().plusNanos(index.toLong()).toString())
@@ -478,10 +486,13 @@ class BoardStore(
                         if (lane.temperature == null) query.setNull(10, java.sql.Types.REAL) else query.setDouble(10, lane.temperature)
                         if (lane.maxTokens == null) query.setNull(11, java.sql.Types.INTEGER) else query.setInt(11, lane.maxTokens)
                         query.setString(12, lane.stop); query.setString(13, lane.contextStrategy)
-                        query.setInt(14, lane.contextWindowSize); query.setString(15, lane.summary); query.setInt(16, lane.contextBudgetTokens)
-                        query.setString(17, lane.agentExternalId?.let(agentIds::get))
-                        query.setString(18, lane.instructions)
-                        query.setString(19, lane.instructionMode)
+                        query.setInt(14, lane.contextWindowSize); query.setString(15, lane.summary)
+                        val summaryWatermark = lane.messages.lastOrNull()?.takeIf { lane.summary.isNotBlank() }
+                            ?.let { messageIds.getValue("${lane.externalId}/${it.externalId}") }
+                        query.setString(16, summaryWatermark); query.setInt(17, lane.contextBudgetTokens)
+                        query.setString(18, lane.agentExternalId?.let(agentIds::get))
+                        query.setString(19, lane.instructions)
+                        query.setString(20, lane.instructionMode)
                         query.executeUpdate()
                     }
                     lane.messages.forEachIndexed { messageIndex, message ->
@@ -783,8 +794,8 @@ class BoardStore(
                 digest.update(bytes)
             }
         }
-        val messages = rows.mapNotNull { (_, role, content) ->
-            if (content.isEmpty() || role !in setOf("user", "assistant")) null else ContextMessage(role, content)
+        val messages = rows.mapNotNull { (id, role, content) ->
+            if (content.isEmpty() || role !in setOf("user", "assistant")) null else ContextMessage(role, content, id)
         }
         return TranscriptSnapshot(messages, rows.lastOrNull()?.first, digest.digest().joinToString("") { "%02x".format(it) })
     }
@@ -875,7 +886,7 @@ class BoardStore(
             try {
                 val source = db.prepareStatement(
                     "SELECT board_id, title, provider, model, temperature, max_tokens, stop, context_strategy, " +
-                        "context_window_size, context_budget_tokens, instructions, instruction_mode FROM lanes WHERE id = ?",
+                        "context_window_size, context_budget_tokens, agent_id, instructions, instruction_mode FROM lanes WHERE id = ?",
                 ).use { query ->
                     query.setString(1, sourceLaneId)
                     query.executeQuery().use { result ->
@@ -883,7 +894,7 @@ class BoardStore(
                         listOf(result.getString("board_id"), result.getString("title"), result.getString("provider"),
                             result.getString("model"), result.getString("temperature"), result.getString("max_tokens"), result.getString("stop"),
                             result.getString("context_strategy"), result.getString("context_window_size"), result.getString("context_budget_tokens"),
-                            result.getString("instructions"), result.getString("instruction_mode"))
+                            result.getString("agent_id"), result.getString("instructions"), result.getString("instruction_mode"))
                     }
                 }
                 check(!hasActiveRun(db, sourceLaneId)) { "Cannot copy a lane while a request is running" }
@@ -914,8 +925,8 @@ class BoardStore(
                     "INSERT INTO lanes(id, board_id, title, created_at, origin_lane_id, origin_message_id, " +
                     "origin_kind, codex_context_seeded, origin_message_role, origin_message_content, " +
                         "position_x, position_y, width, provider, model, temperature, max_tokens, stop, " +
-                        "context_strategy, context_window_size, context_budget_tokens, instructions, instruction_mode) " +
-                        "VALUES (?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?, 24, 440, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                        "context_strategy, context_window_size, context_budget_tokens, agent_id, instructions, instruction_mode) " +
+                        "VALUES (?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?, 24, 440, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 ).use { query ->
                     query.setString(1, laneId)
                     query.setString(2, source[0])
@@ -937,6 +948,7 @@ class BoardStore(
                     query.setInt(18, source[9].toInt())
                     query.setString(19, source[10])
                     query.setString(20, source[11])
+                    query.setString(21, source[12])
                     query.executeUpdate()
                 }
                 db.prepareStatement("INSERT INTO lane_mcp_tools(lane_id, server_id, tool_name) SELECT ?, server_id, tool_name FROM lane_mcp_tools WHERE lane_id = ?").use { query ->
@@ -1056,8 +1068,9 @@ class BoardStore(
                 val lane = db.prepareStatement(
                 "SELECT l.board_id, l.codex_thread_id, l.codex_context_seeded, l.provider, l.model, l.temperature, l.max_tokens, l.stop, " +
                         "l.context_strategy, l.context_window_size, l.context_summary, l.context_summary_watermark, l.context_budget_tokens, l.mcp_auto_approve, " +
-                        "l.instructions, l.instruction_mode, b.instructions AS board_instructions " +
-                        "FROM lanes l JOIN boards b ON b.id = l.board_id WHERE l.id = ?",
+                        "l.instructions, l.instruction_mode, b.instructions AS board_instructions, " +
+                        "l.agent_id, a.name AS agent_name, a.instructions AS agent_instructions " +
+                        "FROM lanes l JOIN boards b ON b.id = l.board_id LEFT JOIN agents a ON a.id = l.agent_id WHERE l.id = ?",
                 ).use { query ->
                     query.setString(1, laneId)
                     query.executeQuery().use { result ->
@@ -1067,7 +1080,8 @@ class BoardStore(
                             result.getString("model"), result.getString("temperature"), result.getString("max_tokens"), result.getString("stop"),
                             result.getString("context_strategy"), result.getString("context_window_size"), result.getString("context_summary"),
                             result.getString("context_summary_watermark"), result.getString("context_budget_tokens"), result.getString("mcp_auto_approve"),
-                            result.getString("instructions"), result.getString("instruction_mode"), result.getString("board_instructions"))
+                            result.getString("instructions"), result.getString("instruction_mode"), result.getString("board_instructions"),
+                            result.getString("agent_id"), result.getString("agent_name"), result.getString("agent_instructions"))
                     }
                 }
                 val isActive = db.prepareStatement(
@@ -1080,6 +1094,14 @@ class BoardStore(
 
                 val needsSeed = lane[2].toBoolean()
                 val completeTranscript = history(db, laneId)
+                val summaryWatermark = lane[11] ?: completeTranscript.lastOrNull()?.id?.takeIf { lane[10].isNotBlank() }
+                if (lane[11] == null && summaryWatermark != null && lane[10].isNotBlank()) {
+                    db.prepareStatement("UPDATE lanes SET context_summary_watermark = ? WHERE id = ? AND context_summary_watermark IS NULL").use { query ->
+                        query.setString(1, summaryWatermark)
+                        query.setString(2, laneId)
+                        query.executeUpdate()
+                    }
+                }
                 val provider = lane[3]
                 val config = LaneConfig(
                     provider,
@@ -1099,7 +1121,7 @@ class BoardStore(
                     strategy = strategy,
                     windowSize = lane[9].toInt(),
                     summary = lane[10],
-                    summaryWatermark = lane[11],
+                    summaryWatermark = summaryWatermark,
                     budgetTokens = lane[12].toInt(),
                     responseTokensEstimate = config.maxTokens ?: 1024,
                 )
@@ -1147,12 +1169,15 @@ class BoardStore(
                         kotlinx.serialization.json.Json.parseToJsonElement(config.toJson()).jsonObject.forEach { (key, value) -> put(key, value) }
                         put("contextPlan", plan.toJson())
                         put("contextStrategy", strategy.wireName)
-                        put("effectiveInstructions", effectiveInstructions(lane[16], lane[14], lane[15]))
+                        put("effectiveInstructions", effectiveInstructions(lane[16], lane[14], lane[15], lane[19] ?: "", lane[18]))
                         put("instructionSource", when (lane[15]) {
                             "override" -> "lane-override"
                             "append" -> "board-and-lane"
                             else -> "board-default"
                         })
+                        lane[17]?.let { put("agentId", it) }
+                        lane[18]?.let { put("agentName", it) }
+                        put("instructionPriority", "Доска задаёт общий контекст; агент уточняет роль; инструкции ленты имеют приоритет. Режим override заменяет инструкции доски, но не назначенного агента.")
                     }))
                     query.executeUpdate()
                 }
@@ -1170,7 +1195,7 @@ class BoardStore(
                     config = config,
                     mcpTools = mcpTools(db, laneId),
                     mcpAutoApprove = lane[13].toInt() != 0,
-                    effectiveInstructions = effectiveInstructions(lane[16], lane[14], lane[15]),
+                    effectiveInstructions = effectiveInstructions(lane[16], lane[14], lane[15], lane[19] ?: "", lane[18]),
                 )
             } catch (error: SQLException) {
                 db.rollback()
@@ -1340,14 +1365,14 @@ class BoardStore(
     }
 
     private fun history(db: Connection, laneId: String): List<ContextMessage> = db.prepareStatement(
-        "SELECT role, content FROM messages WHERE lane_id = ? ORDER BY created_at, rowid",
+        "SELECT id, role, content FROM messages WHERE lane_id = ? ORDER BY created_at, rowid",
     ).use { query ->
         query.setString(1, laneId)
         query.executeQuery().use { result ->
             buildList {
                 while (result.next()) {
                     val content = result.getString("content")
-                    if (content.isNotEmpty()) add(ContextMessage(result.getString("role"), content))
+                    if (content.isNotEmpty()) add(ContextMessage(result.getString("role"), content, result.getString("id")))
                 }
             }
         }

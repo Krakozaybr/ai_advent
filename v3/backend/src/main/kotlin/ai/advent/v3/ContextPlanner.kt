@@ -56,12 +56,21 @@ object ContextPlanner {
         require(budgetTokens in 256..1_000_000) { "Бюджет контекста должен быть от 256 до 1000000 токенов." }
         require(responseTokensEstimate in 1..200_000) { "Оценка ответа вне допустимого диапазона." }
         val stableTranscript = transcript.filter { it.content.isNotEmpty() }
+        val summaryBoundary = if (summary.isBlank()) {
+            null
+        } else if (summaryWatermark == null) {
+            stableTranscript.size
+        } else {
+            stableTranscript.indexOfFirst { it.id == summaryWatermark }.takeIf { it >= 0 }?.plus(1)
+                ?: (stableTranscript.size - windowSize).coerceAtLeast(0)
+        }
         val selected = when (strategy) {
             ContextStrategy.FULL -> stableTranscript
             ContextStrategy.SLIDING_WINDOW -> stableTranscript.takeLast(windowSize)
             ContextStrategy.SUMMARY_WINDOW -> buildList {
                 if (summary.isNotBlank()) add(ContextMessage("user", "Сводка предыдущего диалога (до watermark ${summaryWatermark ?: "не задан"}):\n$summary"))
-                addAll(stableTranscript.takeLast(windowSize))
+                val afterSummary = summaryBoundary?.let { stableTranscript.drop(it) } ?: stableTranscript
+                addAll(if (summary.isBlank()) afterSummary.takeLast(windowSize) else afterSummary)
             }
         }
         val estimate: (String) -> Int = { text -> ((text.length + 3) / 4).coerceAtLeast(if (text.isEmpty()) 0 else 1) }
@@ -71,7 +80,8 @@ object ContextPlanner {
         val overflow = inputTokens + responseTokensEstimate > budgetTokens
         val includedTranscriptCount = when (strategy) {
             ContextStrategy.FULL -> stableTranscript.size
-            else -> minOf(stableTranscript.size, windowSize)
+            ContextStrategy.SLIDING_WINDOW -> minOf(stableTranscript.size, windowSize)
+            ContextStrategy.SUMMARY_WINDOW -> if (summary.isNotBlank()) stableTranscript.size else minOf(stableTranscript.size, windowSize)
         }
         return ContextPlan(selected.toList(), (stableTranscript.size - includedTranscriptCount).coerceAtLeast(0),
             inputTokens, currentTokens, historyTokens, responseTokensEstimate, budgetTokens, overflow,

@@ -33,7 +33,49 @@ class ContextPlannerTest {
         val plan = ContextPlanner.plan(transcript, "next", ContextStrategy.SUMMARY_WINDOW, 1, "key facts", "message-2", 256, 250)
         assertEquals("Сводка предыдущего диалога (до watermark message-2):\nkey facts", plan.messages.first().content)
         assertTrue(plan.overflow)
-        assertEquals(2, plan.omittedMessages)
+        assertEquals(0, plan.omittedMessages)
+    }
+
+    @Test
+    fun `summary watermark keeps every newer message without repeating covered history`() {
+        val history = listOf(
+            ContextMessage("user", "one", "m1"),
+            ContextMessage("assistant", "two", "m2"),
+            ContextMessage("user", "three", "m3"),
+            ContextMessage("assistant", "four", "m4"),
+            ContextMessage("user", "five", "m5"),
+        )
+        val plan = ContextPlanner.plan(history, "next", ContextStrategy.SUMMARY_WINDOW, 2, "facts", "m2", 1_000, 20)
+
+        assertEquals(listOf("facts", "three", "four", "five"), plan.messages.map { it.content.substringAfterLast("\n") })
+        assertEquals(0, plan.omittedMessages)
+        assertFalse(plan.overflow)
+    }
+
+    @Test
+    fun `summary context budget includes every message newer than watermark`() {
+        val history = listOf(
+            ContextMessage("user", "one", "m1"),
+            ContextMessage("assistant", "two", "m2"),
+            ContextMessage("user", "three", "m3"),
+            ContextMessage("assistant", "four", "m4"),
+            ContextMessage("user", "five", "m5"),
+        )
+        val plan = ContextPlanner.plan(history, "next", ContextStrategy.SUMMARY_WINDOW, 1, "facts", "m2", 256, 250)
+
+        assertEquals(listOf("facts", "three", "four", "five"), plan.messages.map { it.content.substringAfterLast("\n") })
+        assertTrue(plan.overflow)
+        assertEquals(plan.messages.sumOf { ((it.content.length + 3) / 4).coerceAtLeast(1) }, plan.historyTokensEstimate)
+    }
+
+    @Test
+    fun `legacy summary without watermark covers the existing transcript`() {
+        val history = transcript.mapIndexed { index, item -> item.copy(id = "m${index + 1}") }
+        val plan = ContextPlanner.plan(history, "next", ContextStrategy.SUMMARY_WINDOW, 1, "legacy facts", null, 1_000, 20)
+
+        assertEquals(listOf("legacy facts"), plan.messages.map { it.content.substringAfterLast("\n") })
+        assertEquals(0, plan.omittedMessages)
+        assertFalse(plan.overflow)
     }
 
     @Test
