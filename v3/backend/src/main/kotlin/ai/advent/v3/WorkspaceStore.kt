@@ -9,6 +9,7 @@ import kotlinx.serialization.json.put
 import java.io.Closeable
 import java.nio.file.Files
 import java.nio.file.Path
+import java.nio.file.StandardCopyOption
 import java.util.UUID
 
 /** Locates one independent SQLite database per board, while retaining the original database in place. */
@@ -19,7 +20,7 @@ class WorkspaceStore(private val originalFile: Path) : Closeable {
 
     init {
         Files.createDirectories(boardsDirectory)
-        openBoard(originalFile, "Доска 1").renameLegacyBoard()
+        openBoard(originalFile, "Доска 1")
         Files.list(boardsDirectory).use { paths ->
             paths.filter { Files.isRegularFile(it) && it.fileName.toString().endsWith(".sqlite") }
                 .sorted()
@@ -38,6 +39,29 @@ class WorkspaceStore(private val originalFile: Path) : Closeable {
     fun createBoard(): JsonObject = synchronized(lock) {
         val path = boardsDirectory.resolve("${UUID.randomUUID()}.sqlite")
         openBoard(path, "Доска ${stores.size + 1}").board()
+    }
+
+    fun importPreparedBoard(imported: ImportedBoard): Pair<JsonObject, Boolean> = synchronized(lock) {
+        stores.values.firstNotNullOfOrNull { it.findBoardByExternalId(imported.externalId) }?.let { return@synchronized store(it).board() to true }
+        val temp = boardsDirectory.resolve(".import-${UUID.randomUUID()}.tmp")
+        val finalPath = boardsDirectory.resolve("${UUID.randomUUID()}.sqlite")
+        try {
+            val staged = BoardStore(temp, imported.title, createDefaultLane = false)
+            staged.importPreparedBoard(imported.externalId, imported.title, imported.lanes, imported.agents)
+            staged.checkpointForMove()
+            staged.close()
+            Files.move(temp, finalPath, StandardCopyOption.ATOMIC_MOVE)
+            val ready = BoardStore(finalPath, imported.title, createDefaultLane = false)
+            val id = ready.board()["board"]!!.jsonObject["id"]!!.jsonPrimitive.content
+            stores[id] = ready
+            ready.board() to false
+        } catch (error: Exception) {
+            Files.deleteIfExists(temp)
+            Files.deleteIfExists(Path.of("$temp-wal"))
+            Files.deleteIfExists(Path.of("$temp-shm"))
+            Files.deleteIfExists(finalPath)
+            throw error
+        }
     }
 
     fun createLane(boardId: String, provider: String = "codex"): JsonObject = synchronized(lock) {

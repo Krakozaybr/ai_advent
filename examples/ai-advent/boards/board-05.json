@@ -1,0 +1,75 @@
+{
+  "externalId": "ai-advent-day-5",
+  "title": "День 5 · Каталог моделей",
+  "lanes": [
+    {
+      "externalId": "economy",
+      "title": "Экономичная · GPT-4o mini",
+      "provider": "openrouter",
+      "model": "openai/gpt-4o-mini",
+      "temperature": 0.2,
+      "maxTokens": 256,
+      "contextStrategy": "full",
+      "contextWindowSize": 10,
+      "contextBudgetTokens": 32768,
+      "layout": {
+        "x": 24,
+        "y": 24,
+        "width": 440
+      },
+      "messages": [
+        {
+          "externalId": "task",
+          "role": "user",
+          "content": "Одинаковая задача: составь короткий план из четырёх шагов для районного обмена книгами. Сравни качество, стоимость и параметры. Независимая переменная — модель; temperature=0.2, max_tokens=256.\n\n[Каталог моделей](https://openrouter.ai/models) · [карточка GPT-4o mini](https://openrouter.ai/openai/gpt-4o-mini)\nСнимок каталога на 2026-09-27: $0.15 / $0.60 за миллион входных / выходных токенов."
+        }
+      ]
+    },
+    {
+      "externalId": "mid",
+      "title": "Средний уровень · DeepSeek V3",
+      "provider": "openrouter",
+      "model": "deepseek/deepseek-chat",
+      "temperature": 0.2,
+      "maxTokens": 256,
+      "contextStrategy": "full",
+      "contextWindowSize": 10,
+      "contextBudgetTokens": 32768,
+      "layout": {
+        "x": 484,
+        "y": 24,
+        "width": 440
+      },
+      "messages": [
+        {
+          "externalId": "task",
+          "role": "user",
+          "content": "Одинаковая задача: составь короткий план из четырёх шагов для районного обмена книгами. Сравни качество, стоимость и параметры. Независимая переменная — модель; temperature=0.2, max_tokens=256.\n\n[Каталог моделей](https://openrouter.ai/models) · [карточка DeepSeek V3](https://openrouter.ai/deepseek/deepseek-chat)\nСнимок каталога на 2026-09-27: около $0.26 / $1.03 за миллион входных / выходных токенов; цена зависит от маршрута."
+        }
+      ]
+    },
+    {
+      "externalId": "premium",
+      "title": "Премиальная · Claude Sonnet 4",
+      "provider": "openrouter",
+      "model": "anthropic/claude-sonnet-4",
+      "temperature": 0.2,
+      "maxTokens": 256,
+      "contextStrategy": "full",
+      "contextWindowSize": 10,
+      "contextBudgetTokens": 32768,
+      "layout": {
+        "x": 944,
+        "y": 24,
+        "width": 440
+      },
+      "messages": [
+        {
+          "externalId": "task",
+          "role": "user",
+          "content": "Одинаковая задача: составь короткий план из четырёх шагов для районного обмена книгами. Сравни качество, стоимость и параметры. Независимая переменная — модель; temperature=0.2, max_tokens=256.\n\n[Каталог моделей](https://openrouter.ai/models) · [карточка Claude Sonnet 4](https://openrouter.ai/anthropic/claude-sonnet-4)\nСнимок каталога на 2026-09-27: $3 / $15 за миллион входных / выходных токенов."
+        }
+      ]
+    }
+  ]
+}

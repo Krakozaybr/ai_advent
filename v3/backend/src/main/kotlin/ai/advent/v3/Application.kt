@@ -1,12 +1,14 @@
 package ai.advent.v3
 
 import io.ktor.http.HttpStatusCode
+import io.ktor.http.HttpHeaders
 import io.ktor.server.application.Application
 import io.ktor.server.application.ApplicationStopped
 import io.ktor.server.application.call
 import io.ktor.server.application.install
 import io.ktor.server.plugins.contentnegotiation.ContentNegotiation
 import io.ktor.server.request.receive
+import io.ktor.server.request.receiveText
 import io.ktor.server.response.respond
 import io.ktor.server.routing.get
 import io.ktor.server.routing.patch
@@ -68,6 +70,29 @@ fun Application.module(
 
         post("/api/boards") {
             call.respond(HttpStatusCode.Created, store.createBoard())
+        }
+
+        post("/api/boards/import") {
+            try {
+                val contentLength = call.request.headers[HttpHeaders.ContentLength]?.toLongOrNull()
+                require(contentLength == null || contentLength <= 2_000_000) { "Пакет импорта превышает 2 МБ." }
+                val payload = call.receiveText()
+                require(payload.toByteArray(Charsets.UTF_8).size <= 2_000_000) { "Пакет импорта превышает 2 МБ." }
+                val element = Json.parseToJsonElement(payload)
+                BoardImport.validateNoSecretsOrThreadIds(element)
+                val root = element as? JsonObject ?: error("Корень пакета должен быть объектом.")
+                val imported = BoardImport.parse(root)
+                val (board, reused) = store.importPreparedBoard(imported)
+                val boardId = board["board"]!!.jsonObject["id"]!!.jsonPrimitive.content
+                call.respond(if (reused) HttpStatusCode.OK else HttpStatusCode.Created, buildJsonObject {
+                    put("boardId", boardId)
+                    put("url", "/?boardId=$boardId")
+                    put("reused", reused)
+                    put("board", board)
+                })
+            } catch (error: Exception) {
+                call.respond(HttpStatusCode.BadRequest, buildJsonObject { put("error", error.message ?: "Пакет импорта некорректен.") })
+            }
         }
 
         get("/api/boards/{boardId}") {

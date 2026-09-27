@@ -1,0 +1,72 @@
+{
+  "externalId": "ai-advent-day-4",
+  "title": "День 4 · Температура",
+  "lanes": [
+    {
+      "externalId": "t0",
+      "title": "temperature 0",
+      "provider": "openrouter",
+      "model": "openai/gpt-4o-mini",
+      "temperature": 0,
+      "contextStrategy": "full",
+      "contextWindowSize": 10,
+      "contextBudgetTokens": 32768,
+      "layout": {
+        "x": 24,
+        "y": 24,
+        "width": 440
+      },
+      "messages": [
+        {
+          "externalId": "task",
+          "role": "user",
+          "content": "Напиши одно нейтральное предложение-приглашение в городской парк, не более 18 слов."
+        }
+      ]
+    },
+    {
+      "externalId": "t07",
+      "title": "temperature 0.7",
+      "provider": "openrouter",
+      "model": "openai/gpt-4o-mini",
+      "temperature": 0.7,
+      "contextStrategy": "full",
+      "contextWindowSize": 10,
+      "contextBudgetTokens": 32768,
+      "layout": {
+        "x": 484,
+        "y": 24,
+        "width": 440
+      },
+      "messages": [
+        {
+          "externalId": "task",
+          "role": "user",
+          "content": "Напиши одно нейтральное предложение-приглашение в городской парк, не более 18 слов."
+        }
+      ]
+    },
+    {
+      "externalId": "t12",
+      "title": "temperature 1.2",
+      "provider": "openrouter",
+      "model": "openai/gpt-4o-mini",
+      "temperature": 1.2,
+      "contextStrategy": "full",
+      "contextWindowSize": 10,
+      "contextBudgetTokens": 32768,
+      "layout": {
+        "x": 944,
+        "y": 24,
+        "width": 440
+      },
+      "messages": [
+        {
+          "externalId": "task",
+          "role": "user",
+          "content": "Напиши одно нейтральное предложение-приглашение в городской парк, не более 18 слов."
+        }
+      ]
+    }
+  ]
+}

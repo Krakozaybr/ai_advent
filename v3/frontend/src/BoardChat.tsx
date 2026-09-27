@@ -11,6 +11,7 @@ type Message = {
   id: string;
   role: "user" | "assistant";
   content: string;
+  provenance?: string;
   runStatus?: string;
   runError?: string;
   hasBranches?: boolean;
@@ -30,6 +31,7 @@ type Lane = {
   x: number;
   y: number;
   width: number;
+  agentId?: string;
   provider: "codex" | "openrouter";
   model: string;
   temperature?: number;
@@ -46,7 +48,8 @@ type Lane = {
 };
 
 type BoardSummary = { id: string; title: string };
-type BoardResponse = { board: BoardSummary; lanes: Lane[] };
+type Agent = { id: string; name: string; description: string; instructions: string };
+type BoardResponse = { board: BoardSummary; lanes: Lane[]; agents?: Agent[] };
 type CodexStatus = { authenticated: boolean; planType?: string; error?: string };
 type CodexModel = { slug?: string; displayName?: string; isDefault?: boolean };
 
@@ -97,7 +100,10 @@ export function BoardChat() {
     const result = await readJson<{ boards: BoardSummary[] }>("/api/boards");
     setBoards(result.boards);
     const saved = window.localStorage.getItem("workspace.activeBoardId");
-    const selected = chooseBoardId(saved, result.boards);
+    const requested = new URLSearchParams(window.location.search).get("boardId");
+    const selected = requested && result.boards.some((board) => board.id === requested)
+      ? requested
+      : chooseBoardId(saved, result.boards);
     setActiveBoardId(selected);
     if (selected) {
       window.localStorage.setItem("workspace.activeBoardId", selected);
@@ -332,6 +338,14 @@ export function BoardChat() {
         </div>
       )}
 
+      {board?.agents && board.agents.length > 0 && <section className="board-agents" aria-label="Агенты доски">
+        {board.agents.map((agent) => <details key={agent.id}>
+          <summary>Агент · {agent.name}</summary>
+          <p>{agent.description}</p>
+          <pre>{agent.instructions}</pre>
+        </details>)}
+      </section>}
+
       <section className="canvas" ref={canvasRef} aria-label="Рабочая область доски">
         {error && <p className="error-banner" role="alert">{error}</p>}
         {board && board.board.id === activeBoardId ? (
@@ -347,6 +361,7 @@ export function BoardChat() {
               <LaneView
                 key={lane.id}
                 lane={lane}
+                agentName={board.agents?.find((agent) => agent.id === lane.agentId)?.name}
                 lanes={board.lanes}
                 authenticated={Boolean(codex?.authenticated)}
                 openRouterConfigured={openRouterConfigured}
@@ -379,8 +394,9 @@ export function BoardChat() {
   );
 }
 
-function LaneView({ lane, lanes, authenticated, openRouterConfigured, codexModels, onRefresh, onBranch, onClone, onSelect, onSaveLayout, onCopy, onMutate, onSaveConfig, onCancelRun, selected }: {
+function LaneView({ lane, agentName, lanes, authenticated, openRouterConfigured, codexModels, onRefresh, onBranch, onClone, onSelect, onSaveLayout, onCopy, onMutate, onSaveConfig, onCancelRun, selected }: {
   lane: Lane;
+  agentName?: string;
   lanes: Lane[];
   authenticated: boolean;
   openRouterConfigured: boolean;
@@ -592,7 +608,7 @@ function LaneView({ lane, lanes, authenticated, openRouterConfigured, codexModel
   return (
     <article className={`lane ${selected ? "selected" : ""}`} data-lane-id={lane.id} style={{ left: layout.x, top: layout.y, width: layout.width }}>
       <div className="lane-heading" onPointerDown={startMove} onClick={onSelect}>
-        <span className="lane-dot" /><h2>{lane.title}</h2><span className="lane-provider">{lane.provider.toUpperCase()}</span>
+        <span className="lane-dot" /><h2>{lane.title}</h2>{agentName && <span className="lane-provider">Агент · {agentName}</span>}<span className="lane-provider">{lane.provider.toUpperCase()}</span>
         <button className="lane-clone" type="button" onPointerDown={(event) => event.stopPropagation()} onClick={onClone} disabled={running}>Клон</button>
       </div>
       <details className="lane-settings">
@@ -652,6 +668,7 @@ function LaneView({ lane, lanes, authenticated, openRouterConfigured, codexModel
                 <button type="button" onClick={() => setEditingMessageId(null)}>Отмена</button>
               </div>
             ) : <MarkdownContent content={item.content} />}
+            {item.provenance && <small className="message-provenance">{item.provenance}</small>}
             {item.runStatus === "failed" && <p className="message-error">{item.runError ?? "Ответ не завершён."}</p>}
             {item.requestConfig && <details className="request-details"><summary>Параметры запроса</summary><pre>{JSON.stringify({ config: item.requestConfig, result: item.technicalDetails }, null, 2)}</pre></details>}
             <div className="message-actions">

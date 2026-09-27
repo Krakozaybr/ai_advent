@@ -1,0 +1,36 @@
+{
+  "externalId": "ai-advent-day-6",
+  "title": "День 6 · Агент как сущность",
+  "agents": [
+    {
+      "externalId": "book-club-planner",
+      "name": "Планировщик книжного клуба",
+      "description": "Отдельный объект агента, сохранённый на доске и связанный с рабочей лентой.",
+      "instructions": "Собирай цель встречи, участников, место, дату и бюджет. Сначала уточни недостающие данные, затем предложи проверяемый план. Не назначай дату без согласования."
+    }
+  ],
+  "lanes": [
+    {
+      "externalId": "agent-run",
+      "title": "Задача агента",
+      "provider": "openrouter",
+      "model": "openai/gpt-4o-mini",
+      "contextStrategy": "full",
+      "contextWindowSize": 10,
+      "contextBudgetTokens": 32768,
+      "layout": {
+        "x": 24,
+        "y": 24,
+        "width": 440
+      },
+      "messages": [
+        {
+          "externalId": "task",
+          "role": "user",
+          "content": "Агент: помоги подготовить встречу книжного клуба. Разбей работу на этапы и задай один уточняющий вопрос перед выбором даты."
+        }
+      ],
+      "agentExternalId": "book-club-planner"
+    }
+  ]
+}

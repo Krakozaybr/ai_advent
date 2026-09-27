@@ -33,10 +33,124 @@ import kotlin.test.assertFalse
 import kotlin.test.assertNotEquals
 import kotlin.test.assertTrue
 import java.nio.file.Files
+import java.nio.file.Path
 import java.sql.DriverManager
 import java.util.concurrent.atomic.AtomicInteger
 
 class ApplicationTest {
+    @Test
+    fun `all packaged boards import and repeated imports reuse them`() = testApplication {
+        val project = generateSequence(Path.of("").toAbsolutePath()) { it.parent }
+            .first { Files.isDirectory(it.resolve("examples/ai-advent/boards")) }
+        val seedDirectory = project.resolve("examples/ai-advent/boards")
+        val seedFiles = Files.list(seedDirectory).use { paths -> paths.filter { it.fileName.toString().endsWith(".json") }.sorted().toList() }
+        assertEquals(9, seedFiles.size)
+        val database = Files.createTempDirectory("seed-pack-import-").resolve("board.sqlite")
+        val store = WorkspaceStore(database)
+        application { module(store, FakeCodexAppServer()) }
+        seedFiles.forEach { file ->
+            val payload = Files.readString(file)
+            val first = client.post("/api/boards/import") {
+                header(HttpHeaders.ContentType, ContentType.Application.Json.toString())
+                setBody(payload)
+            }
+            assertEquals(HttpStatusCode.Created, first.status, "${file.fileName}: ${first.bodyAsText()}")
+            val second = client.post("/api/boards/import") {
+                header(HttpHeaders.ContentType, ContentType.Application.Json.toString())
+                setBody(payload)
+            }
+            assertEquals(HttpStatusCode.OK, second.status, "${file.fileName}: ${second.bodyAsText()}")
+            assertTrue(Json.parseToJsonElement(second.bodyAsText()).jsonObject.getValue("reused").jsonPrimitive.content.toBoolean())
+        }
+        val boards = client.get("/api/boards").bodyAsText().let { Json.parseToJsonElement(it).jsonObject.getValue("boards").jsonArray }
+        assertEquals(10, boards.size)
+        val idempotentAgain = WorkspaceStore(database)
+        assertEquals(10, idempotentAgain.boards().size)
+        seedFiles.forEach { file ->
+            val payload = Json.parseToJsonElement(Files.readString(file)).jsonObject
+            val summary = idempotentAgain.boards().map { it.jsonObject }.first { it["title"]!!.jsonPrimitive.content == payload["title"]!!.jsonPrimitive.content }
+            val restored = idempotentAgain.board(summary["id"]!!.jsonPrimitive.content)
+            assertEquals(payload["lanes"]!!.jsonArray.size, restored["lanes"]!!.jsonArray.size)
+        }
+        idempotentAgain.close()
+    }
+
+    @Test
+    fun `prepared board import is atomic idempotent and seeds the first Codex run`() = testApplication {
+        val directory = Files.createTempDirectory("prepared-board-import-")
+        val database = directory.resolve("board.sqlite")
+        val store = WorkspaceStore(database)
+        val fake = FakeCodexAppServer()
+        application { module(store, fake) }
+        val payload = """{"externalId":"sample.board.v1","title":"Imported board","lanes":[{"externalId":"main","title":"Main","provider":"codex","model":"gpt-test","layout":{"x":32,"y":48,"width":440},"messages":[{"externalId":"u1","role":"user","content":"Imported question"},{"externalId":"a1","role":"assistant","content":"Prepared answer","provenance":"Demonstration seed; not a model result."}]}]}"""
+        val imported = client.post("/api/boards/import") {
+            header(HttpHeaders.ContentType, ContentType.Application.Json.toString())
+            setBody(payload)
+        }
+        assertEquals(HttpStatusCode.Created, imported.status)
+        val importedJson = Json.parseToJsonElement(imported.bodyAsText()).jsonObject
+        val boardId = importedJson.getValue("boardId").jsonPrimitive.content
+        assertTrue(importedJson.getValue("url").jsonPrimitive.content.endsWith("?boardId=$boardId"))
+        val boardJson = importedJson.getValue("board").jsonObject
+        val lane = boardJson.getValue("lanes").jsonArray.single().jsonObject
+        val laneId = lane.getValue("id").jsonPrimitive.content
+        assertEquals("Demonstration seed; not a model result.", lane.getValue("messages").jsonArray[1].jsonObject.getValue("provenance").jsonPrimitive.content)
+
+        val changedPayload = payload.replace("Imported board", "Must not overwrite").replace("Imported question", "Changed history")
+        val repeated = client.post("/api/boards/import") {
+            header(HttpHeaders.ContentType, ContentType.Application.Json.toString())
+            setBody(changedPayload)
+        }
+        assertEquals(HttpStatusCode.OK, repeated.status)
+        val repeatedJson = Json.parseToJsonElement(repeated.bodyAsText()).jsonObject
+        assertTrue(repeatedJson.getValue("reused").jsonPrimitive.content.toBoolean())
+        assertEquals(boardId, repeatedJson.getValue("boardId").jsonPrimitive.content)
+        val unchangedLane = repeatedJson.getValue("board").jsonObject.getValue("lanes").jsonArray.single().jsonObject
+        assertEquals("Imported board", repeatedJson.getValue("board").jsonObject.getValue("board").jsonObject.getValue("title").jsonPrimitive.content)
+        assertEquals("Imported question", unchangedLane.getValue("messages").jsonArray.first().jsonObject.getValue("content").jsonPrimitive.content)
+
+        val run = client.post("/api/lanes/$laneId/messages") {
+            header(HttpHeaders.ContentType, ContentType.Application.Json.toString())
+            setBody("""{"text":"Continue from imported history"}""")
+        }
+        assertEquals(HttpStatusCode.Accepted, run.status)
+        fake.finished.await()
+        assertEquals(listOf("Imported question", "Prepared answer"), fake.runs.single().contextToSeed.map { it.content })
+        assertTrue(fake.runs.single().shouldSeedContext)
+
+        val afterUserEdit = client.post("/api/boards/import") {
+            header(HttpHeaders.ContentType, ContentType.Application.Json.toString())
+            setBody(changedPayload)
+        }
+        assertEquals(HttpStatusCode.OK, afterUserEdit.status)
+        val editedLane = Json.parseToJsonElement(afterUserEdit.bodyAsText()).jsonObject
+            .getValue("board").jsonObject.getValue("lanes").jsonArray.single().jsonObject
+        assertEquals(4, editedLane.getValue("messages").jsonArray.size)
+        assertEquals("Continue from imported history", editedLane.getValue("messages").jsonArray[2].jsonObject.getValue("content").jsonPrimitive.content)
+
+        val restarted = WorkspaceStore(database)
+        try {
+            assertEquals(boardId, restarted.boards().last().jsonObject.getValue("id").jsonPrimitive.content)
+            val restored = restarted.board(boardId)["lanes"]!!.jsonArray.single().jsonObject
+            assertEquals(4, restored["messages"]!!.jsonArray.size)
+            assertEquals("Continue from imported history", restored["messages"]!!.jsonArray[2].jsonObject["content"]!!.jsonPrimitive.content)
+            assertEquals(1, Files.list(directory.resolve("boards")).use { paths -> paths.filter { it.fileName.toString().endsWith(".sqlite") }.count().toInt() })
+        } finally { restarted.close() }
+    }
+
+    @Test
+    fun `prepared board import rejects provider credentials and leaves no partial board`() = testApplication {
+        val directory = Files.createTempDirectory("prepared-board-rejected-")
+        val store = WorkspaceStore(directory.resolve("board.sqlite"))
+        application { module(store, FakeCodexAppServer()) }
+        val response = client.post("/api/boards/import") {
+            header(HttpHeaders.ContentType, ContentType.Application.Json.toString())
+            setBody("""{"externalId":"unsafe","title":"Unsafe","apiKey":"sk-or-v1-secret","lanes":[{"externalId":"l","title":"Lane","provider":"codex","layout":{"x":0,"y":0,"width":440},"messages":[]}] }""")
+        }
+        assertEquals(HttpStatusCode.BadRequest, response.status)
+        assertEquals(0, Files.list(directory.resolve("boards")).use { paths -> paths.filter { it.fileName.toString().endsWith(".sqlite") }.count().toInt() })
+    }
+
     @Test
     fun `test Codex app-server model selection uses the supported JSON-RPC fields`() = runBlocking {
         val directory = Files.createTempDirectory("codex-app-server-mock-")

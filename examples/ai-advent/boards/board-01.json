@@ -1,0 +1,27 @@
+{
+  "externalId": "ai-advent-day-1",
+  "title": "День 1 · Первый запрос",
+  "lanes": [
+    {
+      "externalId": "baseline",
+      "title": "Первый запрос",
+      "provider": "openrouter",
+      "model": "openai/gpt-4o-mini",
+      "contextStrategy": "full",
+      "contextWindowSize": 10,
+      "contextBudgetTokens": 32768,
+      "layout": {
+        "x": 24,
+        "y": 24,
+        "width": 440
+      },
+      "messages": [
+        {
+          "externalId": "task",
+          "role": "user",
+          "content": "Предложи один простой способ уменьшить количество пластиковых стаканчиков в офисе. Дай конкретный шаг и ожидаемый эффект."
+        }
+      ]
+    }
+  ]
+}

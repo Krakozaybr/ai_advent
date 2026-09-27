@@ -134,3 +134,23 @@ button { color: inherit; }
   .canvas { padding: 10px; }
   .lane { max-width: calc(100vw - 40px); }
 }
+
+.board-agents {
+  display: flex;
+  gap: 10px;
+  padding: 8px 16px;
+  border-bottom: 1px solid #d8d6cf;
+  background: #fff;
+}
+
+.board-agents details {
+  max-width: 520px;
+  padding: 8px 12px;
+  border: 1px solid #d8d6cf;
+  border-radius: 8px;
+}
+
+.board-agents summary { cursor: pointer; font-weight: 650; }
+.board-agents p { margin: 8px 0; }
+.board-agents pre { white-space: pre-wrap; }
+.message-provenance { display: block; margin-top: 8px; color: #777; font-size: 0.75rem; }

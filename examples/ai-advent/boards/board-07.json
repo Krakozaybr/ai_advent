@@ -1,0 +1,43 @@
+{
+  "externalId": "ai-advent-day-7",
+  "title": "День 7 · Сохранение контекста",
+  "lanes": [
+    {
+      "externalId": "persistent-context",
+      "title": "Продолжение после перезапуска",
+      "provider": "openrouter",
+      "model": "openai/gpt-4o-mini",
+      "contextStrategy": "full",
+      "contextWindowSize": 10,
+      "contextBudgetTokens": 32768,
+      "layout": {
+        "x": 24,
+        "y": 24,
+        "width": 440
+      },
+      "messages": [
+        {
+          "externalId": "goal",
+          "role": "user",
+          "content": "Мы готовим районный обмен книгами. Цель — собрать 30 книг за неделю."
+        },
+        {
+          "externalId": "decision",
+          "role": "assistant",
+          "content": "Черновой план: точка сбора в библиотеке, учёт по жанрам, объявление в районном чате.",
+          "provenance": "Демонстрационный ответ из seed-пакета; это не результат вызова модели."
+        },
+        {
+          "externalId": "constraint",
+          "role": "user",
+          "content": "Учти, что волонтёров только двое и хранить книги можно не больше недели."
+        },
+        {
+          "externalId": "next",
+          "role": "user",
+          "content": "Продолжи план с учётом договорённостей и ограничений."
+        }
+      ]
+    }
+  ]
+}

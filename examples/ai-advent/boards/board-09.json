@@ -1,0 +1,136 @@
+{
+  "externalId": "ai-advent-day-9",
+  "title": "День 9 · Стратегии контекста",
+  "lanes": [
+    {
+      "externalId": "full",
+      "title": "Полная история",
+      "provider": "openrouter",
+      "model": "openai/gpt-4o-mini",
+      "contextStrategy": "full",
+      "contextWindowSize": 10,
+      "contextBudgetTokens": 32768,
+      "layout": {
+        "x": 24,
+        "y": 24,
+        "width": 440
+      },
+      "messages": [
+        {
+          "externalId": "history-1",
+          "role": "user",
+          "content": "Цель: устроить обмен книгами для 20 семей."
+        },
+        {
+          "externalId": "history-2",
+          "role": "assistant",
+          "content": "Нужны место, учёт и правило безопасности.",
+          "provenance": "Демонстрационный ответ из seed-пакета; это не результат вызова модели."
+        },
+        {
+          "externalId": "history-3",
+          "role": "user",
+          "content": "Место — библиотека; учёт по жанрам; повреждённые книги откладываем."
+        },
+        {
+          "externalId": "history-4",
+          "role": "assistant",
+          "content": "Добавить подписанные коробки, ответственного за приём и отдельную полку для проверки.",
+          "provenance": "Демонстрационный ответ из seed-пакета; это не результат вызова модели."
+        },
+        {
+          "externalId": "question",
+          "role": "user",
+          "content": "Составь план и не забудь условие про повреждённые книги."
+        }
+      ]
+    },
+    {
+      "externalId": "sliding",
+      "title": "Последние сообщения",
+      "provider": "openrouter",
+      "model": "openai/gpt-4o-mini",
+      "contextStrategy": "sliding_window",
+      "contextWindowSize": 2,
+      "contextBudgetTokens": 32768,
+      "layout": {
+        "x": 484,
+        "y": 24,
+        "width": 440
+      },
+      "messages": [
+        {
+          "externalId": "history-1",
+          "role": "user",
+          "content": "Цель: устроить обмен книгами для 20 семей."
+        },
+        {
+          "externalId": "history-2",
+          "role": "assistant",
+          "content": "Нужны место, учёт и правило безопасности.",
+          "provenance": "Демонстрационный ответ из seed-пакета; это не результат вызова модели."
+        },
+        {
+          "externalId": "history-3",
+          "role": "user",
+          "content": "Место — библиотека; учёт по жанрам; повреждённые книги откладываем."
+        },
+        {
+          "externalId": "history-4",
+          "role": "assistant",
+          "content": "Добавить подписанные коробки, ответственного за приём и отдельную полку для проверки.",
+          "provenance": "Демонстрационный ответ из seed-пакета; это не результат вызова модели."
+        },
+        {
+          "externalId": "question",
+          "role": "user",
+          "content": "Составь план и не забудь условие про повреждённые книги."
+        }
+      ]
+    },
+    {
+      "externalId": "summary",
+      "title": "Сводка + последние сообщения",
+      "provider": "openrouter",
+      "model": "openai/gpt-4o-mini",
+      "contextStrategy": "summary_window",
+      "contextWindowSize": 2,
+      "contextBudgetTokens": 32768,
+      "summary": "Обмен рассчитан на 20 семей; площадка — библиотека; сортировка по жанрам. Повреждённые книги откладываются для отдельной проверки.",
+      "layout": {
+        "x": 944,
+        "y": 24,
+        "width": 440
+      },
+      "messages": [
+        {
+          "externalId": "history-1",
+          "role": "user",
+          "content": "Цель: устроить обмен книгами для 20 семей."
+        },
+        {
+          "externalId": "history-2",
+          "role": "assistant",
+          "content": "Нужны место, учёт и правило безопасности.",
+          "provenance": "Демонстрационный ответ из seed-пакета; это не результат вызова модели."
+        },
+        {
+          "externalId": "history-3",
+          "role": "user",
+          "content": "Место — библиотека; учёт по жанрам; повреждённые книги откладываем."
+        },
+        {
+          "externalId": "history-4",
+          "role": "assistant",
+          "content": "Добавить подписанные коробки, ответственного за приём и отдельную полку для проверки.",
+          "provenance": "Демонстрационный ответ из seed-пакета; это не результат вызова модели."
+        },
+        {
+          "externalId": "question",
+          "role": "user",
+          "content": "Составь план и не забудь условие про повреждённые книги."
+        }
+      ]
+    }
+  ]
+}
