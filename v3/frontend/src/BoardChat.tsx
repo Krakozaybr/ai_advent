@@ -6,6 +6,7 @@ import { MarkdownContent } from "./MarkdownContent";
 import { getCanvasExtent, getCenteredScrollTarget } from "./canvas-layout.mjs";
 import { isContextSummaryStale, planContext } from "./context-plan.mjs";
 import type { ContextStrategy } from "./context-plan.mjs";
+import { createOverviewPanelState, setOverviewPanelOpen } from "./overview-panels.mjs";
 
 type Message = {
   id: string;
@@ -86,6 +87,7 @@ export function BoardChat() {
   const [error, setError] = useState<string | null>(null);
   const [focusMode, setFocusMode] = useState(() => window.localStorage.getItem("workspace.focusMode") === "true");
   const [selectedLaneId, setSelectedLaneId] = useState(() => window.localStorage.getItem("workspace.selectedLaneId"));
+  const [overviewPanels, setOverviewPanels] = useState(createOverviewPanelState);
   const canvasRef = useRef<HTMLElement | null>(null);
 
   const refreshBoard = useCallback(async (boardId: string) => {
@@ -423,8 +425,8 @@ export function BoardChat() {
       {board && <BoardInstructionEditor boardId={board.board.id} value={board.board.instructions} onSave={(value) => void saveBoardInstructions(board.board.id, value)} />}
 
       {board && board.board.id === activeBoardId && <BoardMemoryOverview boardId={board.board.id} revision={memoryRevision} />}
-      {board && board.board.id === activeBoardId && <BoardTaskOverview key={`tasks-${board.board.id}`} boardId={board.board.id} />}
-      {board && board.board.id === activeBoardId && <BoardScheduleOverview key={`schedules-${board.board.id}`} boardId={board.board.id} />}
+      {board && board.board.id === activeBoardId && <BoardTaskOverview boardId={board.board.id} open={overviewPanels.tasks} onToggle={(open) => setOverviewPanels((state) => setOverviewPanelOpen(state, "tasks", open))} />}
+      {board && board.board.id === activeBoardId && <BoardScheduleOverview boardId={board.board.id} open={overviewPanels.schedules} onToggle={(open) => setOverviewPanels((state) => setOverviewPanelOpen(state, "schedules", open))} />}
 
       <section className="canvas" ref={canvasRef} aria-label="Рабочая область доски">
         {error && <p className="error-banner" role="alert">{error}</p>}
@@ -547,7 +549,7 @@ function BoardMemoryOverview({ boardId, revision }: { boardId: string; revision:
   </details>;
 }
 
-function BoardTaskOverview({ boardId }: { boardId: string }) {
+function BoardTaskOverview({ boardId, open, onToggle }: { boardId: string; open: boolean; onToggle: (open: boolean) => void }) {
   const [tasks, setTasks] = useState<BoardTask[]>([]);
   const [title, setTitle] = useState("");
   const [description, setDescription] = useState("");
@@ -567,7 +569,7 @@ function BoardTaskOverview({ boardId }: { boardId: string }) {
   }
 
   const nextStage: Record<BoardTask["stage"], BoardTask["stage"] | null> = { planning: "execution", execution: "validation", validation: "done", done: null };
-  return <details className="board-tasks" open>
+  return <details className="board-tasks" open={open} onToggle={(event) => onToggle(event.currentTarget.open)}>
     <summary>Задачи доски · {tasks.length}</summary>
     <div className="board-tasks-content">
       <p>Состояние хранится отдельно для каждой доски. Переход возможен только на следующий этап; план нужно утвердить до выполнения.</p>
@@ -586,7 +588,7 @@ function BoardTaskOverview({ boardId }: { boardId: string }) {
 type Schedule = { id: string; title: string; repeatEveryMs?: number; nextRunAt: number; status: string };
 type ScheduleRun = { id: string; scheduleId: string; title: string; scheduledFor: number; startedAt?: number; status: string; missedCount: number; result?: { sampleCount: number; total: number; average: number; minimum: number; maximum: number }; error?: string };
 
-function BoardScheduleOverview({ boardId }: { boardId: string }) {
+function BoardScheduleOverview({ boardId, open, onToggle }: { boardId: string; open: boolean; onToggle: (open: boolean) => void }) {
   const [schedules, setSchedules] = useState<Schedule[]>([]);
   const [runs, setRuns] = useState<ScheduleRun[]>([]);
   const [title, setTitle] = useState("Сводка метрик");
@@ -622,7 +624,7 @@ function BoardScheduleOverview({ boardId }: { boardId: string }) {
     } catch (cause) { setError(cause instanceof Error ? cause.message : "Не удалось изменить расписание"); }
   }
   const date = (timestamp: number) => new Date(timestamp).toLocaleTimeString();
-  return <details className="board-schedules" open>
+  return <details className="board-schedules" open={open} onToggle={(event) => onToggle(event.currentTarget.open)}>
     <summary>Локальные расписания · безопасная сводка демо-метрик</summary>
     <div className="board-schedules-content">
       <p>Сервис выполняет расписания, пока работает backend, даже если браузер закрыт. Интервалы 2 и 5 секунд подходят для демонстрации.</p>
