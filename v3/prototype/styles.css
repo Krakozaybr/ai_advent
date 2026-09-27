@@ -120,7 +120,7 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
 .lane-title { flex: 1; min-width: 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; color: #27323d; font-size: 15px; font-weight: 650; cursor: text; }
 .title-input { flex: 1; min-width: 0; border: 0; border-radius: 4px; color: #26313b; background: #e9edf1; padding: 3px 5px; font-size: 15px; font-weight: 650; }
 .lane-header-actions { display: flex; align-items: center; opacity: .75; }
-.lane-header:hover .lane-header-actions { opacity: 1; }
+.lane-header:hover .lane-header-actions, .lane-header:has(.group-color-popover) .lane-header-actions { opacity: 1; }
 .group-color-control { position: relative; display: grid; place-items: center; }
 .group-color-trigger { display: grid; place-items: center; width: 30px; height: 30px; padding: 0; border: 0; border-radius: 7px; background: transparent; }
 .group-color-trigger:hover, .group-color-trigger[aria-expanded="true"] { background: rgba(95, 116, 134, .1); }
