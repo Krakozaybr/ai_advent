@@ -7,6 +7,7 @@ import kotlinx.serialization.json.put
 import kotlinx.serialization.json.buildJsonObject
 import org.junit.jupiter.api.Test
 import java.nio.file.Files
+import java.sql.DriverManager
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
 import kotlin.test.assertFalse
@@ -78,9 +79,17 @@ class TaskStoreTest {
         val laneA = workspace.createLane(boardA,"openrouter")["lanes"]!!.jsonArray.last().jsonObject["id"]!!.jsonPrimitive.content
         val boardB = workspace.createBoard()["board"]!!.jsonObject["id"]!!.jsonPrimitive.content
         val laneB = workspace.createLane(boardB,"openrouter")["lanes"]!!.jsonArray.last().jsonObject["id"]!!.jsonPrimitive.content
-        val tasks = TaskStore(temp.resolve("tasks.sqlite"))
+        val taskFile = temp.resolve("tasks.sqlite")
+        val tasks = TaskStore(taskFile)
         val taskA = tasks.create(boardA,"Только A","")["id"]!!.jsonPrimitive.content
         tasks.create(boardB,"Только B","")
+        DriverManager.getConnection("jdbc:sqlite:${taskFile.toAbsolutePath()}").use { db -> db.createStatement().use { statement ->
+            statement.execute("DROP TRIGGER tasks_stage_guard_v2")
+            statement.execute("DROP TRIGGER tasks_plan_approval_guard_v2")
+            statement.execute("CREATE TRIGGER tasks_stage_guard BEFORE UPDATE OF stage ON tasks WHEN OLD.stage != NEW.stage BEGIN SELECT CASE WHEN OLD.paused=1 THEN RAISE(ABORT,'Задача на паузе.') END; SELECT CASE WHEN NOT ((OLD.stage='planning' AND NEW.stage='execution') OR (OLD.stage='execution' AND NEW.stage='validation') OR (OLD.stage='validation' AND NEW.stage='done')) THEN RAISE(ABORT,'Недопустимый переход этапа.') END; SELECT CASE WHEN OLD.stage='planning' AND NEW.stage='execution' AND NEW.plan_approved != 1 THEN RAISE(ABORT,'Сначала утверди план.') END; END")
+            statement.execute("CREATE TRIGGER tasks_plan_approval_guard BEFORE UPDATE OF plan_approved ON tasks WHEN OLD.plan_approved != NEW.plan_approved AND NEW.plan_approved=1 AND (NEW.plan='' OR NEW.stage!='planning') BEGIN SELECT RAISE(ABORT,'Утвердить можно только непустой план.'); END")
+        } }
+        val migratedTasks = TaskStore(taskFile)
         val config = McpServerConfig("board-tasks","Tasks","","node",listOf(root.resolve("examples/mcp/board-tasks-server.mjs").toString()),root.toString(),mapOf("AI_ADVENT_V3_TASKS_DB" to tasks.databasePath))
         val client = McpClient()
         val scopedA = scopedMcpServer(config,workspace.laneDatabasePath(laneA),laneA,temp.resolve("memory.sqlite").toString())
@@ -90,6 +99,15 @@ class TaskStoreTest {
         assertEquals(1,client.call(scopedA,"tasks_list",buildJsonObject {})["structuredContent"]!!.jsonObject["tasks"]!!.jsonArray.size)
         assertEquals(1,client.call(scopedB,"tasks_list",buildJsonObject {})["structuredContent"]!!.jsonObject["tasks"]!!.jsonArray.size)
         assertFailsWith<IllegalStateException> { client.call(scopedA,"tasks_propose_update",buildJsonObject { put("taskId",taskA); put("stage","execution"); put("reason","Пропуск плана") }) }
+        client.call(scopedA,"tasks_propose_update",buildJsonObject {
+            put("taskId",taskA); put("plan","   "); put("reason","Сохранить пробельный план")
+        })
+        assertFailsWith<IllegalStateException> {
+            client.call(scopedA,"tasks_propose_update",buildJsonObject {
+                put("taskId",taskA); put("approvePlan",true); put("reason","Проверка пустого плана")
+            })
+        }
+        assertFalse(migratedTasks.get(boardA,taskA)!!["planApproved"]!!.jsonPrimitive.content.toBoolean())
         workspace.close()
     }
 }

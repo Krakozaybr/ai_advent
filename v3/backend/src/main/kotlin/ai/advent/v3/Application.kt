@@ -43,6 +43,20 @@ import java.nio.file.Path
 
 private val json = Json { ignoreUnknownKeys = true }
 
+private fun JsonObject.taskString(name: String): String? {
+    val value = this[name] ?: return null
+    require(value is kotlinx.serialization.json.JsonPrimitive && value.isString) { "Поле $name должно быть строкой." }
+    return value.content
+}
+
+private fun JsonObject.taskBoolean(name: String): Boolean? {
+    val value = this[name] ?: return null
+    require(value is kotlinx.serialization.json.JsonPrimitive && !value.isString && value.content in setOf("true", "false")) {
+        "Поле $name должно быть логическим значением."
+    }
+    return value.content.toBooleanStrict()
+}
+
 private fun platformMemoryDatabasePath(): Path {
     System.getenv("AI_ADVENT_V3_MEMORY_DB")?.let { return Path.of(it) }
     val root = Path.of(System.getenv("AI_ADVENT_V3_CWD") ?: System.getProperty("user.dir")).toAbsolutePath()
@@ -170,10 +184,13 @@ fun Application.module(
         post("/api/boards/{boardId}/tasks") {
             val boardId = call.parameters["boardId"] ?: ""
             val body = runCatching { call.receive<JsonObject>() }.getOrNull()
-            val title = body?.get("title")?.jsonPrimitive?.contentOrNull
-            val description = body?.get("description")?.jsonPrimitive?.contentOrNull.orEmpty()
-            if (title == null) { call.respond(HttpStatusCode.BadRequest, buildJsonObject { put("error", "Укажи название задачи.") }); return@post }
-            try { store.board(boardId); call.respond(HttpStatusCode.Created, taskStore.create(boardId,title,description)) }
+            try {
+                val title = body?.taskString("title")
+                require(title != null) { "Укажи название задачи." }
+                val description = body.taskString("description").orEmpty()
+                store.board(boardId)
+                call.respond(HttpStatusCode.Created, taskStore.create(boardId,title,description))
+            }
             catch (error: IllegalArgumentException) { call.respond(HttpStatusCode.BadRequest, buildJsonObject { put("error", error.message ?: "Задача некорректна.") }) }
             catch (_: IllegalStateException) { call.respond(HttpStatusCode.NotFound, buildJsonObject { put("error", "Доска не найдена.") }) }
         }
@@ -188,16 +205,16 @@ fun Application.module(
             }
             try {
                 call.respond(taskStore.update(boardId,taskId,
-                    title=body["title"]?.jsonPrimitive?.contentOrNull,
-                    description=body["description"]?.jsonPrimitive?.contentOrNull,
-                    plan=body["plan"]?.jsonPrimitive?.contentOrNull,
-                    approvePlan=body["approvePlan"]?.jsonPrimitive?.contentOrNull?.toBooleanStrictOrNull(),
-                    stage=body["stage"]?.jsonPrimitive?.contentOrNull,
-                    currentStep=body["currentStep"]?.jsonPrimitive?.contentOrNull,
-                    expectedAction=body["expectedAction"]?.jsonPrimitive?.contentOrNull,
-                    paused=body["paused"]?.jsonPrimitive?.contentOrNull?.toBooleanStrictOrNull(),
-                    status=body["status"]?.jsonPrimitive?.contentOrNull,
-                    comment=body["comment"]?.jsonPrimitive?.contentOrNull))
+                    title=body.taskString("title"),
+                    description=body.taskString("description"),
+                    plan=body.taskString("plan"),
+                    approvePlan=body.taskBoolean("approvePlan"),
+                    stage=body.taskString("stage"),
+                    currentStep=body.taskString("currentStep"),
+                    expectedAction=body.taskString("expectedAction"),
+                    paused=body.taskBoolean("paused"),
+                    status=body.taskString("status"),
+                    comment=body.taskString("comment")))
             } catch (error: IllegalArgumentException) {
                 call.respond(HttpStatusCode.BadRequest, buildJsonObject { put("error", error.message ?: "Операция некорректна.") })
             } catch (error: Exception) {
@@ -625,7 +642,7 @@ fun Application.module(
                     val toolName = approval["toolName"]!!.jsonPrimitive.content
                     val arguments = approval["arguments"]!!.jsonObject
                     val registered = mcpRegistry.server(serverId)
-                    val server = if (serverId in setOf("sticky-facts", "lane-history", "board-memory", "board-schedules")) {
+                    val server = if (isLaneScopedMcpServer(serverId)) {
                         scopedMcpServer(registered, store.laneDatabasePath(laneId), laneId, memoryStore.databasePath)
                     } else registered
                     val tool = withContext(Dispatchers.IO) { mcpClient.listTools(server).firstOrNull { it.name == toolName } }

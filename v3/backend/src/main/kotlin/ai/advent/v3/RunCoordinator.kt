@@ -296,7 +296,7 @@ class RunCoordinator(
 
     private fun scopedServer(serverId: String, laneId: String): McpServerConfig {
         val server = mcpRegistry.server(serverId)
-        if (serverId !in setOf("sticky-facts", "lane-history", "board-memory", "board-schedules")) return server
+        if (!isLaneScopedMcpServer(serverId)) return server
         return scopedMcpServer(server, store.laneDatabasePath(laneId), laneId, memoryStore?.databasePath ?: "v3/data/memory.sqlite")
     }
 

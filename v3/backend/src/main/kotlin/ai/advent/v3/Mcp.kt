@@ -82,6 +82,9 @@ class McpRegistry(private val servers: List<McpServerConfig> = defaultServers())
 
 data class McpSelection(val serverId: String, val toolName: String)
 
+fun isLaneScopedMcpServer(serverId: String): Boolean =
+    serverId in setOf("sticky-facts", "lane-history", "board-memory", "board-tasks", "board-schedules")
+
 fun scopedMcpServer(server: McpServerConfig, laneDatabasePath: String, laneId: String, memoryDatabasePath: String): McpServerConfig =
     server.copy(environment = server.environment + buildMap {
         put("AI_ADVENT_V3_BOARD_DB", laneDatabasePath)

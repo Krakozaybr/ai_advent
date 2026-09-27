@@ -24,6 +24,7 @@ import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeout
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonArray
+import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.jsonObject
@@ -47,17 +48,26 @@ class ApplicationTest {
         val boardId = store.boards().first().jsonObject["id"]!!.jsonPrimitive.content
         application { module(store, FakeCodexAppServer(), memoryStore = MemoryStore(directory.resolve("memory.sqlite")), taskStore = TaskStore(directory.resolve("tasks.sqlite"))) }
 
+        val invalidTitle = client.post("/api/boards/$boardId/tasks") {
+            header(HttpHeaders.ContentType, ContentType.Application.Json.toString()); setBody("""{"title":{"unexpected":"object"}}""")
+        }
+        assertEquals(HttpStatusCode.BadRequest, invalidTitle.status, invalidTitle.bodyAsText())
+
         val created = client.post("/api/boards/$boardId/tasks") {
             header(HttpHeaders.ContentType, ContentType.Application.Json.toString()); setBody("""{"title":"Релиз","description":"Подготовить релиз"}""")
         }
         assertEquals(HttpStatusCode.Created, created.status, created.bodyAsText())
         val task = Json.parseToJsonElement(created.bodyAsText()).jsonObject
         val id = task["id"]!!.jsonPrimitive.content
+        val invalidPlan = client.patch("/api/boards/$boardId/tasks/$id") {
+            header(HttpHeaders.ContentType, ContentType.Application.Json.toString()); setBody("""{"plan":{"unexpected":"object"}}""")
+        }
+        assertEquals(HttpStatusCode.BadRequest, invalidPlan.status, invalidPlan.bodyAsText())
         val skipped = client.patch("/api/boards/$boardId/tasks/$id") {
             header(HttpHeaders.ContentType, ContentType.Application.Json.toString()); setBody("""{"stage":"execution"}""")
         }
         assertEquals(HttpStatusCode.Conflict, skipped.status)
-        assertTrue(skipped.bodyAsText().contains("утверди план"))
+        assertTrue(skipped.bodyAsText().contains("непустой план"))
         client.patch("/api/boards/$boardId/tasks/$id") {
             header(HttpHeaders.ContentType, ContentType.Application.Json.toString()); setBody("""{"plan":"Собрать и проверить"}""")
         }
@@ -69,6 +79,67 @@ class ApplicationTest {
         }
         assertEquals(HttpStatusCode.OK, execution.status, execution.bodyAsText())
         assertEquals("execution", Json.parseToJsonElement(execution.bodyAsText()).jsonObject["stage"]!!.jsonPrimitive.content)
+    }
+
+    @Test
+    fun `task MCP read autoapprove and manual approval use trusted application scope`() = testApplication {
+        val directory = Files.createTempDirectory("board-tasks-mcp-application")
+        val store = WorkspaceStore(directory.resolve("board.sqlite"))
+        val boardId = store.boards().first().jsonObject["id"]!!.jsonPrimitive.content
+        val laneId = store.createLane(boardId,"openrouter")["lanes"]!!.jsonArray.last().jsonObject["id"]!!.jsonPrimitive.content
+        val tasks = TaskStore(directory.resolve("tasks.sqlite"))
+        val taskId = tasks.create(boardId,"Исходная задача","")["id"]!!.jsonPrimitive.content
+        store.saveMcpTools(laneId,listOf(McpSelection("board-tasks","tasks_list"),McpSelection("board-tasks","tasks_propose_update")))
+        val root = generateSequence(Path.of("").toAbsolutePath()) { it.parent }
+            .first { Files.isRegularFile(it.resolve("examples/mcp/board-tasks-server.mjs")) }
+        val server = McpServerConfig("board-tasks","Задачи доски","test","node",
+            listOf(root.resolve("examples/mcp/board-tasks-server.mjs").toString()),root.toString(),
+            mapOf("AI_ADVENT_V3_TASKS_DB" to tasks.databasePath))
+        val gateway = TaskMcpGateway(listOf(
+            "tasks_list" to "{}",
+            "tasks_propose_update" to """{"taskId":"$taskId","title":"Обновлено напрямую","reason":"Проверка autoapprove"}""",
+            "tasks_propose_update" to """{"taskId":"$taskId","title":"Обновлено после approval","reason":"Проверка подтверждения"}""",
+        ))
+        val keys = OpenRouterKeyStore(directory.resolve("openrouter.key")).also { it.save("test-key") }
+        application {
+            module(store, FakeCodexAppServer(), openRouter = gateway, openRouterKeys = keys,
+                mcpRegistry = McpRegistry(listOf(server)), memoryStore = MemoryStore(directory.resolve("memory.sqlite")),
+                taskStore = tasks, schedulerStore = SchedulerStore(directory.resolve("schedules.sqlite")))
+        }
+
+        suspend fun run(prompt: String): String {
+            val accepted = client.post("/api/lanes/$laneId/messages") {
+                header(HttpHeaders.ContentType, ContentType.Application.Json.toString()); setBody("""{"text":"$prompt"}""")
+            }
+            assertEquals(HttpStatusCode.Accepted,accepted.status,accepted.bodyAsText())
+            val runId = Json.parseToJsonElement(accepted.bodyAsText()).jsonObject["runId"]!!.jsonPrimitive.content
+            withTimeout(5_000) { while (!store.isTerminal(runId)) delay(20) }
+            return runId
+        }
+
+        run("Прочитай задачи")
+        var calls = store.laneSnapshot(laneId)["messages"]!!.jsonArray.map { it.jsonObject }
+            .last { it["role"]?.jsonPrimitive?.content == "assistant" }["technicalDetails"]!!.jsonObject["toolCalls"]!!.jsonArray
+        assertEquals(true,calls.single().jsonObject["ok"]!!.jsonPrimitive.content.toBoolean())
+        assertTrue(calls.single().jsonObject["result"].toString().contains("Исходная задача"))
+
+        store.setMcpAutoApprove(laneId,true)
+        run("Измени задачу автоматически")
+        assertEquals("Обновлено напрямую",tasks.get(boardId,taskId)!!["title"]!!.jsonPrimitive.content)
+        var approvals = store.laneSnapshot(laneId)["mcpApprovals"]!!.jsonArray
+        assertEquals("lane-autoapprove",approvals.last().jsonObject["approvalSource"]!!.jsonPrimitive.content)
+
+        store.setMcpAutoApprove(laneId,false)
+        run("Предложи изменение")
+        approvals = store.laneSnapshot(laneId)["mcpApprovals"]!!.jsonArray
+        val pending = approvals.first { it.jsonObject["status"]!!.jsonPrimitive.content == "pending" }.jsonObject
+        assertEquals("Обновлено напрямую",tasks.get(boardId,taskId)!!["title"]!!.jsonPrimitive.content)
+        val approved = client.post("/api/lanes/$laneId/mcp-approvals/${pending["id"]!!.jsonPrimitive.content}") {
+            header(HttpHeaders.ContentType,ContentType.Application.Json.toString()); setBody("""{"decision":"approve"}""")
+        }
+        assertEquals(HttpStatusCode.OK,approved.status,approved.bodyAsText())
+        assertEquals("approved",store.approval(laneId,pending["id"]!!.jsonPrimitive.content)!!["status"]!!.jsonPrimitive.content)
+        assertEquals("Обновлено после approval",tasks.get(boardId,taskId)!!["title"]!!.jsonPrimitive.content)
     }
 
     @Test
@@ -1183,6 +1254,37 @@ for line in sys.stdin:
         assertTrue(lanes[1].jsonObject["x"]!!.jsonPrimitive.content.toInt() > lanes[0].jsonObject["x"]!!.jsonPrimitive.content.toInt())
         store.close()
     }
+}
+
+private class TaskMcpGateway(scripts: List<Pair<String, String>>) : OpenRouterGateway {
+    private val pendingScripts = java.util.concurrent.ConcurrentLinkedQueue(scripts)
+
+    override suspend fun stream(
+        apiKey: String, config: LaneConfig, history: List<ContextMessage>, prompt: String,
+        onText: suspend (String) -> Unit, instructions: String,
+    ): JsonObject = buildJsonObject { put("provider", "openrouter") }
+
+    override suspend fun toolRound(
+        apiKey: String, config: LaneConfig, messages: List<JsonObject>, tools: List<JsonObject>,
+        onText: suspend (String) -> Unit, instructions: String,
+    ): OpenRouterToolRound {
+        if (messages.any { it["role"]?.jsonPrimitive?.content == "tool" }) {
+            onText("Готово")
+            return OpenRouterToolRound(buildJsonObject { put("role", "assistant"); put("content", "Готово") }, buildJsonObject { put("provider", "openrouter") })
+        }
+        val (toolName,args) = pendingScripts.poll() ?: error("No scripted task MCP call remains.")
+        val wireName = tools.first { it["function"]!!.jsonObject["description"]!!.jsonPrimitive.content.startsWith("board-tasks/$toolName:") }
+            .getValue("function").jsonObject.getValue("name").jsonPrimitive.content
+        return OpenRouterToolRound(buildJsonObject {
+            put("role", "assistant"); put("content", kotlinx.serialization.json.JsonNull)
+            put("tool_calls", JsonArray(listOf(buildJsonObject {
+                put("id", "task-call-${System.nanoTime()}"); put("type", "function")
+                put("function", buildJsonObject { put("name",wireName); put("arguments",args) })
+            })))
+        }, buildJsonObject { put("provider", "openrouter") })
+    }
+
+    override fun close() = Unit
 }
 
 private class FakeCodexAppServer(
