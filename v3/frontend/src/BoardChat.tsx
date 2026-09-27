@@ -4,6 +4,8 @@ import { chooseBoardId } from "./workspace-state.mjs";
 import { describeLaneOrigin } from "./lane-lineage.mjs";
 import { MarkdownContent } from "./MarkdownContent";
 import { getCanvasExtent, getCenteredScrollTarget } from "./canvas-layout.mjs";
+import { planContext } from "./context-plan.mjs";
+import type { ContextStrategy } from "./context-plan.mjs";
 
 type Message = {
   id: string;
@@ -33,6 +35,14 @@ type Lane = {
   temperature?: number;
   maxTokens?: number;
   stop?: string;
+  contextStrategy: ContextStrategy;
+  contextWindowSize: number;
+  contextSummary: string;
+  contextSummaryWatermark?: string;
+  contextSummaryUsage?: Record<string, unknown>;
+  contextSummaryUsageSource?: string;
+  contextSummaryStale: boolean;
+  contextBudgetTokens: number;
 };
 
 type BoardSummary = { id: string; title: string };
@@ -143,7 +153,7 @@ export function BoardChat() {
     }
   }
 
-  async function saveLaneConfig(laneId: string, config: Pick<Lane, "model" | "temperature" | "maxTokens" | "stop">) {
+  async function saveLaneConfig(laneId: string, config: Pick<Lane, "model" | "temperature" | "maxTokens" | "stop" | "contextStrategy" | "contextWindowSize" | "contextBudgetTokens">) {
     try {
       setBoard(await readJson<BoardResponse>(`/api/lanes/${encodeURIComponent(laneId)}/config`, {
         method: "PATCH",
@@ -382,7 +392,7 @@ function LaneView({ lane, lanes, authenticated, openRouterConfigured, codexModel
   onSaveLayout: (layout: { x: number; y: number; width: number }) => void;
   onCopy: (messageId: string, targetLaneId: string) => void;
   onMutate: (messageId: string, content: string | null) => Promise<void>;
-  onSaveConfig: (config: Pick<Lane, "model" | "temperature" | "maxTokens" | "stop">) => void;
+  onSaveConfig: (config: Pick<Lane, "model" | "temperature" | "maxTokens" | "stop" | "contextStrategy" | "contextWindowSize" | "contextBudgetTokens">) => void;
   onCancelRun: (runId: string) => void;
   selected: boolean;
 }) {
@@ -396,15 +406,47 @@ function LaneView({ lane, lanes, authenticated, openRouterConfigured, codexModel
   const [editingMessageId, setEditingMessageId] = useState<string | null>(null);
   const [editedContent, setEditedContent] = useState("");
   const [copyTarget, setCopyTarget] = useState("");
-  const [config, setConfig] = useState({ model: lane.model, temperature: lane.temperature ?? 0.7, maxTokens: lane.maxTokens ?? 2048, stop: lane.stop ?? "" });
+  const [config, setConfig] = useState({ model: lane.model, temperature: lane.temperature ?? 0.7, maxTokens: lane.maxTokens ?? 2048, stop: lane.stop ?? "", contextStrategy: lane.contextStrategy, contextWindowSize: lane.contextWindowSize, contextBudgetTokens: lane.contextBudgetTokens });
+  const [forceSend, setForceSend] = useState(false);
+  const [summaryBusy, setSummaryBusy] = useState(false);
   const providerReady = lane.provider === "codex" ? authenticated : openRouterConfigured;
 
   function persistConfig(next = config) {
-    onSaveConfig(lane.provider === "codex" ? { model: next.model } : next);
+    onSaveConfig(lane.provider === "codex" ? {
+      model: next.model,
+      contextStrategy: next.contextStrategy,
+      contextWindowSize: next.contextWindowSize,
+      contextBudgetTokens: next.contextBudgetTokens,
+    } : next);
   }
 
   useEffect(() => setLayout({ x: lane.x, y: lane.y, width: lane.width }), [lane.x, lane.y, lane.width]);
-  useEffect(() => setConfig({ model: lane.model, temperature: lane.temperature ?? 0.7, maxTokens: lane.maxTokens ?? 2048, stop: lane.stop ?? "" }), [lane.model, lane.temperature, lane.maxTokens, lane.stop]);
+  useEffect(() => setConfig({ model: lane.model, temperature: lane.temperature ?? 0.7, maxTokens: lane.maxTokens ?? 2048, stop: lane.stop ?? "", contextStrategy: lane.contextStrategy, contextWindowSize: lane.contextWindowSize, contextBudgetTokens: lane.contextBudgetTokens }), [lane.model, lane.temperature, lane.maxTokens, lane.stop, lane.contextStrategy, lane.contextWindowSize, lane.contextBudgetTokens]);
+
+  const contextPlan = planContext(
+    lane.messages.filter((item) => item.content.length > 0).map((item) => ({ role: item.role, content: item.content })),
+    message.trim(),
+    { strategy: config.contextStrategy, windowSize: config.contextWindowSize, summary: lane.contextSummary, summaryWatermark: lane.contextSummaryWatermark, budgetTokens: config.contextBudgetTokens, responseTokensEstimate: lane.provider === "codex" ? 1024 : config.maxTokens || 1024 },
+  );
+  const beforeCompression = planContext(
+    lane.messages.filter((item) => item.content.length > 0).map(({ role, content }) => ({ role, content })),
+    message.trim(),
+    { strategy: "full", windowSize: config.contextWindowSize, summary: "", budgetTokens: config.contextBudgetTokens, responseTokensEstimate: lane.provider === "codex" ? 1024 : config.maxTokens || 1024 },
+  );
+  const summaryStale = Boolean(lane.contextSummary && (lane.contextSummaryStale || lane.contextSummaryWatermark !== lane.messages.at(-1)?.id));
+
+  async function generateSummary() {
+    setSummaryBusy(true);
+    setError(null);
+    try {
+      await readJson(`/api/lanes/${lane.id}/context-summary`, { method: "POST" });
+      await onRefresh();
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : "Не удалось создать сводку");
+    } finally {
+      setSummaryBusy(false);
+    }
+  }
 
   const listenToRun = useCallback((id: string, after: number) => {
     sourceRef.current?.close();
@@ -528,7 +570,7 @@ function LaneView({ lane, lanes, authenticated, openRouterConfigured, codexModel
       const result = await readJson<{ runId: string }>(`/api/lanes/${lane.id}/messages`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ text, parameters }),
+        body: JSON.stringify({ text, parameters: { ...parameters, forceSend } }),
       });
       setRunId(result.runId);
       const updated = await onRefresh();
@@ -568,6 +610,29 @@ function LaneView({ lane, lanes, authenticated, openRouterConfigured, codexModel
           <label>Максимум токенов<input type="number" min="1" max="200000" step="1" value={config.maxTokens} onChange={(event) => setConfig({ ...config, maxTokens: Number(event.target.value) })} onBlur={() => persistConfig()} /></label>
           <label>Stop<input value={config.stop} onChange={(event) => setConfig({ ...config, stop: event.target.value })} onBlur={() => persistConfig()} /></label>
         </>}
+        <label>История
+          <select value={config.contextStrategy} onChange={(event) => { const next = { ...config, contextStrategy: event.target.value as ContextStrategy }; setConfig(next); persistConfig(next); setForceSend(false); }}>
+            <option value="full">Полная история</option>
+            <option value="sliding_window">Последние N сообщений</option>
+            <option value="summary_window">Сводка + последние N</option>
+          </select>
+        </label>
+        {config.contextStrategy !== "full" && <label>Размер окна
+          <input type="number" min="1" max="200" value={config.contextWindowSize} onChange={(event) => { const next = { ...config, contextWindowSize: Number(event.target.value) }; setConfig(next); }} onBlur={() => persistConfig()} />
+        </label>}
+        <label>Бюджет контекста · оценка токенов
+          <input type="number" min="256" max="1000000" step="1024" value={config.contextBudgetTokens} onChange={(event) => setConfig({ ...config, contextBudgetTokens: Number(event.target.value) })} onBlur={() => persistConfig()} />
+        </label>
+        {config.contextStrategy === "summary_window" && <section className="context-summary">
+          <div className="context-summary-heading">
+            <strong>Отдельная сводка</strong>
+            <button type="button" disabled={!providerReady || running || summaryBusy} onClick={() => void generateSummary()}>{summaryBusy ? "Создаю…" : lane.contextSummary ? "Обновить явно" : "Создать явно"}</button>
+          </div>
+          <p>{lane.contextSummaryWatermark ? `Сводка сохранена до сообщения ${lane.contextSummaryWatermark.slice(0, 8)}${lane.messages.at(-1)?.id === lane.contextSummaryWatermark ? " · актуальна" : " · есть новые сообщения"}` : "Сводка ещё не создавалась."}</p>
+          {lane.contextSummary && <pre>{lane.contextSummary}</pre>}
+          {lane.contextSummaryUsageSource && <small>Usage ответа сводки · {lane.contextSummaryUsageSource}: {JSON.stringify(lane.contextSummaryUsage ?? "провайдер не прислал")}</small>}
+          <small>Генерация отправляет полный сохранённый transcript выбранному провайдеру и не меняет историю диалога.</small>
+        </section>}
       </details>
       {lane.originKind && (
         <div className={`lane-origin ${lane.originKind}`}>
@@ -620,12 +685,25 @@ function LaneView({ lane, lanes, authenticated, openRouterConfigured, codexModel
       {error && <p className="lane-error" role="alert">{error}</p>}
       {runState.status === "failed" && runState.error && !error && <p className="lane-error" role="alert">{runState.error}</p>}
       <form className="composer" onSubmit={(event) => void sendMessage(event)}>
+        <div className="context-estimate" aria-live="polite">
+          <span>Текущее сообщение: ~{contextPlan.currentMessageTokensEstimate} токенов</span>
+          <span>История после: ~{contextPlan.historyTokensEstimate}; до сжатия: ~{beforeCompression.historyTokensEstimate}</span>
+          <span>Вход: ~{contextPlan.inputTokensEstimate} + ответ ~{contextPlan.responseTokensEstimate}; бюджет {contextPlan.budgetTokens}</span>
+          {contextPlan.omittedMessages > 0 && <span>План сжимает историю на {contextPlan.omittedMessages} сообщений.</span>}
+          {contextPlan.summaryMissing && <span className="context-warning">Сводка ещё не создана: старые сообщения останутся только в transcript и не попадут в запрос.</span>}
+          {summaryStale && config.contextStrategy === "summary_window" && <span className="context-warning">Сводка устарела относительно transcript; обнови её явно.</span>}
+        </div>
+        <details className="context-plan-details"><summary>Состав отправляемого запроса</summary><pre>{JSON.stringify(contextPlan.messages, null, 2)}</pre></details>
+        {contextPlan.overflow && <label className="force-send">
+          <input type="checkbox" checked={forceSend} onChange={(event) => setForceSend(event.target.checked)} />
+          Оценка выше бюджета. Отправить всё равно; провайдер может отклонить запрос.
+        </label>}
         <textarea
           ref={textareaRef}
           aria-label={`Сообщение для ${lane.title}`}
           placeholder={providerReady ? "Напиши сообщение…" : lane.provider === "codex" ? "Войди в Codex, чтобы отправить запрос" : "Добавь ключ OpenRouter в настройках"}
           value={message}
-          onChange={(event) => { setMessage(event.target.value); resizeTextarea(event.currentTarget); }}
+          onChange={(event) => { setMessage(event.target.value); setForceSend(false); resizeTextarea(event.currentTarget); }}
           onKeyDown={(event) => {
             if (event.key === "Enter" && !event.shiftKey) {
               event.preventDefault();
@@ -636,9 +714,9 @@ function LaneView({ lane, lanes, authenticated, openRouterConfigured, codexModel
           disabled={!providerReady || running}
         />
         <div className="composer-footer">
-          <span>{running ? "Запрос выполняется" : "Enter — отправить · Shift+Enter — новая строка"}</span>
+          <span>{running ? "Запрос выполняется" : contextPlan.overflow && !forceSend ? "Подтверди отправку выше оценки бюджета" : "Enter — отправить · Shift+Enter — новая строка"}</span>
           {running && runId && <button type="button" className="cancel-run" onClick={() => onCancelRun(runId)}>Отменить</button>}
-          <button className="button primary" type="submit" disabled={!providerReady || running || !message.trim()} aria-label="Отправить сообщение">
+          <button className="button primary" type="submit" disabled={!providerReady || running || !message.trim() || (contextPlan.overflow && !forceSend)} aria-label="Отправить сообщение">
             ↗
           </button>
         </div>
