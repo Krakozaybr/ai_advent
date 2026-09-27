@@ -1,0 +1,48 @@
+{
+  "externalId": "ai-advent-day-15",
+  "title": "День 15 · Этапы задачи и подтверждение",
+  "lanes": [
+    {
+      "externalId": "lifecycle-mcp",
+      "title": "Предложение MCP · approval",
+      "provider": "openrouter",
+      "model": "qwen/qwen3-30b-a3b-instruct-2507",
+      "contextStrategy": "full",
+      "contextWindowSize": 10,
+      "contextBudgetTokens": 32768,
+      "layout": {
+        "x": 24,
+        "y": 24,
+        "width": 440
+      },
+      "messages": [
+        {
+          "externalId": "task",
+          "role": "user",
+          "content": "Прочитай задачу об обмене книгами и составленный план. Если план полный, предложи отдельно утвердить его; не переходи на следующий этап без подтверждения."
+        }
+      ]
+    },
+    {
+      "externalId": "lifecycle-ui",
+      "title": "Planning → execution → validation",
+      "provider": "openrouter",
+      "model": "qwen/qwen3-30b-a3b-instruct-2507",
+      "contextStrategy": "full",
+      "contextWindowSize": 10,
+      "contextBudgetTokens": 32768,
+      "layout": {
+        "x": 484,
+        "y": 24,
+        "width": 440
+      },
+      "messages": [
+        {
+          "externalId": "task",
+          "role": "user",
+          "content": "Сверь этап задачи и попробуй пройти только один разрешённый переход после утверждения плана. Покажи шаг, ожидаемое действие и состояние паузы."
+        }
+      ]
+    }
+  ]
+}

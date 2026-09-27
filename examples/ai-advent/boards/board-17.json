@@ -1,0 +1,27 @@
+{
+  "externalId": "ai-advent-day-17",
+  "title": "День 17 · Настоящий вызов MCP tool",
+  "lanes": [
+    {
+      "externalId": "tool-call",
+      "title": "Вызов read-only инструмента",
+      "provider": "openrouter",
+      "model": "qwen/qwen3-30b-a3b-instruct-2507",
+      "contextStrategy": "full",
+      "contextWindowSize": 10,
+      "contextBudgetTokens": 32768,
+      "layout": {
+        "x": 24,
+        "y": 24,
+        "width": 440
+      },
+      "messages": [
+        {
+          "externalId": "task",
+          "role": "user",
+          "content": "Вызови инструмент lookup_demo_event сервера ai-advent-demo для события spring-book-swap. Перескажи только возвращённые поля и отдельно укажи, что это статический локальный mock, а не реальное событие."
+        }
+      ]
+    }
+  ]
+}

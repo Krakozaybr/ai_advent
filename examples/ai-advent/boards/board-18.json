@@ -1,0 +1,27 @@
+{
+  "externalId": "ai-advent-day-18",
+  "title": "День 18 · Платформенное расписание",
+  "lanes": [
+    {
+      "externalId": "scheduler",
+      "title": "Запрос для сценария расписания",
+      "provider": "openrouter",
+      "model": "qwen/qwen3-30b-a3b-instruct-2507",
+      "contextStrategy": "full",
+      "contextWindowSize": 10,
+      "contextBudgetTokens": 32768,
+      "layout": {
+        "x": 24,
+        "y": 24,
+        "width": 440
+      },
+      "messages": [
+        {
+          "externalId": "task",
+          "role": "user",
+          "content": "Предложи безопасную задачу для одноразового расписания, которая соберёт демонстрационные локальные метрики. Укажи, какой результат я должен проверить после выполнения."
+        }
+      ]
+    }
+  ]
+}

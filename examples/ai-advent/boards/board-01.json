@@ -5,8 +5,7 @@
     {
       "externalId": "baseline",
       "title": "Первый запрос",
-      "provider": "openrouter",
-      "model": "openai/gpt-4o-mini",
+      "provider": "codex",
       "contextStrategy": "full",
       "contextWindowSize": 10,
       "contextBudgetTokens": 32768,

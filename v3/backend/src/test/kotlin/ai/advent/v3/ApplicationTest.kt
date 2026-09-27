@@ -215,7 +215,7 @@ class ApplicationTest {
             .first { Files.isDirectory(it.resolve("examples/ai-advent/boards")) }
         val seedDirectory = project.resolve("examples/ai-advent/boards")
         val seedFiles = Files.list(seedDirectory).use { paths -> paths.filter { it.fileName.toString().endsWith(".json") }.sorted().toList() }
-        assertEquals(9, seedFiles.size)
+        assertEquals(18, seedFiles.size)
         val database = Files.createTempDirectory("seed-pack-import-").resolve("board.sqlite")
         val store = WorkspaceStore(database)
         application { module(store, FakeCodexAppServer()) }
@@ -234,9 +234,9 @@ class ApplicationTest {
             assertTrue(Json.parseToJsonElement(second.bodyAsText()).jsonObject.getValue("reused").jsonPrimitive.content.toBoolean())
         }
         val boards = client.get("/api/boards").bodyAsText().let { Json.parseToJsonElement(it).jsonObject.getValue("boards").jsonArray }
-        assertEquals(10, boards.size)
+        assertEquals(19, boards.size)
         val idempotentAgain = WorkspaceStore(database)
-        assertEquals(10, idempotentAgain.boards().size)
+        assertEquals(19, idempotentAgain.boards().size)
         seedFiles.forEach { file ->
             val payload = Json.parseToJsonElement(Files.readString(file)).jsonObject
             val summary = idempotentAgain.boards().map { it.jsonObject }.first { it["title"]!!.jsonPrimitive.content == payload["title"]!!.jsonPrimitive.content }

@@ -1,0 +1,52 @@
+{
+  "externalId": "ai-advent-day-12",
+  "title": "День 12 · Персонализация текстом AGENTS",
+  "lanes": [
+    {
+      "externalId": "concise",
+      "title": "Координатор · краткий формат",
+      "provider": "openrouter",
+      "model": "qwen/qwen3-30b-a3b-instruct-2507",
+      "contextStrategy": "full",
+      "contextWindowSize": 10,
+      "contextBudgetTokens": 32768,
+      "instructions": "Ты координатор волонтёров. Отвечай по-русски кратко: сначала 3 пронумерованных действия, затем один риск и его проверка. Учитывай, что волонтёров ровно двое; не придумывай дополнительные ресурсы.",
+      "instructionMode": "override",
+      "layout": {
+        "x": 24,
+        "y": 24,
+        "width": 440
+      },
+      "messages": [
+        {
+          "externalId": "task",
+          "role": "user",
+          "content": "Составь план сортировки 30 книг для 2 волонтёров."
+        }
+      ]
+    },
+    {
+      "externalId": "accessible",
+      "title": "Библиотекарь · объяснение новичку",
+      "provider": "openrouter",
+      "model": "qwen/qwen3-30b-a3b-instruct-2507",
+      "contextStrategy": "full",
+      "contextWindowSize": 10,
+      "contextBudgetTokens": 32768,
+      "instructions": "Ты библиотекарь и объясняешь новичку. Используй простые русские слова, поясняй библиотечные термины в скобках и предлагай действия по одному за раз. Учитывай, что волонтёров ровно двое; не придумывай дополнительные ресурсы.",
+      "instructionMode": "override",
+      "layout": {
+        "x": 484,
+        "y": 24,
+        "width": 440
+      },
+      "messages": [
+        {
+          "externalId": "task",
+          "role": "user",
+          "content": "Составь план сортировки 30 книг для 2 волонтёров."
+        }
+      ]
+    }
+  ]
+}

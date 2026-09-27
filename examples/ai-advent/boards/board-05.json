@@ -1,12 +1,12 @@
 {
   "externalId": "ai-advent-day-5",
-  "title": "День 5 · Каталог моделей",
+  "title": "День 5 · Три модели Qwen",
   "lanes": [
     {
       "externalId": "economy",
-      "title": "Экономичная · GPT-4o mini",
+      "title": "Qwen3 8B · экономичная",
       "provider": "openrouter",
-      "model": "openai/gpt-4o-mini",
+      "model": "qwen/qwen3-8b",
       "temperature": 0.2,
       "maxTokens": 256,
       "contextStrategy": "full",
@@ -21,15 +21,15 @@
         {
           "externalId": "task",
           "role": "user",
-          "content": "Одинаковая задача: составь короткий план из четырёх шагов для районного обмена книгами. Сравни качество, стоимость и параметры. Независимая переменная — модель; temperature=0.2, max_tokens=256.\n\n[Каталог моделей](https://openrouter.ai/models) · [карточка GPT-4o mini](https://openrouter.ai/openai/gpt-4o-mini)\nСнимок каталога на 2026-09-27: $0.15 / $0.60 за миллион входных / выходных токенов."
+          "content": "Составь план из четырёх шагов для районного обмена книгами. Используй конкретные действия и короткие формулировки."
         }
       ]
     },
     {
       "externalId": "mid",
-      "title": "Средний уровень · DeepSeek V3",
+      "title": "Qwen3 30B A3B Instruct 2507",
       "provider": "openrouter",
-      "model": "deepseek/deepseek-chat",
+      "model": "qwen/qwen3-30b-a3b-instruct-2507",
       "temperature": 0.2,
       "maxTokens": 256,
       "contextStrategy": "full",
@@ -44,15 +44,15 @@
         {
           "externalId": "task",
           "role": "user",
-          "content": "Одинаковая задача: составь короткий план из четырёх шагов для районного обмена книгами. Сравни качество, стоимость и параметры. Независимая переменная — модель; temperature=0.2, max_tokens=256.\n\n[Каталог моделей](https://openrouter.ai/models) · [карточка DeepSeek V3](https://openrouter.ai/deepseek/deepseek-chat)\nСнимок каталога на 2026-09-27: около $0.26 / $1.03 за миллион входных / выходных токенов; цена зависит от маршрута."
+          "content": "Составь план из четырёх шагов для районного обмена книгами. Используй конкретные действия и короткие формулировки."
         }
       ]
     },
     {
       "externalId": "premium",
-      "title": "Премиальная · Claude Sonnet 4",
+      "title": "Qwen3 235B A22B Instruct 2507",
       "provider": "openrouter",
-      "model": "anthropic/claude-sonnet-4",
+      "model": "qwen/qwen3-235b-a22b-2507",
       "temperature": 0.2,
       "maxTokens": 256,
       "contextStrategy": "full",
@@ -67,7 +67,7 @@
         {
           "externalId": "task",
           "role": "user",
-          "content": "Одинаковая задача: составь короткий план из четырёх шагов для районного обмена книгами. Сравни качество, стоимость и параметры. Независимая переменная — модель; temperature=0.2, max_tokens=256.\n\n[Каталог моделей](https://openrouter.ai/models) · [карточка Claude Sonnet 4](https://openrouter.ai/anthropic/claude-sonnet-4)\nСнимок каталога на 2026-09-27: $3 / $15 за миллион входных / выходных токенов."
+          "content": "Составь план из четырёх шагов для районного обмена книгами. Используй конкретные действия и короткие формулировки."
         }
       ]
     }

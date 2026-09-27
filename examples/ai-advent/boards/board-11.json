@@ -1,0 +1,53 @@
+{
+  "externalId": "ai-advent-day-11",
+  "title": "День 11 · История и память доски",
+  "lanes": [
+    {
+      "externalId": "transcript",
+      "title": "Короткая память · transcript",
+      "provider": "openrouter",
+      "model": "qwen/qwen3-30b-a3b-instruct-2507",
+      "contextStrategy": "sliding_window",
+      "contextWindowSize": 1,
+      "contextBudgetTokens": 32768,
+      "layout": {
+        "x": 24,
+        "y": 24,
+        "width": 440
+      },
+      "messages": [
+        {
+          "externalId": "old",
+          "role": "user",
+          "content": "Цель: собрать 30 книг. Хранить их можно не больше недели."
+        },
+        {
+          "externalId": "next",
+          "role": "user",
+          "content": "Найди через history_search/history_get срок хранения в полном transcript и предложи следующий шаг. Объясни, почему его нет в отправленном окне контекста."
+        }
+      ]
+    },
+    {
+      "externalId": "memory",
+      "title": "Working + longTerm · approval",
+      "provider": "openrouter",
+      "model": "qwen/qwen3-30b-a3b-instruct-2507",
+      "contextStrategy": "full",
+      "contextWindowSize": 10,
+      "contextBudgetTokens": 32768,
+      "layout": {
+        "x": 484,
+        "y": 24,
+        "width": 440
+      },
+      "messages": [
+        {
+          "externalId": "prompt",
+          "role": "user",
+          "content": "Прочитай память доски в слоях working и longTerm. Сравни, что относится к этой акции, а что является общим правилом клуба. Затем предложи добавить один новый факт через MCP: запись должна ждать моего подтверждения."
+        }
+      ]
+    }
+  ]
+}

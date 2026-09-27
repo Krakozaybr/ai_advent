@@ -1,0 +1,21 @@
+{
+  "externalId": "ai-advent-day-16",
+  "title": "День 16 · Подключение и каталог MCP",
+  "lanes": [
+    {
+      "externalId": "catalog",
+      "title": "Каталог локального MCP",
+      "provider": "openrouter",
+      "model": "qwen/qwen3-30b-a3b-instruct-2507",
+      "contextStrategy": "full",
+      "contextWindowSize": 10,
+      "contextBudgetTokens": 32768,
+      "layout": {
+        "x": 24,
+        "y": 24,
+        "width": 440
+      },
+      "messages": []
+    }
+  ]
+}

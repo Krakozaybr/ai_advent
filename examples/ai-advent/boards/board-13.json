@@ -1,0 +1,48 @@
+{
+  "externalId": "ai-advent-day-13",
+  "title": "День 13 · Задачи через MCP и UI",
+  "lanes": [
+    {
+      "externalId": "tasks-mcp",
+      "title": "Предложение MCP · с подтверждением",
+      "provider": "openrouter",
+      "model": "qwen/qwen3-30b-a3b-instruct-2507",
+      "contextStrategy": "full",
+      "contextWindowSize": 10,
+      "contextBudgetTokens": 32768,
+      "layout": {
+        "x": 24,
+        "y": 24,
+        "width": 440
+      },
+      "messages": [
+        {
+          "externalId": "task",
+          "role": "user",
+          "content": "Прочитай задачи доски. Для задачи о книжном обмене предложи записать в шаг: проверить коробки по жанрам. Объясни ожидаемое действие и дождись подтверждения пользователя."
+        }
+      ]
+    },
+    {
+      "externalId": "tasks-ui",
+      "title": "Состояние · продолжение",
+      "provider": "openrouter",
+      "model": "qwen/qwen3-30b-a3b-instruct-2507",
+      "contextStrategy": "full",
+      "contextWindowSize": 10,
+      "contextBudgetTokens": 32768,
+      "layout": {
+        "x": 484,
+        "y": 24,
+        "width": 440
+      },
+      "messages": [
+        {
+          "externalId": "task",
+          "role": "user",
+          "content": "Прочитай сохранённую задачу и перечисли её текущий этап, шаг и ожидаемое действие. После подтверждения изменения прочитай задачу повторно и сравни состояния."
+        }
+      ]
+    }
+  ]
+}

@@ -1,0 +1,70 @@
+{
+  "externalId": "ai-advent-day-10",
+  "title": "День 10 · Sticky Facts и ветвление",
+  "lanes": [
+    {
+      "externalId": "facts-main",
+      "title": "Факты · общий checkpoint",
+      "provider": "openrouter",
+      "model": "qwen/qwen3-30b-a3b-instruct-2507",
+      "contextStrategy": "full",
+      "contextWindowSize": 10,
+      "contextBudgetTokens": 32768,
+      "layout": {
+        "x": 24,
+        "y": 24,
+        "width": 440
+      },
+      "messages": [
+        {
+          "externalId": "goal",
+          "role": "user",
+          "content": "Готовим районный книжный обмен на 20 семей."
+        },
+        {
+          "externalId": "checkpoint",
+          "role": "assistant",
+          "content": "Известно: обмен в библиотеке, сбор до пятницы. Проверь постоянные факты через MCP, затем предложи добавить подтверждённое ограничение о хранении книг только на неделю.",
+          "provenance": "Демонстрационный ответ из seed-пакета; это не результат вызова модели."
+        }
+      ]
+    },
+    {
+      "externalId": "facts-branch",
+      "title": "Ветка · проверка альтернативы",
+      "provider": "openrouter",
+      "model": "qwen/qwen3-30b-a3b-instruct-2507",
+      "contextStrategy": "full",
+      "contextWindowSize": 10,
+      "contextBudgetTokens": 32768,
+      "layout": {
+        "x": 484,
+        "y": 24,
+        "width": 440
+      },
+      "messages": [
+        {
+          "externalId": "goal",
+          "role": "user",
+          "content": "Готовим районный книжный обмен на 20 семей."
+        },
+        {
+          "externalId": "checkpoint",
+          "role": "assistant",
+          "content": "Известно: обмен в библиотеке, сбор до пятницы. Проверь постоянные факты через MCP, затем предложи добавить подтверждённое ограничение о хранении книг только на неделю.",
+          "provenance": "Демонстрационный ответ из seed-пакета; это не результат вызова модели."
+        },
+        {
+          "externalId": "branch-task",
+          "role": "user",
+          "content": "Если место сбора изменится на читальный зал, какие постоянные факты нужно перепроверить? Не меняй память без моего подтверждения."
+        }
+      ],
+      "origin": {
+        "laneExternalId": "facts-main",
+        "messageExternalId": "checkpoint",
+        "kind": "branch"
+      }
+    }
+  ]
+}
