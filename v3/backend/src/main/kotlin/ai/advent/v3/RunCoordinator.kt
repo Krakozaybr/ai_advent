@@ -165,7 +165,7 @@ class RunCoordinator(
 
     private suspend fun runOpenRouterWithTools(run: StartedRun, apiKey: String, prompt: String): JsonObject {
         val definitions = run.mcpTools.mapIndexed { index, selected ->
-            val server = mcpRegistry.server(selected.serverId)
+            val server = scopedServer(selected.serverId, run.laneId)
             val tool = mcpClient.listTools(server).firstOrNull { it.name == selected.toolName }
                 ?: error("Разрешённый инструмент ${selected.serverId}/${selected.toolName} больше не зарегистрирован.")
             Triple(selected, tool, buildJsonObject {
@@ -187,8 +187,10 @@ class RunCoordinator(
         val rounds = mutableListOf<JsonObject>()
         var lastDetails = buildJsonObject {}
         var callCount = 0
+        var pendingApprovalCreated = false
+        var activeTools = wireTools
         repeat(MAX_TOOL_ROUNDS) {
-            val turn = openRouter.toolRound(apiKey, run.config, messages, wireTools) { store.appendText(run.runId, it) }
+            val turn = openRouter.toolRound(apiKey, run.config, messages, activeTools) { store.appendText(run.runId, it) }
             rounds += turn.details
             lastDetails = buildJsonObject {
                 turn.details.forEach { (key, value) -> put(key, value) }
@@ -220,7 +222,32 @@ class RunCoordinator(
                     require(rawArgs.length <= MAX_TOOL_ARGUMENT_LENGTH) { "Аргументы инструмента слишком велики." }
                     require(parsedArgs != null) { "Аргументы инструмента должны быть JSON-объектом." }
                     McpClient.validateSchema(parsedArgs, selectedDefinition.second.inputSchema)
-                    mcpClient.call(mcpRegistry.server(selectedDefinition.first.serverId), selectedDefinition.second.name, parsedArgs).also {
+                    if (!selectedDefinition.second.readOnly && !run.mcpAutoApprove) {
+                        val reason = parsedArgs["reason"]?.jsonPrimitive?.contentOrNull ?: "Изменяющий инструмент запрошен моделью."
+                        val approvalId = store.addMcpApproval(run.laneId, selectedDefinition.first.serverId,
+                            selectedDefinition.second.name, parsedArgs, reason, null)
+                        pendingApprovalCreated = true
+                        buildJsonObject {
+                            put("approvalId", approvalId); put("status", "pending")
+                            put("message", "pending approval; действие не выполнено и данные не сохранены")
+                        }
+                    } else {
+                        val approvalId = if (!selectedDefinition.second.readOnly) {
+                            val id = store.addMcpApproval(run.laneId, selectedDefinition.first.serverId,
+                                selectedDefinition.second.name, parsedArgs, parsedArgs["reason"]?.jsonPrimitive?.contentOrNull ?: "Явное разрешение autoapprove ленты.", "lane-autoapprove")
+                            store.claimApproval(run.laneId, id)
+                            id
+                        } else null
+                        try {
+                            mcpClient.call(scopedServer(selectedDefinition.first.serverId, run.laneId), selectedDefinition.second.name, parsedArgs).also {
+                                approvalId?.let { store.finishApproval(run.laneId, it, "approved", "lane-autoapprove") }
+                                require(it.toString().length <= MAX_TOOL_RESULT_LENGTH) { "Результат инструмента слишком велик." }
+                            }
+                        } catch (error: Exception) {
+                            approvalId?.let { store.finishApproval(run.laneId, it, "failed", "lane-autoapprove") }
+                            throw error
+                        }
+                    }.also {
                         require(it.toString().length <= MAX_TOOL_RESULT_LENGTH) { "Результат инструмента слишком велик." }
                     }
                 }
@@ -235,7 +262,9 @@ class RunCoordinator(
                     }
                     result.toString()
                 } else {
-                    val failure = outcome.exceptionOrNull()?.message ?: "Инструмент завершился ошибкой."
+                    val cause = outcome.exceptionOrNull()
+                    val failure = if (cause is IllegalArgumentException) cause.message ?: "Аргументы инструмента некорректны."
+                    else "Не удалось выполнить MCP-инструмент."
                     store.appendRunEvent(run.runId, "tool.completed", buildJsonObject {
                         eventData.forEach { (key, value) -> put(key, value) }
                         put("error", failure); put("ok", false)
@@ -248,9 +277,19 @@ class RunCoordinator(
                 messages += buildJsonObject {
                     put("role", "tool"); put("tool_call_id", callId); put("content", resultMessage)
                 }
+                if (pendingApprovalCreated) activeTools = emptyList()
             }
         }
         error("Превышен предел раундов вызова инструментов ($MAX_TOOL_ROUNDS).")
+    }
+
+    private fun scopedServer(serverId: String, laneId: String): McpServerConfig {
+        val server = mcpRegistry.server(serverId)
+        if (serverId != "sticky-facts") return server
+        return server.copy(environment = server.environment + mapOf(
+            "AI_ADVENT_V3_BOARD_DB" to store.laneDatabasePath(laneId),
+            "AI_ADVENT_V3_LANE_ID" to laneId,
+        ))
     }
 
     suspend fun cancel(runId: String): Boolean {

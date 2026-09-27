@@ -24,6 +24,7 @@ for await (const line of createInterface({ input: process.stdin })) {
         required: ["query"],
         additionalProperties: false,
       },
+      annotations: { readOnlyHint: true, openWorldHint: false },
     }] } });
   } else if (request.method === "tools/call" && request.params?.name === "search_catalog") {
     const query = String(request.params.arguments?.query ?? "").trim().toLowerCase();

@@ -1,6 +1,8 @@
 package ai.advent.v3
 
 import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.jsonPrimitive
 import kotlinx.serialization.json.JsonNull
@@ -97,6 +99,7 @@ data class StartedRun(
     val shouldSeedContext: Boolean,
     val config: LaneConfig,
     val mcpTools: List<McpSelection>,
+    val mcpAutoApprove: Boolean,
 ) {
     override fun toString(): String = super.toString()
 }
@@ -206,6 +209,25 @@ class BoardStore(
                     tool_name TEXT NOT NULL,
                     PRIMARY KEY(lane_id, server_id, tool_name)
                 )""")
+                statement.execute("""CREATE TABLE IF NOT EXISTS sticky_facts (
+                    lane_id TEXT NOT NULL REFERENCES lanes(id) ON DELETE CASCADE,
+                    fact_key TEXT NOT NULL,
+                    fact_value TEXT NOT NULL,
+                    updated_at TEXT NOT NULL,
+                    PRIMARY KEY(lane_id, fact_key)
+                )""")
+                statement.execute("""CREATE TABLE IF NOT EXISTS mcp_approvals (
+                    id TEXT PRIMARY KEY,
+                    lane_id TEXT NOT NULL REFERENCES lanes(id) ON DELETE CASCADE,
+                    server_id TEXT NOT NULL,
+                    tool_name TEXT NOT NULL,
+                    arguments TEXT NOT NULL,
+                    reason TEXT NOT NULL,
+                    status TEXT NOT NULL,
+                    approval_source TEXT,
+                    created_at TEXT NOT NULL,
+                    resolved_at TEXT
+                )""")
             }
             ensureColumn(db, "lanes", "origin_lane_id", "TEXT")
             ensureColumn(db, "lanes", "origin_message_id", "TEXT")
@@ -230,6 +252,7 @@ class BoardStore(
             ensureColumn(db, "lanes", "context_summary_stale", "INTEGER NOT NULL DEFAULT 0")
             ensureColumn(db, "lanes", "context_budget_tokens", "INTEGER NOT NULL DEFAULT 32768")
             ensureColumn(db, "lanes", "agent_id", "TEXT")
+            ensureColumn(db, "lanes", "mcp_auto_approve", "INTEGER NOT NULL DEFAULT 0")
             ensureColumn(db, "boards", "external_id", "TEXT")
             ensureColumn(db, "messages", "provenance", "TEXT")
             db.createStatement().use { it.execute("CREATE UNIQUE INDEX IF NOT EXISTS boards_external_id ON boards(external_id) WHERE external_id IS NOT NULL") }
@@ -269,7 +292,7 @@ class BoardStore(
                     "origin_message_role, origin_message_content, " +
                     "position_x, position_y, width, provider, model, temperature, max_tokens, stop, " +
                     "context_strategy, context_window_size, context_summary, context_summary_watermark, context_budget_tokens, " +
-                    "context_summary_usage, context_summary_usage_source, context_summary_stale, agent_id " +
+                    "context_summary_usage, context_summary_usage_source, context_summary_stale, agent_id, mcp_auto_approve " +
                     "FROM lanes WHERE board_id = ? ORDER BY created_at, rowid",
             ).use { query ->
                 query.setString(1, board["id"]!!.jsonPrimitive.content)
@@ -280,6 +303,9 @@ class BoardStore(
                             put("id", laneId)
                             put("title", result.getString("title"))
                             result.getString("agent_id")?.let { put("agentId", it) }
+                            put("mcpAutoApprove", result.getInt("mcp_auto_approve") != 0)
+                            put("stickyFacts", JsonArray(stickyFacts(db, laneId)))
+                            put("mcpApprovals", JsonArray(mcpApprovals(db, laneId)))
                             put("provider", result.getString("provider"))
                             put("model", result.getString("model"))
                             result.getDouble("temperature").takeUnless { result.wasNull() }?.let { put("temperature", it) }
@@ -575,6 +601,66 @@ class BoardStore(
             }
         }
     }
+
+    fun setMcpAutoApprove(laneId: String, enabled: Boolean) = synchronized(lock) {
+        connect().use { db -> db.prepareStatement("UPDATE lanes SET mcp_auto_approve = ? WHERE id = ?").use { query ->
+            query.setInt(1, if (enabled) 1 else 0); query.setString(2, laneId)
+            check(query.executeUpdate() == 1) { "Unknown lane" }
+        } }
+    }
+
+    fun mcpAutoApprove(laneId: String): Boolean = synchronized(lock) {
+        connect().use { db -> db.prepareStatement("SELECT mcp_auto_approve FROM lanes WHERE id = ?").use { query ->
+            query.setString(1, laneId); query.executeQuery().use { result -> check(result.next()); result.getInt(1) != 0 }
+        } }
+    }
+
+    fun addMcpApproval(laneId: String, serverId: String, toolName: String, arguments: JsonObject, reason: String, source: String?): String = synchronized(lock) {
+        val id = UUID.randomUUID().toString()
+        connect().use { db -> db.prepareStatement("INSERT INTO mcp_approvals(id,lane_id,server_id,tool_name,arguments,reason,status,approval_source,created_at) VALUES(?,?,?,?,?,?,'pending',?,?)").use { query ->
+            query.setString(1, id); query.setString(2, laneId); query.setString(3, serverId); query.setString(4, toolName)
+            query.setString(5, Json.encodeToString(JsonObject.serializer(), arguments)); query.setString(6, reason)
+            query.setString(7, source); query.setString(8, Instant.now().toString()); query.executeUpdate()
+        } }
+        id
+    }
+
+    fun laneDatabasePath(): String = file.toAbsolutePath().toString()
+
+    fun approval(laneId: String, approvalId: String): JsonObject? = synchronized(lock) {
+        connect().use { db -> db.prepareStatement("SELECT * FROM mcp_approvals WHERE lane_id=? AND id=?").use { query ->
+            query.setString(1, laneId); query.setString(2, approvalId); query.executeQuery().use { result -> if (result.next()) approvalJson(result) else null }
+        } }
+    }
+
+    fun claimApproval(laneId: String, approvalId: String): JsonObject? = synchronized(lock) {
+        connect().use { db -> db.autoCommit = false; try {
+            db.prepareStatement("UPDATE mcp_approvals SET status='applying' WHERE lane_id=? AND id=? AND status='pending'").use { query ->
+                query.setString(1, laneId); query.setString(2, approvalId); if (query.executeUpdate() != 1) { db.rollback(); return@synchronized null }
+            }
+            val item = db.prepareStatement("SELECT * FROM mcp_approvals WHERE lane_id=? AND id=?").use { query ->
+                query.setString(1, laneId); query.setString(2, approvalId); query.executeQuery().use { result -> check(result.next()); approvalJson(result) }
+            }
+            db.commit(); item
+        } catch (error: Exception) { db.rollback(); throw error } finally { db.autoCommit = true } }
+    }
+
+    fun finishApproval(laneId: String, approvalId: String, status: String, source: String? = null) = synchronized(lock) {
+        require(status in setOf("approved", "denied", "failed"))
+        connect().use { db -> db.prepareStatement("UPDATE mcp_approvals SET status=?, approval_source=COALESCE(?, approval_source), resolved_at=? WHERE lane_id=? AND id=? AND status IN ('applying','pending')").use { query ->
+            query.setString(1, status); query.setString(2, source); query.setString(3, Instant.now().toString()); query.setString(4, laneId); query.setString(5, approvalId); query.executeUpdate()
+        } }
+    }
+
+    fun editFact(laneId: String, key: String, value: String?) = synchronized(lock) {
+        require(key.isNotBlank() && key.length <= 80 && (value == null || value.length <= 2000))
+        connect().use { db ->
+            if (value == null) db.prepareStatement("DELETE FROM sticky_facts WHERE lane_id=? AND fact_key=?").use { it.setString(1,laneId); it.setString(2,key); it.executeUpdate() }
+            else db.prepareStatement("INSERT INTO sticky_facts(lane_id,fact_key,fact_value,updated_at) VALUES(?,?,?,?) ON CONFLICT(lane_id,fact_key) DO UPDATE SET fact_value=excluded.fact_value,updated_at=excluded.updated_at").use { it.setString(1,laneId); it.setString(2,key); it.setString(3,value); it.setString(4,Instant.now().toString()); it.executeUpdate() }
+        }
+    }
+
+    fun clearFacts(laneId: String) = synchronized(lock) { connect().use { db -> db.prepareStatement("DELETE FROM sticky_facts WHERE lane_id=?").use { it.setString(1,laneId); it.executeUpdate() } } }
 
     fun transcriptSnapshot(laneId: String): TranscriptSnapshot = synchronized(lock) {
         connect().use { db -> transcriptSnapshot(db, laneId) }
@@ -898,7 +984,7 @@ class BoardStore(
             try {
                 val lane = db.prepareStatement(
                     "SELECT board_id, codex_thread_id, codex_context_seeded, provider, model, temperature, max_tokens, stop, " +
-                        "context_strategy, context_window_size, context_summary, context_summary_watermark, context_budget_tokens " +
+                        "context_strategy, context_window_size, context_summary, context_summary_watermark, context_budget_tokens, mcp_auto_approve " +
                         "FROM lanes WHERE id = ?",
                 ).use { query ->
                     query.setString(1, laneId)
@@ -908,7 +994,7 @@ class BoardStore(
                             (result.getInt("codex_context_seeded") == 0).toString(), result.getString("provider"),
                             result.getString("model"), result.getString("temperature"), result.getString("max_tokens"), result.getString("stop"),
                             result.getString("context_strategy"), result.getString("context_window_size"), result.getString("context_summary"),
-                            result.getString("context_summary_watermark"), result.getString("context_budget_tokens"))
+                            result.getString("context_summary_watermark"), result.getString("context_budget_tokens"), result.getString("mcp_auto_approve"))
                     }
                 }
                 val isActive = db.prepareStatement(
@@ -1004,6 +1090,7 @@ class BoardStore(
                     shouldSeedContext = reusableThreadId == null || needsSeed,
                     config = config,
                     mcpTools = mcpTools(db, laneId),
+                    mcpAutoApprove = lane[13].toInt() != 0,
                 )
             } catch (error: SQLException) {
                 db.rollback()
@@ -1082,6 +1169,31 @@ class BoardStore(
     ).use { query ->
         query.setString(1, laneId)
         query.executeQuery().use { result -> buildList { while (result.next()) add(McpSelection(result.getString(1), result.getString(2))) } }
+    }
+
+    private fun stickyFacts(db: Connection, laneId: String): List<JsonObject> = db.prepareStatement(
+        "SELECT fact_key,fact_value,updated_at FROM sticky_facts WHERE lane_id=? ORDER BY fact_key",
+    ).use { query ->
+        query.setString(1, laneId)
+        query.executeQuery().use { result -> buildList {
+            while (result.next()) add(buildJsonObject {
+                put("key", result.getString("fact_key")); put("value", result.getString("fact_value")); put("updatedAt", result.getString("updated_at"))
+            })
+        } }
+    }
+
+    private fun mcpApprovals(db: Connection, laneId: String): List<JsonObject> = db.prepareStatement(
+        "SELECT * FROM mcp_approvals WHERE lane_id=? ORDER BY created_at DESC",
+    ).use { query ->
+        query.setString(1, laneId)
+        query.executeQuery().use { result -> buildList { while (result.next()) add(approvalJson(result)) } }
+    }
+
+    private fun approvalJson(result: java.sql.ResultSet): JsonObject = buildJsonObject {
+        put("id", result.getString("id")); put("laneId", result.getString("lane_id")); put("serverId", result.getString("server_id"))
+        put("toolName", result.getString("tool_name")); put("arguments", kotlinx.serialization.json.Json.parseToJsonElement(result.getString("arguments")))
+        put("reason", result.getString("reason")); put("status", result.getString("status")); result.getString("approval_source")?.let { put("approvalSource", it) }
+        put("createdAt", result.getString("created_at")); result.getString("resolved_at")?.let { put("resolvedAt", it) }
     }
 
     fun appendRunEvent(runId: String, type: String, data: JsonObject) = synchronized(lock) {

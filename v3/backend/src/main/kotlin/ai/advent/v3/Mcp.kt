@@ -19,8 +19,8 @@ import java.util.concurrent.ArrayBlockingQueue
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicLong
 
-data class McpServerConfig(val id: String, val name: String, val description: String, val command: String, val args: List<String>, val cwd: String)
-data class McpTool(val serverId: String, val name: String, val description: String, val inputSchema: JsonObject)
+data class McpServerConfig(val id: String, val name: String, val description: String, val command: String, val args: List<String>, val cwd: String, val environment: Map<String, String> = emptyMap())
+data class McpTool(val serverId: String, val name: String, val description: String, val inputSchema: JsonObject, val readOnly: Boolean = false)
 
 /** Registry commands are loaded only from this server-owned file; requests can select IDs, never commands. */
 class McpRegistry(private val servers: List<McpServerConfig> = defaultServers()) {
@@ -37,9 +37,14 @@ class McpRegistry(private val servers: List<McpServerConfig> = defaultServers())
             val root = Path.of(System.getenv("AI_ADVENT_V3_CWD") ?: System.getProperty("user.dir"))
                 .toAbsolutePath().let { if (it.resolve("examples/mcp/catalog-server.mjs").toFile().exists()) it else it.parent.parent }
             val config = Path.of(System.getenv("AI_ADVENT_V3_MCP_REGISTRY") ?: root.resolve("v3/data/mcp-servers.json").toString())
-            if (Files.isRegularFile(config)) return fromFile(config, root)
             val example = root.resolve("examples/mcp/catalog-server.mjs").toString()
-            return listOf(McpServerConfig("local-catalog", "Локальный каталог", "Поиск в демонстрационном локальном каталоге.", "node", listOf(example), root.toString()))
+            val facts = root.resolve("examples/mcp/sticky-facts-server.mjs").toString()
+            val builtIns = listOf(
+                McpServerConfig("local-catalog", "Локальный каталог", "Поиск в демонстрационном локальном каталоге.", "node", listOf(example), root.toString()),
+                McpServerConfig("sticky-facts", "Постоянные факты", "Факты пользователя для текущей ленты.", "node", listOf(facts), root.toString()),
+            )
+            if (Files.isRegularFile(config)) return (fromFile(config, root).filterNot { configured -> builtIns.any { it.id == configured.id } } + builtIns)
+            return builtIns
         }
 
         private fun fromFile(config: Path, root: Path): List<McpServerConfig> {
@@ -75,7 +80,8 @@ class McpClient(private val timeoutMs: Long = 5_000) {
         session.request("tools/list").getValue("tools").jsonArray.map { item ->
             val tool = item.jsonObject
             McpTool(server.id, tool.getValue("name").jsonPrimitive.content,
-                tool["description"]?.jsonPrimitive?.contentOrNull.orEmpty(), tool.getValue("inputSchema").jsonObject)
+                tool["description"]?.jsonPrimitive?.contentOrNull.orEmpty(), tool.getValue("inputSchema").jsonObject,
+                tool["annotations"]?.jsonObject?.get("readOnlyHint")?.jsonPrimitive?.content == "true")
         }
     }
 
@@ -89,7 +95,9 @@ class McpClient(private val timeoutMs: Long = 5_000) {
     }
 
     private fun <T> withSession(server: McpServerConfig, block: (Session) -> T): T {
-        val process = ProcessBuilder(listOf(server.command) + server.args).directory(Path.of(server.cwd).toFile()).start()
+        val builder = ProcessBuilder(listOf(server.command) + server.args).directory(Path.of(server.cwd).toFile())
+        builder.environment().putAll(server.environment)
+        val process = builder.start()
         val queue = ArrayBlockingQueue<String>(16)
         val reader = Thread {
             process.inputStream.bufferedReader(Charsets.UTF_8).useLines { lines -> lines.forEach { queue.offer(it) } }
@@ -139,7 +147,16 @@ class McpClient(private val timeoutMs: Long = 5_000) {
 
     companion object {
         fun validateSchema(value: JsonObject, schema: JsonObject) {
+            validateSupportedSchema(schema, "Tool schema")
             validateValue(value, schema, "Tool arguments")
+        }
+
+        private fun validateSupportedSchema(schema: JsonObject, path: String) {
+            val supported = setOf("\$schema", "type", "enum", "required", "additionalProperties", "properties", "items", "minItems", "maxItems", "minLength", "maxLength", "minimum", "maximum", "description", "title")
+            val unsupported = schema.keys - supported
+            require(unsupported.isEmpty()) { "$path uses unsupported schema constraints: ${unsupported.sorted().joinToString()}" }
+            schema["properties"]?.jsonObject?.forEach { (key, child) -> validateSupportedSchema(child.jsonObject, "$path.$key") }
+            schema["items"]?.jsonObject?.let { validateSupportedSchema(it, "$path[]") }
         }
 
         private fun validateValue(value: kotlinx.serialization.json.JsonElement, schema: JsonObject, path: String) {
@@ -167,7 +184,7 @@ class McpClient(private val timeoutMs: Long = 5_000) {
                 val properties = schema["properties"]?.jsonObject ?: buildJsonObject {}
                 val required = schema["required"]?.jsonArray?.map { it.jsonPrimitive.content }?.toSet().orEmpty()
                 require(required.all(value::containsKey)) { "$path is missing required fields." }
-                val additional = schema["additionalProperties"]?.jsonPrimitive?.content != "false"
+                val additional = schema["additionalProperties"]?.jsonPrimitive?.content == "true"
                 require(additional || value.keys.all { it in properties }) { "$path contains unknown fields." }
                 value.forEach { (key, child) -> properties[key]?.jsonObject?.let { validateValue(child, it, "$path.$key") } }
             }

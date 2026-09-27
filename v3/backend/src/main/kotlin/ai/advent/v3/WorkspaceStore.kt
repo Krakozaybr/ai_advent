@@ -91,8 +91,22 @@ class WorkspaceStore(private val originalFile: Path) : Closeable {
         storeForLane(laneId).board()["lanes"]!!.let { it as JsonArray }
             .map { it.jsonObject }.first { it["id"]?.jsonPrimitive?.content == laneId }
     }
+    fun boardForLane(laneId: String): JsonObject = synchronized(lock) { storeForLane(laneId).board() }
 
     fun providerForLane(laneId: String): String = storeForLane(laneId).providerForLane(laneId)
+    fun laneDatabasePath(laneId: String): String = storeForLane(laneId).laneDatabasePath()
+    fun setMcpAutoApprove(laneId: String, enabled: Boolean): JsonObject = synchronized(lock) {
+        storeForLane(laneId).also { it.setMcpAutoApprove(laneId, enabled) }.board()
+    }
+    fun addMcpApproval(laneId: String, serverId: String, toolName: String, arguments: JsonObject, reason: String, source: String?): String =
+        storeForLane(laneId).addMcpApproval(laneId, serverId, toolName, arguments, reason, source)
+    fun approval(laneId: String, approvalId: String): JsonObject? = storeForLane(laneId).approval(laneId, approvalId)
+    fun claimApproval(laneId: String, approvalId: String): JsonObject? = storeForLane(laneId).claimApproval(laneId, approvalId)
+    fun finishApproval(laneId: String, approvalId: String, status: String, source: String? = null) =
+        storeForLane(laneId).finishApproval(laneId, approvalId, status, source)
+    fun editFact(laneId: String, key: String, value: String?): JsonObject =
+        storeForLane(laneId).also { it.editFact(laneId, key, value) }.board()
+    fun clearFacts(laneId: String): JsonObject = storeForLane(laneId).also { it.clearFacts(laneId) }.board()
 
     fun branchLane(laneId: String, messageId: String): JsonObject = synchronized(lock) {
         val boardStore = storeForLane(laneId)

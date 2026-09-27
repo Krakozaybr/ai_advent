@@ -43,4 +43,12 @@ class McpTest {
         val errorServer = McpServerConfig("broken", "broken", "", "node", listOf("--input-type=module", "-e", errorProgram), cwd)
         assertTrue(assertFailsWith<IllegalStateException> { McpClient().listTools(errorServer) }.message!!.contains("catalog unavailable"))
     }
+
+    @Test
+    fun `unsupported schema constraints are rejected instead of ignored`() {
+        val patternSchema = kotlinx.serialization.json.Json.parseToJsonElement("""{"type":"object","properties":{"key":{"type":"string","pattern":"^[a-z]+$"}}}""").jsonObject
+        val oneOfSchema = kotlinx.serialization.json.Json.parseToJsonElement("""{"type":"object","oneOf":[{"required":["a"]},{"required":["b"]}]}""").jsonObject
+        assertTrue(assertFailsWith<IllegalArgumentException> { McpClient.validateSchema(buildJsonObject { put("key", "valid") }, patternSchema) }.message!!.contains("unsupported"))
+        assertTrue(assertFailsWith<IllegalArgumentException> { McpClient.validateSchema(buildJsonObject {}, oneOfSchema) }.message!!.contains("unsupported"))
+    }
 }

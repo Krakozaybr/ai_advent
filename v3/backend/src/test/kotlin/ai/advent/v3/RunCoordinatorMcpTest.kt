@@ -1,6 +1,8 @@
 package ai.advent.v3
 
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.async
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.runBlocking
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonObject
@@ -17,8 +19,125 @@ import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
 import kotlin.test.assertTrue
+import kotlin.test.assertNotNull
 
 class RunCoordinatorMcpTest {
+    @Test
+    fun `parallel lane proposals remain isolated and independently approvable`() = runBlocking {
+        val temp = Files.createTempDirectory("v3-facts-parallel")
+        val database = temp.resolve("board.sqlite")
+        val store = WorkspaceStore(database)
+        val boardId = store.boards().first().jsonObject["id"]!!.jsonPrimitive.content
+        val laneA = createOpenRouterLane(store, boardId)
+        val laneB = createOpenRouterLane(store, boardId)
+        store.saveMcpTools(laneA, listOf(McpSelection("sticky-facts", "update_fact")))
+        store.saveMcpTools(laneB, listOf(McpSelection("sticky-facts", "update_fact")))
+        val root = Path.of(System.getProperty("user.dir")).toAbsolutePath().parent.parent
+        val factsServer = McpServerConfig("sticky-facts", "Facts", "", "node", listOf(root.resolve("examples/mcp/sticky-facts-server.mjs").toString()), root.toString())
+        val coordinator = RunCoordinator(store, NoopCodex(), ParallelFactsOpenRouter(),
+            OpenRouterKeyStore(temp.resolve("key")).also { it.save("test-server-key-only") }, McpRegistry(listOf(factsServer)))
+        try {
+            val (runA, runB) = coroutineScope {
+                val a = async { coordinator.submit(laneA, "fact-a") }
+                val b = async { coordinator.submit(laneB, "fact-b") }
+                a.await() to b.await()
+            }
+            waitForTerminal(store, runA); waitForTerminal(store, runB)
+            val approvalA = store.laneSnapshot(laneA)["mcpApprovals"]!!.jsonArray.single().jsonObject
+            val approvalB = store.laneSnapshot(laneB)["mcpApprovals"]!!.jsonArray.single().jsonObject
+            assertEquals("pending", approvalA["status"]!!.jsonPrimitive.content)
+            assertEquals("pending", approvalB["status"]!!.jsonPrimitive.content)
+            listOf(laneA to approvalA, laneB to approvalB).forEach { (lane, approval) ->
+                val id = approval["id"]!!.jsonPrimitive.content
+                val claimed = assertNotNull(store.claimApproval(lane, id))
+                val scoped = factsServer.copy(environment = mapOf("AI_ADVENT_V3_BOARD_DB" to database.toAbsolutePath().toString(), "AI_ADVENT_V3_LANE_ID" to lane))
+                McpClient().call(scoped, "update_fact", claimed["arguments"]!!.jsonObject)
+                store.finishApproval(lane, id, "approved", "user")
+            }
+            assertEquals("fact-a", store.laneSnapshot(laneA)["stickyFacts"]!!.jsonArray.single().jsonObject["value"]!!.jsonPrimitive.content)
+            assertEquals("fact-b", store.laneSnapshot(laneB)["stickyFacts"]!!.jsonArray.single().jsonObject["value"]!!.jsonPrimitive.content)
+        } finally { coordinator.close(); store.close() }
+    }
+
+    @Test
+    fun `autoapprove is opt in and records its source while manual facts can be changed and cleared`() = runBlocking {
+        val temp = Files.createTempDirectory("v3-facts-autoapprove")
+        val store = WorkspaceStore(temp.resolve("board.sqlite"))
+        val boardId = store.boards().first().jsonObject["id"]!!.jsonPrimitive.content
+        val lane = createOpenRouterLane(store, boardId)
+        store.saveMcpTools(lane, listOf(McpSelection("sticky-facts", "read_facts"), McpSelection("sticky-facts", "update_fact")))
+        store.setMcpAutoApprove(lane, true)
+        val root = Path.of(System.getProperty("user.dir")).toAbsolutePath().parent.parent
+        val server = McpServerConfig("sticky-facts", "Facts", "", "node", listOf(root.resolve("examples/mcp/sticky-facts-server.mjs").toString()), root.toString())
+        val coordinator = RunCoordinator(store, NoopCodex(), ScriptedFactsOpenRouter(),
+            OpenRouterKeyStore(temp.resolve("key")).also { it.save("test-server-key-only") }, McpRegistry(listOf(server)))
+        try {
+            val run = coordinator.submit(lane, "Сохрани предпочтение")
+            waitForTerminal(store, run)
+            val state = store.laneSnapshot(lane)
+            assertTrue(state["stickyFacts"]!!.jsonArray.any { it.jsonObject["key"]!!.jsonPrimitive.content == "preferred_language" })
+            val approval = state["mcpApprovals"]!!.jsonArray.single().jsonObject
+            assertEquals("approved", approval["status"]!!.jsonPrimitive.content)
+            assertEquals("lane-autoapprove", approval["approvalSource"]!!.jsonPrimitive.content)
+            store.editFact(lane, "manually_corrected", "исправлено пользователем")
+            assertTrue(store.laneSnapshot(lane)["stickyFacts"]!!.jsonArray.any { it.jsonObject["value"]!!.jsonPrimitive.content == "исправлено пользователем" })
+            store.clearFacts(lane)
+            assertTrue(store.laneSnapshot(lane)["stickyFacts"]!!.jsonArray.isEmpty())
+        } finally { coordinator.close(); store.close() }
+    }
+
+    @Test
+    fun `facts wait for approval and are visible to next run in isolated persistent lane scope`() = runBlocking {
+        val temp = Files.createTempDirectory("v3-sticky-facts")
+        val dbPath = temp.resolve("board.sqlite")
+        var store = WorkspaceStore(dbPath)
+        val boardId = store.boards().first().jsonObject["id"]!!.jsonPrimitive.content
+        val lane = createOpenRouterLane(store, boardId)
+        val otherLane = createOpenRouterLane(store, boardId)
+        val root = Path.of(System.getProperty("user.dir")).toAbsolutePath().parent.parent
+        val factsServer = McpServerConfig("sticky-facts", "Facts", "", "node",
+            listOf(root.resolve("examples/mcp/sticky-facts-server.mjs").toString()), root.toString())
+        val selections = listOf(McpSelection("sticky-facts", "read_facts"), McpSelection("sticky-facts", "update_fact"))
+        store.saveMcpTools(lane, selections)
+        store.saveMcpTools(otherLane, selections)
+        val gateway = ScriptedFactsOpenRouter()
+        val keys = OpenRouterKeyStore(temp.resolve("openrouter.key")).also { it.save("test-server-key-only") }
+        var coordinator = RunCoordinator(store, NoopCodex(), gateway, keys, McpRegistry(listOf(factsServer)))
+        try {
+            val proposedRun = coordinator.submit(lane, "Запомни, что я предпочитаю русский язык")
+            waitForTerminal(store, proposedRun)
+            val pendingBoard = store.laneSnapshot(lane)
+            assertEquals(1, pendingBoard["mcpApprovals"]!!.jsonArray.size, pendingBoard.toString() + store.eventsAfter(proposedRun, 0).joinToString { it.second.toString() })
+            val approval = pendingBoard["mcpApprovals"]!!.jsonArray.single().jsonObject
+            assertEquals("pending", approval["status"]!!.jsonPrimitive.content)
+            assertTrue(approval["arguments"].toString().contains("русский язык"))
+            assertTrue(pendingBoard["stickyFacts"]!!.jsonArray.isEmpty())
+            assertTrue(gateway.continuations.first().last { it["role"]?.jsonPrimitive?.content == "tool" }["content"]!!.jsonPrimitive.content.contains("pending approval"))
+
+            val approvalId = approval["id"]!!.jsonPrimitive.content
+            val claimed = assertNotNull(store.claimApproval(lane, approvalId))
+            val approvedArgs = claimed["arguments"]!!.jsonObject
+            val scopedServer = factsServer.copy(environment = mapOf("AI_ADVENT_V3_BOARD_DB" to dbPath.toAbsolutePath().toString(), "AI_ADVENT_V3_LANE_ID" to lane))
+            McpClient().call(scopedServer, "update_fact", approvedArgs)
+            store.finishApproval(lane, approvalId, "approved", "user")
+            assertEquals("approved", store.approval(lane, approvalId)!!["status"]!!.jsonPrimitive.content)
+            assertTrue(store.claimApproval(lane, approvalId) == null, "A duplicate approval must not execute twice")
+
+            coordinator.close()
+            store.close()
+            store = WorkspaceStore(dbPath)
+            assertEquals("русский язык", store.laneSnapshot(lane)["stickyFacts"]!!.jsonArray.single().jsonObject["value"]!!.jsonPrimitive.content)
+            assertTrue(store.laneSnapshot(otherLane)["stickyFacts"]!!.jsonArray.isEmpty())
+            coordinator = RunCoordinator(store, NoopCodex(), gateway, keys, McpRegistry(listOf(factsServer)))
+            val readRun = coordinator.submit(lane, "Какой язык я предпочитаю?")
+            waitForTerminal(store, readRun)
+            assertTrue(gateway.continuations.last().last { it["role"]?.jsonPrimitive?.content == "tool" }["content"]!!.jsonPrimitive.content.contains("русский язык"), gateway.continuations.toString() + store.eventsAfter(readRun, 0).joinToString { it.second.toString() })
+        } finally {
+            coordinator.close()
+            store.close()
+        }
+    }
+
     @Test
     fun `selected lane calls MCP and returns result to model while another lane stays disabled`() = runBlocking {
         val temp = Files.createTempDirectory("v3-mcp-loop")
@@ -65,6 +184,28 @@ class RunCoordinatorMcpTest {
         assertRejectedTool("local-catalog__delete_everything", "{}", "неразрешённый")
     }
 
+    @Test
+    fun `sticky facts reject model supplied board and lane scope arguments`() = runBlocking {
+        val temp = Files.createTempDirectory("v3-facts-scope-args")
+        val store = WorkspaceStore(temp.resolve("board.sqlite"))
+        val boardId = store.boards().first().jsonObject["id"]!!.jsonPrimitive.content
+        val lane = createOpenRouterLane(store, boardId)
+        val root = Path.of(System.getProperty("user.dir")).toAbsolutePath().parent.parent
+        val server = McpServerConfig("sticky-facts", "Facts", "", "node", listOf(root.resolve("examples/mcp/sticky-facts-server.mjs").toString()), root.toString())
+        store.saveMcpTools(lane, listOf(McpSelection("sticky-facts", "update_fact")))
+        val coordinator = RunCoordinator(store, NoopCodex(), RecordingOpenRouter("mcp_tool_0",
+            """{"key":"other","value":"bad","reason":"bad","boardId":"outside","laneId":"elsewhere"}"""),
+            OpenRouterKeyStore(temp.resolve("key")).also { it.save("test-server-key-only") }, McpRegistry(listOf(server)))
+        try {
+            val run = coordinator.submit(lane, "Предложи факт")
+            waitForTerminal(store, run)
+            assertTrue(store.laneSnapshot(lane)["stickyFacts"]!!.jsonArray.isEmpty())
+            assertTrue(store.laneSnapshot(lane)["mcpApprovals"]!!.jsonArray.isEmpty())
+            val events = store.eventsAfter(run, 0).map { it.second.toString() }
+            assertTrue(events.any { it.contains("unknown fields") })
+        } finally { coordinator.close(); store.close() }
+    }
+
     private suspend fun assertRejectedTool(name: String, args: String, expectedError: String) {
         val temp = Files.createTempDirectory("v3-mcp-reject")
         val store = WorkspaceStore(temp.resolve("board.sqlite"))
@@ -105,8 +246,60 @@ class RunCoordinatorMcpTest {
             if (store.isTerminal(runId)) return
             delay(25)
         }
-        error("Run did not finish in time")
+        error("Run did not finish in time: ${store.eventsAfter(runId, 0)}")
     }
+}
+
+private class ScriptedFactsOpenRouter : OpenRouterGateway {
+    private val nextTools = java.util.concurrent.ConcurrentLinkedQueue(listOf(
+        "mcp_tool_1" to """{"key":"preferred_language","value":"русский язык","reason":"Указанное пользователем предпочтение"}""",
+        "mcp_tool_0" to "{}",
+    ))
+    val continuations = java.util.Collections.synchronizedList(mutableListOf<List<JsonObject>>())
+
+    override suspend fun stream(apiKey: String, config: LaneConfig, history: List<ContextMessage>, prompt: String, onText: suspend (String) -> Unit): JsonObject = buildJsonObject { put("provider", "openrouter") }
+
+    override suspend fun toolRound(apiKey: String, config: LaneConfig, messages: List<JsonObject>, tools: List<JsonObject>, onText: suspend (String) -> Unit): OpenRouterToolRound {
+        if (messages.any { it["role"]?.jsonPrimitive?.content == "tool" }) {
+            continuations += messages
+            onText("Проверил сохранённые факты.")
+            return OpenRouterToolRound(buildJsonObject { put("role", "assistant"); put("content", "Проверил сохранённые факты.") }, buildJsonObject { put("provider", "openrouter") })
+        }
+        if (tools.isEmpty()) {
+            continuations += messages
+            onText("Предложение передано пользователю; ожидает подтверждения.")
+            return OpenRouterToolRound(buildJsonObject { put("role", "assistant"); put("content", "Предложение ожидает подтверждения.") }, buildJsonObject { put("provider", "openrouter") })
+        }
+        val script = nextTools.poll() ?: ("mcp_tool_0" to "{}")
+        return OpenRouterToolRound(buildJsonObject {
+            put("role", "assistant"); put("content", kotlinx.serialization.json.JsonNull)
+            put("tool_calls", buildJsonArray { add(buildJsonObject {
+                put("id", "call-${System.nanoTime()}"); put("type", "function")
+                put("function", buildJsonObject { put("name", script.first); put("arguments", if (script.second.isBlank()) "{}" else script.second) })
+            }) })
+        }, buildJsonObject { put("provider", "openrouter") })
+    }
+
+    override fun close() = Unit
+}
+
+private class ParallelFactsOpenRouter : OpenRouterGateway {
+    override suspend fun stream(apiKey: String, config: LaneConfig, history: List<ContextMessage>, prompt: String, onText: suspend (String) -> Unit) = buildJsonObject { put("provider", "openrouter") }
+    override suspend fun toolRound(apiKey: String, config: LaneConfig, messages: List<JsonObject>, tools: List<JsonObject>, onText: suspend (String) -> Unit): OpenRouterToolRound {
+        if (messages.any { it["role"]?.jsonPrimitive?.content == "tool" }) {
+            onText("Ожидает подтверждения пользователя.")
+            return OpenRouterToolRound(buildJsonObject { put("role", "assistant"); put("content", "Ожидает подтверждения.") }, buildJsonObject { put("provider", "openrouter") })
+        }
+        val factValue = messages.last { it["role"]?.jsonPrimitive?.content == "user" }["content"]!!.jsonPrimitive.content
+        return OpenRouterToolRound(buildJsonObject {
+            put("role", "assistant"); put("content", kotlinx.serialization.json.JsonNull)
+            put("tool_calls", buildJsonArray { add(buildJsonObject {
+                put("id", "call-$factValue"); put("type", "function")
+                put("function", buildJsonObject { put("name", "mcp_tool_0"); put("arguments", """{"key":"parallel","value":"$factValue","reason":"test"}""") })
+            }) })
+        }, buildJsonObject { put("provider", "openrouter") })
+    }
+    override fun close() = Unit
 }
 
 private class RecordingOpenRouter(
@@ -127,7 +320,10 @@ private class RecordingOpenRouter(
         toolRoundCalls++
         if (messages.any { it["role"]?.jsonPrimitive?.content == "tool" }) {
             messagesSeenByContinuation += messages
-            assertTrue(messages.any { it["content"]?.jsonPrimitive?.content?.contains("structuredContent") == true || it["content"]?.jsonPrimitive?.content?.contains("Tool error:") == true })
+            assertTrue(messages.any { item ->
+                val content = item["content"]?.jsonPrimitive?.content.orEmpty()
+                content.contains("structuredContent") || content.contains("Tool error:") || content.contains("pending approval")
+            })
             onText("Найдено в локальном каталоге.")
             return OpenRouterToolRound(buildJsonObject { put("role", "assistant"); put("content", "Найдено в локальном каталоге.") }, buildJsonObject { put("provider", "openrouter") })
         }

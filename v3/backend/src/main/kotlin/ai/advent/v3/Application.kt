@@ -345,9 +345,9 @@ fun Application.module(
                             put("name", tool.name); put("description", tool.description); put("inputSchema", tool.inputSchema)
                         }) } })
                     } },
-                    onFailure = { error -> buildJsonObject {
+                    onFailure = { _ -> buildJsonObject {
                         put("id", server.id); put("name", server.name); put("description", server.description); put("status", "error")
-                        put("error", error.message ?: "Не удалось подключиться к MCP-серверу.")
+                        put("error", "Не удалось подключиться к MCP-серверу.")
                         put("tools", kotlinx.serialization.json.JsonArray(emptyList()))
                     } },
                 )
@@ -389,9 +389,87 @@ fun Application.module(
                 call.respond(HttpStatusCode.BadRequest, buildJsonObject { put("error", error.message ?: "Выбор MCP-инструментов некорректен.") })
             } catch (_: IllegalStateException) {
                 call.respond(HttpStatusCode.BadGateway, buildJsonObject { put("error", "Не удалось проверить MCP-сервер или выбранный инструмент.") })
-            } catch (error: Exception) {
-                call.respond(HttpStatusCode.BadGateway, buildJsonObject { put("error", error.message ?: "Не удалось подключиться к MCP-серверу.") })
+            } catch (_: Exception) {
+                call.respond(HttpStatusCode.BadGateway, buildJsonObject { put("error", "Не удалось подключиться к MCP-серверу или проверить его схему.") })
             }
+        }
+
+        patch("/api/lanes/{laneId}/mcp-approval-settings") {
+            val laneId = call.parameters["laneId"]
+            val enabled = runCatching { call.receive<JsonObject>()["autoApprove"]?.jsonPrimitive?.content?.toBooleanStrict() }.getOrNull()
+            if (laneId == null || enabled == null) {
+                call.respond(HttpStatusCode.BadRequest, buildJsonObject { put("error", "Укажи autoApprove: true или false.") })
+                return@patch
+            }
+            try { call.respond(store.setMcpAutoApprove(laneId, enabled)) }
+            catch (_: IllegalStateException) { call.respond(HttpStatusCode.NotFound, buildJsonObject { put("error", "Лента не найдена.") }) }
+        }
+
+        post("/api/lanes/{laneId}/mcp-approvals/{approvalId}") {
+            val laneId = call.parameters["laneId"]
+            val approvalId = call.parameters["approvalId"]
+            val decision = runCatching { call.receive<JsonObject>()["decision"]?.jsonPrimitive?.content }.getOrNull()
+            if (laneId == null || approvalId == null || decision !in setOf("approve", "deny")) {
+                call.respond(HttpStatusCode.BadRequest, buildJsonObject { put("error", "Укажи решение approve или deny.") })
+                return@post
+            }
+            try {
+                if (decision == "deny") {
+                    val approval = store.approval(laneId, approvalId)
+                    if (approval == null) { call.respond(HttpStatusCode.NotFound); return@post }
+                    if (approval["status"]?.jsonPrimitive?.content == "pending") store.finishApproval(laneId, approvalId, "denied", "user")
+                    call.respond(store.boardForLane(laneId))
+                    return@post
+                }
+                val approval = store.claimApproval(laneId, approvalId)
+                if (approval == null) { call.respond(store.boardForLane(laneId)); return@post }
+                try {
+                    val serverId = approval["serverId"]!!.jsonPrimitive.content
+                    val toolName = approval["toolName"]!!.jsonPrimitive.content
+                    val arguments = approval["arguments"]!!.jsonObject
+                    val server = mcpRegistry.server(serverId).let { config ->
+                        if (serverId != "sticky-facts") config else config.copy(environment = config.environment + mapOf(
+                            "AI_ADVENT_V3_BOARD_DB" to store.laneDatabasePath(laneId), "AI_ADVENT_V3_LANE_ID" to laneId,
+                        ))
+                    }
+                    val tool = withContext(Dispatchers.IO) { mcpClient.listTools(server).firstOrNull { it.name == toolName } }
+                        ?: error("Selected MCP tool is no longer registered.")
+                    require(!tool.readOnly) { "Read-only tools cannot be approved for execution." }
+                    McpClient.validateSchema(arguments, tool.inputSchema)
+                    withContext(Dispatchers.IO) { mcpClient.call(server, toolName, arguments) }
+                    store.finishApproval(laneId, approvalId, "approved", "user")
+                } catch (_: Exception) {
+                    store.finishApproval(laneId, approvalId, "failed", "user")
+                }
+                call.respond(store.boardForLane(laneId))
+            } catch (_: IllegalStateException) { call.respond(HttpStatusCode.NotFound, buildJsonObject { put("error", "Лента не найдена.") }) }
+        }
+
+        patch("/api/lanes/{laneId}/facts") {
+            val laneId = call.parameters["laneId"]
+            val payload = runCatching { call.receive<JsonObject>() }.getOrNull()
+            val key = payload?.get("key")?.jsonPrimitive?.contentOrNull
+            val value = payload?.get("value")?.jsonPrimitive?.contentOrNull
+            if (laneId == null || key.isNullOrBlank() || value == null) {
+                call.respond(HttpStatusCode.BadRequest, buildJsonObject { put("error", "Укажи ключ и значение факта.") }); return@patch
+            }
+            try { call.respond(store.editFact(laneId, key, value)) }
+            catch (error: IllegalArgumentException) { call.respond(HttpStatusCode.BadRequest, buildJsonObject { put("error", "Ключ или значение факта превышает допустимую длину.") }) }
+            catch (_: IllegalStateException) { call.respond(HttpStatusCode.NotFound, buildJsonObject { put("error", "Лента не найдена.") }) }
+        }
+
+        delete("/api/lanes/{laneId}/facts/{key}") {
+            val laneId = call.parameters["laneId"]; val key = call.parameters["key"]
+            if (laneId == null || key == null) { call.respond(HttpStatusCode.BadRequest); return@delete }
+            try { call.respond(store.editFact(laneId, key, null)) }
+            catch (_: IllegalStateException) { call.respond(HttpStatusCode.NotFound, buildJsonObject { put("error", "Лента не найдена.") }) }
+        }
+
+        delete("/api/lanes/{laneId}/facts") {
+            val laneId = call.parameters["laneId"]
+            if (laneId == null) { call.respond(HttpStatusCode.BadRequest); return@delete }
+            try { call.respond(store.clearFacts(laneId)) }
+            catch (_: IllegalStateException) { call.respond(HttpStatusCode.NotFound, buildJsonObject { put("error", "Лента не найдена.") }) }
         }
 
         post("/api/openrouter/key") {
