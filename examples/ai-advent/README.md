@@ -13,7 +13,7 @@ node examples/ai-advent/build-seed-pack.mjs
 node examples/ai-advent/import.mjs
 ```
 
-По умолчанию используется `http://127.0.0.1:3001`; адрес можно задать через
+По умолчанию используется `http://127.0.0.1:8787` (порт backend v3); адрес можно задать через
 `BOARD_API_URL`. Чтобы импортировать один файл, передай его имя:
 
 ```sh

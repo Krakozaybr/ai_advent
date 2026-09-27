@@ -4,10 +4,10 @@ import { fileURLToPath } from "node:url";
 
 const root = dirname(fileURLToPath(import.meta.url));
 const boardsDir = join(root, "boards");
-const baseUrl = (process.env.BOARD_API_URL ?? "http://127.0.0.1:3001").replace(/\/$/, "");
+const baseUrl = (process.env.BOARD_API_URL ?? "http://127.0.0.1:8787").replace(/\/$/, "");
 const requestedFile = process.argv[2];
 if (requestedFile === "--help" || requestedFile === "-h") {
-  console.log("Usage: node examples/ai-advent/import.mjs [board-NN.json]\nBOARD_API_URL defaults to http://127.0.0.1:3001");
+  console.log("Usage: node examples/ai-advent/import.mjs [board-NN.json]\nBOARD_API_URL defaults to http://127.0.0.1:8787");
   process.exit(0);
 }
 const files = requestedFile ? [requestedFile] : (await readdir(boardsDir)).filter((name) => /^board-\d+\.json$/.test(name)).sort();
