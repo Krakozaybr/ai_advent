@@ -32,7 +32,7 @@ import java.nio.file.Path
 private val json = Json { ignoreUnknownKeys = true }
 
 fun Application.module(
-    store: BoardStore = BoardStore(Path.of(System.getenv("AI_ADVENT_V3_DB") ?: "v3/data/board.sqlite")),
+    store: WorkspaceStore = WorkspaceStore(Path.of(System.getenv("AI_ADVENT_V3_DB") ?: "v3/data/board.sqlite")),
     codex: CodexGateway = CodexAppServer(),
 ) {
     install(ContentNegotiation) { json(json) }
@@ -46,7 +46,40 @@ fun Application.module(
         }
 
         get("/api/board") {
-            call.respond(store.board())
+            val boardId = call.request.queryParameters["boardId"]
+            val id = boardId ?: store.boards().firstOrNull()?.jsonObject?.get("id")?.jsonPrimitive?.content
+            if (id == null) call.respond(HttpStatusCode.NotFound)
+            else try {
+                call.respond(store.board(id))
+            } catch (_: IllegalStateException) {
+                call.respond(HttpStatusCode.NotFound, buildJsonObject { put("error", "Доска не найдена.") })
+            }
+        }
+
+        get("/api/boards") {
+            call.respond(buildJsonObject { put("boards", store.boards()) })
+        }
+
+        post("/api/boards") {
+            call.respond(HttpStatusCode.Created, store.createBoard())
+        }
+
+        get("/api/boards/{boardId}") {
+            val boardId = call.parameters["boardId"]
+            try {
+                call.respond(store.board(boardId ?: ""))
+            } catch (_: IllegalStateException) {
+                call.respond(HttpStatusCode.NotFound, buildJsonObject { put("error", "Доска не найдена.") })
+            }
+        }
+
+        post("/api/boards/{boardId}/lanes") {
+            val boardId = call.parameters["boardId"]
+            try {
+                call.respond(HttpStatusCode.Created, store.createLane(boardId ?: ""))
+            } catch (_: IllegalStateException) {
+                call.respond(HttpStatusCode.NotFound, buildJsonObject { put("error", "Доска не найдена.") })
+            }
         }
 
         get("/api/codex/status") {

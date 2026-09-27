@@ -10,7 +10,7 @@ import kotlinx.coroutines.sync.Mutex
 import java.util.concurrent.ConcurrentHashMap
 
 class RunCoordinator(
-    private val store: BoardStore,
+    private val store: WorkspaceStore,
     private val codex: CodexGateway,
 ) : AutoCloseable {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)

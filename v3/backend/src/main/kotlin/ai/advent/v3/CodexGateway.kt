@@ -179,8 +179,8 @@ class CodexAppServer(
             "initialize",
             buildJsonObject {
                 put("clientInfo", buildJsonObject {
-                    put("name", "ai_advent_v3")
-                    put("title", "AI Advent v3")
+                    put("name", "local_workspace_v3")
+                    put("title", "Local Workspace v3")
                     put("version", "0.1.0")
                 })
             },
@@ -254,7 +254,7 @@ class CodexAppServer(
                 })
                 else -> put("error", buildJsonObject {
                     put("code", -32000)
-                    put("message", "AI Advent does not execute Codex side effects")
+                    put("message", "Local workspace does not execute Codex side effects")
                 })
             }
         }

@@ -21,7 +21,7 @@ data class StartedRun(val boardId: String, val laneId: String, val runId: String
 
 class ActiveRunException : IllegalStateException("A request is already running in this lane")
 
-class BoardStore(private val file: Path) : Closeable {
+class BoardStore(private val file: Path, private val initialBoardTitle: String = "Доска") : Closeable {
     private val lock = Any()
 
     init {
@@ -91,7 +91,7 @@ class BoardStore(private val file: Path) : Closeable {
                         "ON runs(lane_id) WHERE status = 'running'",
                 )
             }
-            ensureBoard(db)
+            ensureBoard(db, initialBoardTitle)
             markInterruptedRuns(db)
         }
     }
@@ -134,14 +134,42 @@ class BoardStore(private val file: Path) : Closeable {
         }
     }
 
-    fun firstLaneId(): String = synchronized(lock) {
+    fun createLane(): String = synchronized(lock) {
         connect().use { db ->
-            db.createStatement().use { statement ->
-                statement.executeQuery("SELECT id FROM lanes ORDER BY created_at LIMIT 1").use { result ->
-                    check(result.next()) { "Board has no lane" }
+            val boardId = db.createStatement().use { statement ->
+                statement.executeQuery("SELECT id FROM boards LIMIT 1").use { result ->
+                    check(result.next()) { "Board has not been initialized" }
                     result.getString("id")
                 }
             }
+            val count = db.prepareStatement("SELECT COUNT(*) FROM lanes WHERE board_id = ?").use { query ->
+                query.setString(1, boardId)
+                query.executeQuery().use { result -> result.next(); result.getInt(1) }
+            }
+            val laneId = UUID.randomUUID().toString()
+            db.prepareStatement("INSERT INTO lanes(id, board_id, title, created_at) VALUES (?, ?, ?, ?)").use { query ->
+                query.setString(1, laneId)
+                query.setString(2, boardId)
+                query.setString(3, "Лента ${count + 1}")
+                query.setString(4, Instant.now().toString())
+                query.executeUpdate()
+            }
+            laneId
+        }
+    }
+
+    fun hasLane(laneId: String): Boolean = synchronized(lock) {
+        connect().use { db ->
+            db.prepareStatement("SELECT 1 FROM lanes WHERE id = ?").use { query ->
+                query.setString(1, laneId)
+                query.executeQuery().use { it.next() }
+            }
+        }
+    }
+
+    fun renameLegacyBoard() = synchronized(lock) {
+        connect().use { db ->
+            db.prepareStatement("UPDATE boards SET title = 'Доска 1' WHERE title = 'AI Advent'").use { it.executeUpdate() }
         }
     }
 
@@ -394,7 +422,7 @@ class BoardStore(private val file: Path) : Closeable {
         }
     }
 
-    private fun ensureBoard(db: Connection) {
+    private fun ensureBoard(db: Connection, title: String) {
         val exists = db.createStatement().use { statement ->
             statement.executeQuery("SELECT 1 FROM boards LIMIT 1").use { it.next() }
         }
@@ -402,9 +430,10 @@ class BoardStore(private val file: Path) : Closeable {
         val now = Instant.now().toString()
         val boardId = UUID.randomUUID().toString()
         val laneId = UUID.randomUUID().toString()
-        db.prepareStatement("INSERT INTO boards(id, title, created_at) VALUES (?, 'AI Advent', ?)").use { query ->
+        db.prepareStatement("INSERT INTO boards(id, title, created_at) VALUES (?, ?, ?)").use { query ->
             query.setString(1, boardId)
-            query.setString(2, now)
+            query.setString(2, title)
+            query.setString(3, now)
             query.executeUpdate()
         }
         db.prepareStatement("INSERT INTO lanes(id, board_id, title, created_at) VALUES (?, ?, 'Лента 1', ?)").use { query ->
