@@ -1,6 +1,7 @@
 import { FormEvent, useCallback, useEffect, useRef, useState } from "react";
 import { applyRunEvent, emptyRunState, RunEvent, RunState } from "./run-state.mjs";
 import { chooseBoardId } from "./workspace-state.mjs";
+import { describeLaneOrigin } from "./lane-lineage.mjs";
 
 type Message = {
   id: string;
@@ -8,6 +9,7 @@ type Message = {
   content: string;
   runStatus?: string;
   runError?: string;
+  hasBranches?: boolean;
 };
 
 type Lane = {
@@ -15,6 +17,9 @@ type Lane = {
   title: string;
   messages: Message[];
   activeRun: { id: string; sequence: number } | null;
+  originKind?: "branch" | "clone";
+  originLaneId?: string;
+  originMessage?: Message;
 };
 
 type BoardSummary = { id: string; title: string };
@@ -106,6 +111,30 @@ export function BoardChat() {
     }
   }
 
+  async function createBranch(laneId: string, messageId: string) {
+    if (!activeBoardId) return;
+    setError(null);
+    try {
+      setBoard(await readJson<BoardResponse>(`/api/lanes/${encodeURIComponent(laneId)}/branches`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ messageId }),
+      }));
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : "Не удалось создать ветку");
+    }
+  }
+
+  async function cloneLane(laneId: string) {
+    if (!activeBoardId) return;
+    setError(null);
+    try {
+      setBoard(await readJson<BoardResponse>(`/api/lanes/${encodeURIComponent(laneId)}/clone`, { method: "POST" }));
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : "Не удалось клонировать ленту");
+    }
+  }
+
   async function startLogin() {
     setError(null);
     try {
@@ -152,7 +181,14 @@ export function BoardChat() {
         {board && board.board.id === activeBoardId ? (
           <div className="lanes" key={board.board.id}>
             {board.lanes.map((lane) => (
-              <LaneView key={lane.id} lane={lane} authenticated={Boolean(codex?.authenticated)} onRefresh={() => refreshBoard(board.board.id)} />
+              <LaneView
+                key={lane.id}
+                lane={lane}
+                authenticated={Boolean(codex?.authenticated)}
+                onRefresh={() => refreshBoard(board.board.id)}
+                onBranch={(messageId) => void createBranch(lane.id, messageId)}
+                onClone={() => void cloneLane(lane.id)}
+              />
             ))}
             <button className="new-lane" onClick={() => void createLane()}><span>＋</span> Добавить ленту</button>
           </div>
@@ -162,7 +198,13 @@ export function BoardChat() {
   );
 }
 
-function LaneView({ lane, authenticated, onRefresh }: { lane: Lane; authenticated: boolean; onRefresh: () => Promise<BoardResponse> }) {
+function LaneView({ lane, authenticated, onRefresh, onBranch, onClone }: {
+  lane: Lane;
+  authenticated: boolean;
+  onRefresh: () => Promise<BoardResponse>;
+  onBranch: (messageId: string) => void;
+  onClone: () => void;
+}) {
   const [message, setMessage] = useState("");
   const [runState, setRunState] = useState<RunState>(emptyRunState());
   const [runId, setRunId] = useState<string | null>(null);
@@ -238,13 +280,24 @@ function LaneView({ lane, authenticated, onRefresh }: { lane: Lane; authenticate
 
   return (
     <article className="lane">
-      <div className="lane-heading"><span className="lane-dot" /><h2>{lane.title}</h2><span className="lane-provider">CODEX</span></div>
+      <div className="lane-heading"><span className="lane-dot" /><h2>{lane.title}</h2><span className="lane-provider">CODEX</span><button className="lane-clone" type="button" onClick={onClone} disabled={running}>Клон</button></div>
+      {lane.originKind && (
+        <div className={`lane-origin ${lane.originKind}`}>
+          <span aria-hidden="true">↳</span>
+          <span>{describeLaneOrigin(lane.originKind, lane.originMessage?.content).label}</span>
+          {lane.originMessage?.content && <q>{describeLaneOrigin(lane.originKind, lane.originMessage.content).excerpt}</q>}
+        </div>
+      )}
       <div className="lane-messages" aria-live="polite">
         {lane.messages.filter((item) => !(item.role === "assistant" && item.runStatus === "running")).map((item) => (
           <article className={`message ${item.role}`} key={item.id}>
             <div className="message-label">{item.role === "user" ? "ТЫ" : "CODEX"}</div>
             <div className="message-content">{item.content}</div>
             {item.runStatus === "failed" && <p className="message-error">{item.runError ?? "Ответ не завершён."}</p>}
+            <div className="message-actions">
+              {item.hasBranches && <span className="branch-existing">Есть ветка</span>}
+              <button type="button" onClick={() => onBranch(item.id)} disabled={running}>Ответвиться здесь</button>
+            </div>
           </article>
         ))}
         {runId && runState.status === "running" && runState.answer && (

@@ -20,6 +20,8 @@ import kotlin.test.assertEquals
 import kotlin.test.assertFalse
 import kotlin.test.assertTrue
 import java.nio.file.Files
+import java.sql.DriverManager
+import java.util.concurrent.atomic.AtomicInteger
 
 class ApplicationTest {
     @Test
@@ -54,7 +56,7 @@ class ApplicationTest {
         val restored = WorkspaceStore(database)
         val restoredBoardId = restored.boards()[0].jsonObject["id"]!!.jsonPrimitive.content
         val restoredLane = restored.board(restoredBoardId)["lanes"]!!.jsonArray[0].jsonObject
-        assertEquals("fake-codex-thread", restoredLane["codexThreadId"]!!.jsonPrimitive.content)
+        assertEquals("fake-codex-thread-1", restoredLane["codexThreadId"]!!.jsonPrimitive.content)
         assertEquals(messages.size, restoredLane["messages"]!!.jsonArray.size)
         restored.close()
     }
@@ -74,6 +76,15 @@ class ApplicationTest {
         }
         assertEquals(HttpStatusCode.Accepted, first.status)
         fake.started.await()
+        val activeBoard = client.get("/api/board").bodyAsText().let(Json::parseToJsonElement).jsonObject
+        val activeMessageId = activeBoard["lanes"]!!.jsonArray[0].jsonObject["messages"]!!.jsonArray[0]
+            .jsonObject["id"]!!.jsonPrimitive.content
+        val branchDuringRun = client.post("/api/lanes/$laneId/branches") {
+            header(HttpHeaders.ContentType, ContentType.Application.Json.toString())
+            setBody("""{"messageId":"$activeMessageId"}""")
+        }
+        assertEquals(HttpStatusCode.Conflict, branchDuringRun.status)
+        assertEquals(HttpStatusCode.Conflict, client.post("/api/lanes/$laneId/clone").status)
         val second = client.post("/api/lanes/$laneId/messages") {
             header(HttpHeaders.ContentType, ContentType.Application.Json.toString())
             setBody("""{"text":"Второй запрос"}""")
@@ -103,6 +114,12 @@ class ApplicationTest {
 
         assertTrue(stream.contains("\"type\":\"run.failed\""))
         assertFalse(stream.contains("\"type\":\"run.completed\""))
+        val copy = client.post("/api/lanes/$laneId/clone").bodyAsText()
+            .let(Json::parseToJsonElement).jsonObject
+        val copiedAnswer = copy["lanes"]!!.jsonArray[1].jsonObject["messages"]!!.jsonArray[1].jsonObject
+        assertEquals("partial", copiedAnswer["content"]!!.jsonPrimitive.content)
+        assertEquals("failed", copiedAnswer["runStatus"]!!.jsonPrimitive.content)
+        assertEquals("Fake Codex failure", copiedAnswer["runError"]!!.jsonPrimitive.content)
     }
     @Test
     fun `test creating a board retains the original SQLite database`() = testApplication {
@@ -167,6 +184,150 @@ class ApplicationTest {
         fake.release.complete(Unit)
         fake.finished.await()
     }
+
+    @Test
+    fun `test branch and clone keep independent snapshots and seed Codex from visible history`() = testApplication {
+        val database = Files.createTempDirectory("ai-advent-v3-copy-").resolve("board.sqlite")
+        val store = WorkspaceStore(database)
+        val fake = FakeCodexAppServer()
+        application { module(store, fake) }
+        val board = client.get("/api/board").bodyAsText().let(Json::parseToJsonElement).jsonObject
+        val boardId = board["board"]!!.jsonObject["id"]!!.jsonPrimitive.content
+        val sourceId = board["lanes"]!!.jsonArray[0].jsonObject["id"]!!.jsonPrimitive.content
+
+        suspend fun sendAndWait(laneId: String, prompt: String) {
+            val response = client.post("/api/lanes/$laneId/messages") {
+                header(HttpHeaders.ContentType, ContentType.Application.Json.toString())
+                setBody("""{"text":"$prompt"}""")
+            }
+            assertEquals(HttpStatusCode.Accepted, response.status)
+            val runId = response.bodyAsText().let(Json::parseToJsonElement).jsonObject["runId"]!!.jsonPrimitive.content
+            val deadline = System.nanoTime() + 5_000_000_000
+            while (!store.isTerminal(runId) && System.nanoTime() < deadline) delay(10)
+            assertTrue(store.isTerminal(runId), "run $prompt did not finish")
+        }
+
+        sendAndWait(sourceId, "Первый вопрос")
+        sendAndWait(sourceId, "Второй вопрос")
+        val originalBoard = client.get("/api/boards/$boardId").bodyAsText().let(Json::parseToJsonElement).jsonObject
+        val sourceMessages = originalBoard["lanes"]!!.jsonArray[0].jsonObject["messages"]!!.jsonArray
+        val branchPointId = sourceMessages[1].jsonObject["id"]!!.jsonPrimitive.content
+
+        val branchResponse = client.post("/api/lanes/$sourceId/branches") {
+            header(HttpHeaders.ContentType, ContentType.Application.Json.toString())
+            setBody("""{"messageId":"$branchPointId"}""")
+        }
+        assertEquals(HttpStatusCode.Created, branchResponse.status)
+        val branchBoard = branchResponse.bodyAsText().let(Json::parseToJsonElement).jsonObject
+        val branch = branchBoard["lanes"]!!.jsonArray[1].jsonObject
+        val branchId = branch["id"]!!.jsonPrimitive.content
+        val branchMessages = branch["messages"]!!.jsonArray
+        assertEquals(2, branchMessages.size)
+        assertEquals(sourceMessages.take(2).map { it.jsonObject["content"] }, branchMessages.map { it.jsonObject["content"] })
+        assertTrue(sourceMessages.take(2).map { it.jsonObject["id"] }.none { sourceIdValue ->
+            branchMessages.any { it.jsonObject["id"] == sourceIdValue }
+        })
+        assertEquals("branch", branch["originKind"]!!.jsonPrimitive.content)
+        assertEquals(branchPointId, branch["originMessageId"]!!.jsonPrimitive.content)
+
+        val cloneResponse = client.post("/api/lanes/$sourceId/clone")
+        assertEquals(HttpStatusCode.Created, cloneResponse.status)
+        val cloneBoard = cloneResponse.bodyAsText().let(Json::parseToJsonElement).jsonObject
+        val clone = cloneBoard["lanes"]!!.jsonArray[2].jsonObject
+        val cloneId = clone["id"]!!.jsonPrimitive.content
+        val cloneMessages = clone["messages"]!!.jsonArray
+        assertEquals(sourceMessages.map { it.jsonObject["content"] }, cloneMessages.map { it.jsonObject["content"] })
+        assertTrue(cloneMessages.map { it.jsonObject["id"] }.none { cloneMessageId ->
+            sourceMessages.any { it.jsonObject["id"] == cloneMessageId }
+        })
+        assertEquals("clone", clone["originKind"]!!.jsonPrimitive.content)
+
+        sendAndWait(sourceId, "Только родитель")
+        sendAndWait(branchId, "Только ветка")
+        sendAndWait(cloneId, "Только клон")
+        val finalBoard = client.get("/api/boards/$boardId").bodyAsText().let(Json::parseToJsonElement).jsonObject
+        val lanes = finalBoard["lanes"]!!.jsonArray
+        assertEquals(6, lanes[0].jsonObject["messages"]!!.jsonArray.size)
+        assertEquals(4, lanes[1].jsonObject["messages"]!!.jsonArray.size)
+        assertEquals(6, lanes[2].jsonObject["messages"]!!.jsonArray.size)
+        assertEquals("Только родитель", lanes[0].jsonObject["messages"]!!.jsonArray[4].jsonObject["content"]!!.jsonPrimitive.content)
+        assertEquals("Только ветка", lanes[1].jsonObject["messages"]!!.jsonArray[2].jsonObject["content"]!!.jsonPrimitive.content)
+        assertEquals("Только клон", lanes[2].jsonObject["messages"]!!.jsonArray[4].jsonObject["content"]!!.jsonPrimitive.content)
+
+        val seededBranch = fake.runs.single { it.prompt == "Только ветка" }
+        assertEquals(listOf("Первый вопрос", "Привет, мир"), seededBranch.contextToSeed.map { it.content })
+        assertTrue(seededBranch.shouldSeedContext)
+        val seededClone = fake.runs.single { it.prompt == "Только клон" }
+        assertEquals(listOf("Первый вопрос", "Привет, мир", "Второй вопрос", "Привет, мир"), seededClone.contextToSeed.map { it.content })
+        assertTrue(seededClone.shouldSeedContext)
+        val resumedParent = fake.runs.single { it.prompt == "Только родитель" }
+        assertFalse(resumedParent.shouldSeedContext)
+        assertEquals(3, listOf(seededBranch.threadId, seededClone.threadId, resumedParent.threadId).toSet().size)
+    }
+
+    @Test
+    fun `test a failed history seed starts a clean Codex thread on retry`() = testApplication {
+        val database = Files.createTempDirectory("ai-advent-v3-seed-retry-").resolve("board.sqlite")
+        val store = WorkspaceStore(database)
+        val fake = FakeCodexAppServer()
+        application { module(store, fake) }
+        val board = client.get("/api/board").bodyAsText().let(Json::parseToJsonElement).jsonObject
+        val boardId = board["board"]!!.jsonObject["id"]!!.jsonPrimitive.content
+        val sourceId = board["lanes"]!!.jsonArray[0].jsonObject["id"]!!.jsonPrimitive.content
+
+        suspend fun send(laneId: String, prompt: String) {
+            val response = client.post("/api/lanes/$laneId/messages") {
+                header(HttpHeaders.ContentType, ContentType.Application.Json.toString())
+                setBody("""{"text":"$prompt"}""")
+            }
+            assertEquals(HttpStatusCode.Accepted, response.status)
+            val runId = response.bodyAsText().let(Json::parseToJsonElement).jsonObject["runId"]!!.jsonPrimitive.content
+            val deadline = System.nanoTime() + 5_000_000_000
+            while (!store.isTerminal(runId) && System.nanoTime() < deadline) delay(10)
+            assertTrue(store.isTerminal(runId), "run $prompt did not finish")
+        }
+
+        send(sourceId, "Original transcript")
+        val clone = client.post("/api/lanes/$sourceId/clone").bodyAsText()
+            .let(Json::parseToJsonElement).jsonObject["lanes"]!!.jsonArray[1].jsonObject
+        val cloneId = clone["id"]!!.jsonPrimitive.content
+        fake.failNextSeed = true
+        send(cloneId, "Первая попытка")
+        val failedSeed = fake.runs.single { it.prompt == "Первая попытка" }
+        assertTrue(failedSeed.shouldSeedContext)
+
+        send(cloneId, "Повтор после сбоя")
+        val retry = fake.runs.single { it.prompt == "Повтор после сбоя" }
+        assertTrue(retry.shouldSeedContext)
+        assertEquals(listOf("Original transcript", "Привет, мир", "Первая попытка"), retry.contextToSeed.map { it.content })
+        assertTrue(retry.threadId != failedSeed.threadId)
+        val final = client.get("/api/boards/$boardId").bodyAsText().let(Json::parseToJsonElement).jsonObject
+        assertEquals(6, final["lanes"]!!.jsonArray[1].jsonObject["messages"]!!.jsonArray.size)
+    }
+
+    @Test
+    fun `test old board database migrates without replacing its lane or messages`() {
+        val database = Files.createTempDirectory("ai-advent-v3-migration-").resolve("board.sqlite")
+        Class.forName("org.sqlite.JDBC")
+        DriverManager.getConnection("jdbc:sqlite:$database").use { db ->
+            db.createStatement().use { statement ->
+                statement.execute("CREATE TABLE boards(id TEXT PRIMARY KEY, title TEXT NOT NULL, created_at TEXT NOT NULL)")
+                statement.execute("CREATE TABLE lanes(id TEXT PRIMARY KEY, board_id TEXT NOT NULL REFERENCES boards(id), title TEXT NOT NULL, codex_thread_id TEXT, created_at TEXT NOT NULL)")
+                statement.execute("CREATE TABLE messages(id TEXT PRIMARY KEY, lane_id TEXT NOT NULL REFERENCES lanes(id), role TEXT NOT NULL, content TEXT NOT NULL, run_id TEXT, created_at TEXT NOT NULL)")
+                statement.execute("INSERT INTO boards VALUES ('old-board', 'Старая доска', '2026-01-01T00:00:00Z')")
+                statement.execute("INSERT INTO lanes VALUES ('old-lane', 'old-board', 'Лента 1', 'old-thread', '2026-01-01T00:00:00Z')")
+                statement.execute("INSERT INTO messages VALUES ('old-message', 'old-lane', 'user', 'Не теряй меня', NULL, '2026-01-01T00:00:00Z')")
+            }
+        }
+
+        val store = WorkspaceStore(database)
+        val lane = store.board("old-board")["lanes"]!!.jsonArray.single().jsonObject
+        assertEquals("old-lane", lane["id"]!!.jsonPrimitive.content)
+        assertEquals("old-thread", lane["codexThreadId"]!!.jsonPrimitive.content)
+        assertEquals("Не теряй меня", lane["messages"]!!.jsonArray.single().jsonObject["content"]!!.jsonPrimitive.content)
+        assertTrue(lane["originKind"] == null)
+        store.close()
+    }
 }
 
 private class FakeCodexAppServer(
@@ -180,6 +341,9 @@ private class FakeCodexAppServer(
     val finished = CompletableDeferred<Unit>()
     private var startedCount = 0
     private var finishedCount = 0
+    private val nextThreadId = AtomicInteger()
+    val runs = java.util.Collections.synchronizedList(mutableListOf<CapturedRun>())
+    var failNextSeed = false
 
     override suspend fun status() = CodexStatus(authenticated = true, planType = "pro")
 
@@ -188,10 +352,22 @@ private class FakeCodexAppServer(
     override suspend fun stream(
         threadId: String?,
         prompt: String,
+        contextToSeed: List<ContextMessage>,
+        shouldSeedContext: Boolean,
         onThreadId: suspend (String) -> Unit,
+        onContextSeeded: suspend () -> Unit,
+        onContextSeedFailed: suspend () -> Unit,
         onText: suspend (String) -> Unit,
     ) {
-        onThreadId(threadId ?: "fake-codex-thread")
+        val resolvedThreadId = threadId ?: "fake-codex-thread-${nextThreadId.incrementAndGet()}"
+        onThreadId(resolvedThreadId)
+        runs += CapturedRun(resolvedThreadId, prompt, contextToSeed, shouldSeedContext)
+        if (shouldSeedContext && failNextSeed) {
+            failNextSeed = false
+            onContextSeedFailed()
+            error("Fake Codex context injection failed")
+        }
+        if (shouldSeedContext) onContextSeeded()
         synchronized(this) {
             startedCount += 1
             started.complete(Unit)
@@ -199,7 +375,10 @@ private class FakeCodexAppServer(
         }
         try {
             if (blockUntilReleased) release.await()
-            if (failTurn) error("Fake Codex failure")
+            if (failTurn) {
+                onText("partial")
+                error("Fake Codex failure")
+            }
             onText("Привет, ")
             delay(20)
             onText("мир")
@@ -212,4 +391,11 @@ private class FakeCodexAppServer(
     }
 
     override fun close() = Unit
+
+    data class CapturedRun(
+        val threadId: String,
+        val prompt: String,
+        val contextToSeed: List<ContextMessage>,
+        val shouldSeedContext: Boolean,
+    )
 }

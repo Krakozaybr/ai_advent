@@ -40,7 +40,11 @@ interface CodexGateway : Closeable {
     suspend fun stream(
         threadId: String?,
         prompt: String,
+        contextToSeed: List<ContextMessage>,
+        shouldSeedContext: Boolean,
         onThreadId: suspend (String) -> Unit,
+        onContextSeeded: suspend () -> Unit,
+        onContextSeedFailed: suspend () -> Unit,
         onText: suspend (String) -> Unit,
     )
 }
@@ -87,7 +91,11 @@ class CodexAppServer(
     override suspend fun stream(
         threadId: String?,
         prompt: String,
+        contextToSeed: List<ContextMessage>,
+        shouldSeedContext: Boolean,
         onThreadId: suspend (String) -> Unit,
+        onContextSeeded: suspend () -> Unit,
+        onContextSeedFailed: suspend () -> Unit,
         onText: suspend (String) -> Unit,
     ) {
         ensureStarted()
@@ -102,6 +110,41 @@ class CodexAppServer(
         val thread = request(threadMethod, threadParams)
             .getValue("thread").jsonObject.getValue("id").jsonPrimitive.content
         onThreadId(thread)
+
+        if (shouldSeedContext) {
+            try {
+                if (contextToSeed.isNotEmpty()) {
+                    request(
+                        "thread/inject_items",
+                        buildJsonObject {
+                            put("threadId", thread)
+                            put("items", kotlinx.serialization.json.buildJsonArray {
+                                contextToSeed.forEach { message ->
+                                    add(buildJsonObject {
+                                        put("type", "message")
+                                        put("role", message.role)
+                                        put("content", kotlinx.serialization.json.buildJsonArray {
+                                            add(buildJsonObject {
+                                                put("type", if (message.role == "user") "input_text" else "output_text")
+                                                put("text", message.content)
+                                            })
+                                        })
+                                    })
+                                }
+                            })
+                        },
+                    )
+                }
+                onContextSeeded()
+            } catch (error: Exception) {
+                try {
+                    onContextSeedFailed()
+                } catch (_: Exception) {
+                    // Preserve the injection error; the next attempt can still be made.
+                }
+                throw error
+            }
+        }
 
         val events = Channel<JsonObject>(Channel.UNLIMITED)
         check(listeners.putIfAbsent(thread, events) == null) { "Codex thread already has an active run" }
@@ -174,19 +217,19 @@ class CodexAppServer(
                     pending.clear()
                 }
             }
+            request(
+                "initialize",
+                buildJsonObject {
+                    put("clientInfo", buildJsonObject {
+                        put("name", "local_workspace_v3")
+                        put("title", "Local Workspace v3")
+                        put("version", "0.1.0")
+                    })
+                },
+            )
+            notify("initialized", buildJsonObject {})
+            initialized = true
         }
-        request(
-            "initialize",
-            buildJsonObject {
-                put("clientInfo", buildJsonObject {
-                    put("name", "local_workspace_v3")
-                    put("title", "Local Workspace v3")
-                    put("version", "0.1.0")
-                })
-            },
-        )
-        notify("initialized", buildJsonObject {})
-        initialized = true
     }
 
     private suspend fun request(method: String, params: JsonObject): JsonObject {

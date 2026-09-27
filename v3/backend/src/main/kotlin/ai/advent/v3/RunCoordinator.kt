@@ -28,7 +28,11 @@ class RunCoordinator(
                     codex.stream(
                         threadId = run.threadId,
                         prompt = prompt,
+                        contextToSeed = run.contextToSeed,
+                        shouldSeedContext = run.shouldSeedContext,
                         onThreadId = { store.saveThread(laneId, it) },
+                        onContextSeeded = { store.markContextSeeded(laneId) },
+                        onContextSeedFailed = { store.markContextSeedFailed(laneId) },
                         onText = { store.appendText(run.runId, it) },
                     )
                     store.completeRun(run.runId)

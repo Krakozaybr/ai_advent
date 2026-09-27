@@ -46,8 +46,22 @@ class WorkspaceStore(private val originalFile: Path) : Closeable {
         boardStore.board()
     }
 
+    fun branchLane(laneId: String, messageId: String): JsonObject = synchronized(lock) {
+        val boardStore = storeForLane(laneId)
+        boardStore.branchLane(laneId, messageId)
+        boardStore.board()
+    }
+
+    fun cloneLane(laneId: String): JsonObject = synchronized(lock) {
+        val boardStore = storeForLane(laneId)
+        boardStore.cloneLane(laneId)
+        boardStore.board()
+    }
+
     fun startRun(laneId: String, prompt: String): StartedRun = storeForLane(laneId).startRun(laneId, prompt)
     fun saveThread(laneId: String, threadId: String) = storeForLane(laneId).saveThread(laneId, threadId)
+    fun markContextSeeded(laneId: String) = storeForLane(laneId).markContextSeeded(laneId)
+    fun markContextSeedFailed(laneId: String) = storeForLane(laneId).markContextSeedFailed(laneId)
     fun appendText(runId: String, delta: String) = storeForRun(runId).appendText(runId, delta)
     fun completeRun(runId: String) = storeForRun(runId).completeRun(runId)
     fun failRun(runId: String, reason: String) = storeForRun(runId).failRun(runId, reason)

@@ -82,6 +82,43 @@ fun Application.module(
             }
         }
 
+        post("/api/lanes/{laneId}/branches") {
+            val laneId = call.parameters["laneId"]
+            val messageId = try {
+                call.receive<JsonObject>()["messageId"]?.jsonPrimitive?.contentOrNull
+            } catch (_: Exception) {
+                null
+            }
+            if (laneId == null || messageId.isNullOrBlank()) {
+                call.respond(HttpStatusCode.BadRequest, buildJsonObject { put("error", "Не выбрано сообщение для ветки.") })
+                return@post
+            }
+            try {
+                call.respond(HttpStatusCode.Created, store.branchLane(laneId, messageId))
+            } catch (error: IllegalStateException) {
+                val status = if (error.message?.contains("running") == true) HttpStatusCode.Conflict else HttpStatusCode.NotFound
+                call.respond(status, buildJsonObject {
+                    put("error", if (status == HttpStatusCode.Conflict) "Дождись завершения запроса перед копированием ленты." else "Лента или сообщение не найдены.")
+                })
+            }
+        }
+
+        post("/api/lanes/{laneId}/clone") {
+            val laneId = call.parameters["laneId"]
+            if (laneId == null) {
+                call.respond(HttpStatusCode.NotFound)
+                return@post
+            }
+            try {
+                call.respond(HttpStatusCode.Created, store.cloneLane(laneId))
+            } catch (error: IllegalStateException) {
+                val status = if (error.message?.contains("running") == true) HttpStatusCode.Conflict else HttpStatusCode.NotFound
+                call.respond(status, buildJsonObject {
+                    put("error", if (status == HttpStatusCode.Conflict) "Дождись завершения запроса перед копированием ленты." else "Лента не найдена.")
+                })
+            }
+        }
+
         get("/api/codex/status") {
             try {
                 val status = codex.status()

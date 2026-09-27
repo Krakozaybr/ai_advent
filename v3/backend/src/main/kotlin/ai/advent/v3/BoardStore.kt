@@ -15,7 +15,26 @@ import java.sql.SQLException
 import java.time.Instant
 import java.util.UUID
 
-data class StartedRun(val boardId: String, val laneId: String, val runId: String, val threadId: String?) {
+data class ContextMessage(val role: String, val content: String)
+
+private data class CopyableMessage(
+    val id: String,
+    val role: String,
+    val content: String,
+    val runStatus: String?,
+    val runStartedAt: String?,
+    val runCompletedAt: String?,
+    val runError: String?,
+)
+
+data class StartedRun(
+    val boardId: String,
+    val laneId: String,
+    val runId: String,
+    val threadId: String?,
+    val contextToSeed: List<ContextMessage>,
+    val shouldSeedContext: Boolean,
+) {
     override fun toString(): String = super.toString()
 }
 
@@ -91,6 +110,10 @@ class BoardStore(private val file: Path, private val initialBoardTitle: String =
                         "ON runs(lane_id) WHERE status = 'running'",
                 )
             }
+            ensureColumn(db, "lanes", "origin_lane_id", "TEXT")
+            ensureColumn(db, "lanes", "origin_message_id", "TEXT")
+            ensureColumn(db, "lanes", "origin_kind", "TEXT")
+            ensureColumn(db, "lanes", "codex_context_seeded", "INTEGER NOT NULL DEFAULT 1")
             ensureBoard(db, initialBoardTitle)
             markInterruptedRuns(db)
         }
@@ -111,7 +134,8 @@ class BoardStore(private val file: Path, private val initialBoardTitle: String =
             }
             val lanes = mutableListOf<JsonObject>()
             db.prepareStatement(
-                "SELECT id, title, codex_thread_id FROM lanes WHERE board_id = ? ORDER BY created_at",
+                "SELECT id, title, codex_thread_id, origin_lane_id, origin_message_id, origin_kind " +
+                    "FROM lanes WHERE board_id = ? ORDER BY created_at, rowid",
             ).use { query ->
                 query.setString(1, board["id"]!!.jsonPrimitive.content)
                 query.executeQuery().use { result ->
@@ -121,6 +145,15 @@ class BoardStore(private val file: Path, private val initialBoardTitle: String =
                             put("id", laneId)
                             put("title", result.getString("title"))
                             result.getString("codex_thread_id")?.let { put("codexThreadId", it) }
+                            result.getString("origin_lane_id")?.let { put("originLaneId", it) }
+                            result.getString("origin_message_id")?.let { put("originMessageId", it) }
+                            result.getString("origin_kind")?.let { put("originKind", it) }
+                            result.getString("origin_lane_id")?.let { originLaneId ->
+                                val originMessageId = result.getString("origin_message_id")
+                                if (originMessageId != null) {
+                                    put("originMessage", message(db, originLaneId, originMessageId) ?: JsonNull)
+                                }
+                            }
                             put("messages", messages(db, laneId))
                             put("activeRun", activeRun(db, laneId) ?: JsonNull)
                         }
@@ -158,6 +191,124 @@ class BoardStore(private val file: Path, private val initialBoardTitle: String =
         }
     }
 
+    fun branchLane(sourceLaneId: String, messageId: String): String = synchronized(lock) {
+        copyLane(sourceLaneId, messageId, "branch")
+    }
+
+    fun cloneLane(sourceLaneId: String): String = synchronized(lock) {
+        copyLane(sourceLaneId, null, "clone")
+    }
+
+    private fun copyLane(sourceLaneId: String, throughMessageId: String?, kind: String): String {
+        connect().use { db ->
+            db.autoCommit = false
+            try {
+                val source = db.prepareStatement(
+                    "SELECT board_id, title FROM lanes WHERE id = ?",
+                ).use { query ->
+                    query.setString(1, sourceLaneId)
+                    query.executeQuery().use { result ->
+                        check(result.next()) { "Unknown lane" }
+                        result.getString("board_id") to result.getString("title")
+                    }
+                }
+                check(!hasActiveRun(db, sourceLaneId)) { "Cannot copy a lane while a request is running" }
+                val selectedMessageExists = throughMessageId == null || db.prepareStatement(
+                    "SELECT 1 FROM messages WHERE id = ? AND lane_id = ?",
+                ).use { query ->
+                    query.setString(1, throughMessageId)
+                    query.setString(2, sourceLaneId)
+                    query.executeQuery().use { it.next() }
+                }
+                check(selectedMessageExists) { "Unknown message" }
+                val count = db.prepareStatement("SELECT COUNT(*) FROM lanes WHERE board_id = ?").use { query ->
+                    query.setString(1, source.first)
+                    query.executeQuery().use { result -> result.next(); result.getInt(1) }
+                }
+                val laneId = UUID.randomUUID().toString()
+                db.prepareStatement(
+                    "INSERT INTO lanes(id, board_id, title, created_at, origin_lane_id, origin_message_id, " +
+                        "origin_kind, codex_context_seeded) VALUES (?, ?, ?, ?, ?, ?, ?, 0)",
+                ).use { query ->
+                    query.setString(1, laneId)
+                    query.setString(2, source.first)
+                    query.setString(3, "${source.second} · ${if (kind == "branch") "ветка" else "клон"} ${count + 1}")
+                    query.setString(4, Instant.now().toString())
+                    query.setString(5, sourceLaneId)
+                    query.setString(6, throughMessageId)
+                    query.setString(7, kind)
+                    query.executeUpdate()
+                }
+                val sourceMessages = db.prepareStatement(
+                    """SELECT m.id, m.role, m.content, r.status, r.started_at, r.completed_at, r.error
+                       FROM messages m LEFT JOIN runs r ON r.id = m.run_id
+                       WHERE m.lane_id = ? ORDER BY m.created_at, m.rowid""",
+                ).use { query ->
+                    query.setString(1, sourceLaneId)
+                    query.executeQuery().use { result ->
+                        buildList {
+                            while (result.next()) {
+                                val item = CopyableMessage(
+                                    result.getString("id"),
+                                    result.getString("role"),
+                                    result.getString("content"),
+                                    result.getString("status"),
+                                    result.getString("started_at"),
+                                    result.getString("completed_at"),
+                                    result.getString("error"),
+                                )
+                                add(item)
+                                if (item.id == throughMessageId) break
+                            }
+                        }
+                    }
+                }
+                check(kind != "branch" || sourceMessages.lastOrNull()?.id == throughMessageId) {
+                    "Unknown message"
+                }
+                val now = Instant.now().toString()
+                sourceMessages.forEach { item ->
+                    val copiedRunId = item.runStatus?.let { UUID.randomUUID().toString() }
+                    val copiedMessageId = UUID.randomUUID().toString()
+                    db.prepareStatement(
+                        "INSERT INTO messages(id, lane_id, role, content, run_id, created_at) VALUES (?, ?, ?, ?, ?, ?)",
+                    ).use { query ->
+                        query.setString(1, copiedMessageId)
+                        query.setString(2, laneId)
+                        query.setString(3, item.role)
+                        query.setString(4, item.content)
+                        query.setString(5, copiedRunId)
+                        query.setString(6, now)
+                        query.executeUpdate()
+                    }
+                    if (copiedRunId != null) {
+                        db.prepareStatement(
+                            "INSERT INTO runs(id, board_id, lane_id, assistant_message_id, status, started_at, completed_at, error) " +
+                                "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                        ).use { query ->
+                            query.setString(1, copiedRunId)
+                            query.setString(2, source.first)
+                            query.setString(3, laneId)
+                            query.setString(4, copiedMessageId)
+                            query.setString(5, item.runStatus)
+                            query.setString(6, item.runStartedAt)
+                            query.setString(7, item.runCompletedAt)
+                            query.setString(8, item.runError)
+                            query.executeUpdate()
+                        }
+                    }
+                }
+                db.commit()
+                return laneId
+            } catch (error: Exception) {
+                db.rollback()
+                throw error
+            } finally {
+                db.autoCommit = true
+            }
+        }
+    }
+
     fun hasLane(laneId: String): Boolean = synchronized(lock) {
         connect().use { db ->
             db.prepareStatement("SELECT 1 FROM lanes WHERE id = ?").use { query ->
@@ -178,12 +329,12 @@ class BoardStore(private val file: Path, private val initialBoardTitle: String =
             db.autoCommit = false
             try {
                 val lane = db.prepareStatement(
-                    "SELECT board_id, codex_thread_id FROM lanes WHERE id = ?",
+                    "SELECT board_id, codex_thread_id, codex_context_seeded FROM lanes WHERE id = ?",
                 ).use { query ->
                     query.setString(1, laneId)
                     query.executeQuery().use { result ->
                         check(result.next()) { "Unknown lane" }
-                        result.getString("board_id") to result.getString("codex_thread_id")
+                        Triple(result.getString("board_id"), result.getString("codex_thread_id"), result.getInt("codex_context_seeded") == 0)
                     }
                 }
                 val isActive = db.prepareStatement(
@@ -193,6 +344,9 @@ class BoardStore(private val file: Path, private val initialBoardTitle: String =
                     query.executeQuery().use { it.next() }
                 }
                 if (isActive) throw ActiveRunException()
+
+                val contextToSeed = if (lane.second == null || lane.third) history(db, laneId) else emptyList()
+                val reusableThreadId = if (lane.third) null else lane.second
 
                 val now = Instant.now().toString()
                 val userMessageId = UUID.randomUUID().toString()
@@ -230,7 +384,14 @@ class BoardStore(private val file: Path, private val initialBoardTitle: String =
                 }
                 insertEvent(db, lane.first, laneId, runId, "run.started", buildJsonObject {})
                 db.commit()
-                StartedRun(lane.first, laneId, runId, lane.second)
+                StartedRun(
+                    lane.first,
+                    laneId,
+                    runId,
+                    reusableThreadId,
+                    contextToSeed,
+                    shouldSeedContext = reusableThreadId == null || lane.third,
+                )
             } catch (error: SQLException) {
                 db.rollback()
                 if (error.message.orEmpty().contains("one_running_run_per_lane")) throw ActiveRunException()
@@ -249,6 +410,24 @@ class BoardStore(private val file: Path, private val initialBoardTitle: String =
             db.prepareStatement("UPDATE lanes SET codex_thread_id = ? WHERE id = ?").use { query ->
                 query.setString(1, threadId)
                 query.setString(2, laneId)
+                check(query.executeUpdate() == 1) { "Unknown lane" }
+            }
+        }
+    }
+
+    fun markContextSeeded(laneId: String) = synchronized(lock) {
+        connect().use { db ->
+            db.prepareStatement("UPDATE lanes SET codex_context_seeded = 1 WHERE id = ?").use { query ->
+                query.setString(1, laneId)
+                check(query.executeUpdate() == 1) { "Unknown lane" }
+            }
+        }
+    }
+
+    fun markContextSeedFailed(laneId: String) = synchronized(lock) {
+        connect().use { db ->
+            db.prepareStatement("UPDATE lanes SET codex_thread_id = NULL, codex_context_seeded = 0 WHERE id = ?").use { query ->
+                query.setString(1, laneId)
                 check(query.executeUpdate() == 1) { "Unknown lane" }
             }
         }
@@ -307,6 +486,50 @@ class BoardStore(private val file: Path, private val initialBoardTitle: String =
                 query.executeQuery().use { it.next() }
             }
         }
+    }
+
+    private fun history(db: Connection, laneId: String): List<ContextMessage> = db.prepareStatement(
+        "SELECT role, content FROM messages WHERE lane_id = ? ORDER BY created_at, rowid",
+    ).use { query ->
+        query.setString(1, laneId)
+        query.executeQuery().use { result ->
+            buildList {
+                while (result.next()) {
+                    val content = result.getString("content")
+                    if (content.isNotEmpty()) add(ContextMessage(result.getString("role"), content))
+                }
+            }
+        }
+    }
+
+    private fun hasActiveRun(db: Connection, laneId: String): Boolean = db.prepareStatement(
+        "SELECT 1 FROM runs WHERE lane_id = ? AND status = 'running' LIMIT 1",
+    ).use { query ->
+        query.setString(1, laneId)
+        query.executeQuery().use { it.next() }
+    }
+
+    private fun message(db: Connection, laneId: String, messageId: String) = db.prepareStatement(
+        "SELECT id, role, content FROM messages WHERE id = ? AND lane_id = ?",
+    ).use { query ->
+        query.setString(1, messageId)
+        query.setString(2, laneId)
+        query.executeQuery().use { result ->
+            if (!result.next()) null else buildJsonObject {
+                put("id", result.getString("id"))
+                put("role", result.getString("role"))
+                put("content", result.getString("content"))
+            }
+        }
+    }
+
+    private fun ensureColumn(db: Connection, table: String, column: String, definition: String) {
+        val exists = db.createStatement().use { statement ->
+            statement.executeQuery("PRAGMA table_info($table)").use { result ->
+                generateSequence { if (result.next()) result.getString("name") else null }.any { it == column }
+            }
+        }
+        if (!exists) db.createStatement().use { it.execute("ALTER TABLE $table ADD COLUMN $column $definition") }
     }
 
     private fun finishRun(runId: String, status: String, reason: String?, eventType: String) = synchronized(lock) {
@@ -372,6 +595,12 @@ class BoardStore(private val file: Path, private val initialBoardTitle: String =
                WHERE m.lane_id = ? ORDER BY m.created_at, m.rowid""",
         ).use { query ->
             query.setString(1, laneId)
+            val branchPoints = db.prepareStatement(
+                "SELECT origin_message_id FROM lanes WHERE origin_lane_id = ? AND origin_kind = 'branch'",
+            ).use { origins ->
+                origins.setString(1, laneId)
+                origins.executeQuery().use { result -> buildSet { while (result.next()) add(result.getString(1)) } }
+            }
             query.executeQuery().use { result ->
                 buildList {
                     while (result.next()) {
@@ -379,6 +608,7 @@ class BoardStore(private val file: Path, private val initialBoardTitle: String =
                             put("id", result.getString("id"))
                             put("role", result.getString("role"))
                             put("content", result.getString("content"))
+                            if (result.getString("id") in branchPoints) put("hasBranches", true)
                             put("createdAt", result.getString("created_at"))
                             result.getString("run_status")?.let { put("runStatus", it) }
                             result.getString("run_error")?.let { put("runError", it) }
