@@ -57,20 +57,80 @@ const boards = [
       approval: 'Требует подтверждения', effort: 'Средний', speed: 'Обычная', temperature: 0.7, messages: [],
     }],
   },
+  {
+    id: 'subagents', name: 'Сабагенты', camera: null, selectedLaneId: 'team-lead', expandedSubagents: { 'team-lead': false },
+    lanes: [
+      {
+        id: 'team-lead', rootId: 'team-lead', parentId: null, x: 160, y: 0, width: 476,
+        title: 'Подготовка релиза', provider: 'Codex', model: 'GPT-6 Sol', context: 58,
+        approval: 'Требует подтверждения', effort: 'Высокий', speed: 'Обычная', temperature: 0.7,
+        messages: [
+          { id: 'team-user', role: 'user', text: 'Проверь готовность релиза: тесты, документацию и риски.' },
+          { id: 'team-answer', role: 'assistant', text: 'Раздал три независимые проверки сабагентам. Тесты ещё идут; документация проверена, риски собраны.', duration: '12,4 с', request: '{ "model": "gpt-6-sol", "stream": true }', toolUses: [{ name: 'spawn_subagent', input: { task: 'Проверить тесты' }, result: 'Сабагент «Тесты» запущен.' }, { name: 'spawn_subagent', input: { task: 'Проверить документацию' }, result: 'Сабагент «Документация» завершил работу.' }] },
+        ],
+      },
+      {
+        id: 'agent-tests', rootId: 'team-lead', parentId: null, subagentOf: 'team-lead', active: true, pinned: false,
+        x: 0, y: 0, width: 410, title: 'Тесты', provider: 'Codex', model: 'GPT-6 Luna', context: 35,
+        approval: 'Требует подтверждения', effort: 'Средний', speed: 'Быстрая', temperature: 0.7,
+        messages: [{ id: 'tests-user', role: 'user', text: 'Проверь тесты перед релизом.' }, { id: 'tests-answer', role: 'assistant', text: 'Запущена проверка: есть один нестабильный сценарий, перепроверяю его.', duration: '8,2 с', request: '{ "model": "gpt-6-luna", "stream": true }' }],
+      },
+      {
+        id: 'agent-docs', rootId: 'team-lead', parentId: null, subagentOf: 'team-lead', active: false, pinned: true,
+        x: 0, y: 0, width: 410, title: 'Документация', provider: 'Codex', model: 'GPT-6 Luna', context: 22,
+        approval: 'Требует подтверждения', effort: 'Низкий', speed: 'Обычная', temperature: 0.7,
+        messages: [{ id: 'docs-user', role: 'user', text: 'Проверь документацию релиза.' }, { id: 'docs-answer', role: 'assistant', text: 'Описание изменений и инструкция обновления готовы.', duration: '6,5 с', request: '{ "model": "gpt-6-luna", "stream": true }' }],
+      },
+      {
+        id: 'agent-risks', rootId: 'team-lead', parentId: null, subagentOf: 'team-lead', active: false, pinned: false,
+        x: 0, y: 0, width: 410, title: 'Риски', provider: 'Codex', model: 'GPT-6 Luna', context: 18,
+        approval: 'Требует подтверждения', effort: 'Средний', speed: 'Обычная', temperature: 0.7,
+        messages: [{ id: 'risks-user', role: 'user', text: 'Собери риски релиза.' }, { id: 'risks-answer', role: 'assistant', text: 'Главный риск — нестабильный тест оплаты; требуется повторный прогон.', duration: '5,3 с', request: '{ "model": "gpt-6-luna", "stream": true }' }],
+      },
+    ],
+  },
 ];
 
 boards[0].lanes[1].historyPrefix = boards[0].lanes[0].messages.slice(0, 2).map((message) => ({ ...message }));
 
-const state = { activeBoardId: 'main', mode: 'free', expanded: new Set(), expandedRequests: new Set(), drafts: new Map(), drag: null, openMenu: null, settingsDraft: null, scrollTarget: null, scrollFrame: null, toastTimer: null };
+const state = { activeBoardId: 'main', boardCounter: boards.length, mode: 'free', expanded: new Set(), expandedRequests: new Set(), drafts: new Map(), drag: null, openMenu: null, settingsDraft: null, scrollTarget: null, scrollFrame: null, toastTimer: null };
 const app = document.querySelector('#app');
 const settingsDialog = document.querySelector('#settings-dialog');
 const editDialog = document.querySelector('#edit-dialog');
 const archiveDialog = document.querySelector('#archive-dialog');
+const subagentsDialog = document.querySelector('#subagents-dialog');
 const toastElement = document.querySelector('#toast');
 const board = () => boards.find((item) => item.id === state.activeBoardId);
 const laneById = (id) => board().lanes.find((lane) => lane.id === id);
 const camera = () => board().camera;
-const visibleLanes = () => board().lanes.filter((lane) => !lane.archived);
+function laneVisible(lane) {
+  if (!lane || lane.archived) return false;
+  if (lane.subagentOf) {
+    const parent = laneById(lane.subagentOf);
+    return Boolean(parent && laneVisible(parent) && (lane.active || (board().expandedSubagents?.[parent.id] && lane.pinned)));
+  }
+  if (lane.parentId) {
+    const parent = laneById(lane.parentId);
+    return Boolean(parent && laneVisible(parent));
+  }
+  return true;
+}
+const visibleLanes = () => board().lanes.filter(laneVisible);
+const sessionCount = (count) => `${count} ${count % 10 === 1 && count % 100 !== 11 ? 'сессия' : count % 10 >= 2 && count % 10 <= 4 && (count % 100 < 12 || count % 100 > 14) ? 'сессии' : 'сессий'}`;
+
+function renderTabs() {
+  const openBoards = boards.filter((item) => !item.closed && !item.archived);
+  const archivedCount = board()?.lanes.filter((lane) => lane.archived).length ?? 0;
+  return `<nav class="board-tabs" aria-label="Доски"><div class="board-tab-list"><button class="board-tab home-tab ${state.activeBoardId === 'home' ? 'active' : ''}" type="button" data-action="show-home">Home</button>${openBoards.map((item) => `<div class="board-tab-item"><button class="board-tab ${item.id === state.activeBoardId ? 'active' : ''}" type="button" data-action="select-board" data-board="${item.id}">${escapeHtml(item.name)}</button><button class="tab-close icon-button" type="button" data-action="close-board" data-board="${item.id}" title="Закрыть доску" aria-label="Закрыть доску ${escapeHtml(item.name)}">${icon('close', 13)}</button></div>`).join('')}
+    <button class="board-add icon-button" type="button" data-action="add-board" title="Создать доску" aria-label="Создать доску">${icon('plus', 18)}</button></div>
+    <div class="board-toolbar">${state.activeBoardId === 'home' ? '' : `<button class="archive-link" type="button" data-action="show-archive">Архив сессий${archivedCount ? ` · ${archivedCount}` : ''}</button>`}<span class="prototype-badge">Интерактивный макет · без API</span></div>
+  </nav>`;
+}
+
+function renderHome() {
+  app.innerHTML = `<div class="prototype-shell">${renderTabs()}<main class="home-screen"><div class="home-content"><div class="home-heading"><div><h1>Доски</h1><p>Открой доску или создай новую. Закрытая вкладка остаётся здесь.</p></div><button class="primary-button" type="button" data-action="add-board">${icon('plus', 16)} Создать доску</button></div>
+    <div class="home-grid">${boards.map((item) => `<article class="board-card"><div class="board-card-top"><span class="board-status ${item.archived ? 'archived' : item.closed ? 'closed' : ''}">${item.archived ? 'В архиве' : item.closed ? 'Вкладка закрыта' : 'Открыта'}</span><span>${sessionCount(item.lanes.length)}</span></div><h2>${escapeHtml(item.name)}</h2><div class="board-card-actions">${item.archived ? `<button class="secondary-button" type="button" data-action="restore-board" data-board="${item.id}">Восстановить</button>` : `<button class="secondary-button" type="button" data-action="select-board" data-board="${item.id}">Открыть</button><button class="icon-button" type="button" data-action="archive-board" data-board="${item.id}" title="В архив" aria-label="В архив: ${escapeHtml(item.name)}">${icon('archive', 17)}</button>`}<button class="icon-button" type="button" data-action="delete-board" data-board="${item.id}" title="Удалить доску" aria-label="Удалить доску ${escapeHtml(item.name)}">${icon('trash', 17)}</button></div></article>`).join('') || '<p class="home-empty">Досок пока нет.</p>'}</div></div></main></div>`;
+}
 
 function layoutLanes() {
   let x = 160;
@@ -85,9 +145,10 @@ function alignBranches() {
   for (const lane of visibleLanes().filter((item) => item.parentId)) {
     const parent = laneById(lane.parentId);
     const source = document.querySelector(`[data-lane-id="${parent.id}"] [data-message-id="${lane.sourceMessageId}"]`);
-    lane.y = parent.y + (source?.offsetTop ?? lane.sourceOffset ?? 140);
-    lane.sourceOffset = lane.y - parent.y;
     const element = document.querySelector(`[data-lane-id="${lane.id}"]`);
+    const headerHeight = element?.querySelector('.lane-header')?.offsetHeight ?? 47;
+    lane.y = parent.y + (source?.offsetTop ?? lane.sourceOffset ?? 190) - headerHeight - 9;
+    lane.sourceOffset = (source?.offsetTop ?? lane.sourceOffset ?? 190);
     if (element) element.style.top = `${lane.y}px`;
   }
 }
@@ -162,12 +223,12 @@ function renderLane(lane) {
   const providerMeta = lane.provider === 'Codex'
     ? `${configMenu(lane, 'approval', 'Подтверждение', ['Требует подтверждения', 'Автоподтверждение'], 'approval-menu')}${configMenu(lane, 'effort', 'Уровень рассуждения', ['Низкий', 'Средний', 'Высокий'], 'effort-menu')}${configMenu(lane, 'speed', 'Скорость', ['Обычная', 'Быстрая'], 'speed-menu')}`
     : `${configMenu(lane, 'approval', 'Подтверждение', ['Требует подтверждения', 'Автоподтверждение'], 'approval-menu')}`;
-  return `<section class="lane ${selected ? 'selected' : ''} ${independent ? 'independent' : 'linked'}" data-lane-id="${lane.id}" style="left:${lane.x}px;top:${lane.y}px;width:${lane.width}px">
+  return `<section class="lane ${selected ? 'selected' : ''} ${independent ? 'independent' : 'linked'} ${lane.subagentOf ? 'subagent-lane' : ''}" data-lane-id="${lane.id}" style="left:${lane.x}px;top:${lane.y}px;width:${lane.width}px">
     <header class="lane-header" ${independent ? `data-drop-root="${lane.id}"` : ''}>
       <div class="lane-header-main">${independent ? `<span class="drag-grip" data-drag-root="${lane.id}" title="Перетащить сессию вместе с ветками" aria-label="Перетащить сессию вместе с ветками">${icon('grip', 16)}</span>` : ''}<span class="lane-title" data-title-lane="${lane.id}" title="Двойной щелчок — изменить название">${escapeHtml(lane.title)}</span>
         <div class="lane-header-actions"><button class="icon-button" type="button" data-action="clone" data-lane="${lane.id}" title="Клонировать сессию" aria-label="Клонировать сессию">${icon('copy', 16)}</button><button class="icon-button" type="button" data-action="archive" data-lane="${lane.id}" title="В архив" aria-label="В архив">${icon('archive', 16)}</button><button class="icon-button" type="button" data-action="delete-session" data-lane="${lane.id}" title="Удалить сессию" aria-label="Удалить сессию">${icon('trash', 16)}</button></div>
       </div>
-      ${lane.parentId ? `<div class="lane-subtitle">${icon('branch', 13)} Ветка · история до точки ветвления сохранена</div>` : ''}
+      ${lane.parentId ? `<div class="lane-subtitle">${icon('branch', 13)} Ветка · история до точки ветвления сохранена</div>` : lane.subagentOf ? `<div class="lane-subtitle">${icon('branch', 13)} Сабагент · ${lane.active ? 'активен' : 'завершён'}${lane.pinned ? ' · закреплён' : ''}</div>` : ''}
     </header>
     <div class="lane-body">
       ${lane.parentId ? `<div class="branch-context"><span>Ответвление от сообщения</span><p>${escapeHtml(lane.sourceText || '')}</p></div>` : ''}
@@ -186,9 +247,15 @@ function renderLane(lane) {
 }
 
 function render() {
+  if (state.activeBoardId === 'home' || !board()) { state.activeBoardId = 'home'; renderHome(); return; }
   layoutLanes();
-  const archivedCount = board().lanes.filter((lane) => lane.archived).length;
   const columns = visibleLanes();
+  const rails = columns.filter((lane) => !lane.parentId && !lane.subagentOf && board().lanes.some((item) => item.subagentOf === lane.id)).map((lane) => {
+    const group = columns.filter((item) => item.id === lane.id || item.rootId === lane.rootId);
+    const lastInGroup = group.at(-1);
+    const expanded = Boolean(board().expandedSubagents?.[lane.id]);
+    return `<div class="subagent-rail" style="left:${lastInGroup.x + lastInGroup.width + 33}px" data-subagent-rail="${lane.id}"><span class="subagent-rail-line"></span><div class="subagent-rail-actions"><button type="button" data-action="toggle-subagents" data-lane="${lane.id}" title="${expanded ? 'Скрыть закреплённых сабагентов' : 'Показать закреплённых сабагентов'}" aria-label="${expanded ? 'Скрыть' : 'Показать'} закреплённых сабагентов" aria-expanded="${expanded}">${icon('chevron', 18)}</button><button type="button" data-action="subagent-settings" data-lane="${lane.id}" title="Настроить сабагентов" aria-label="Настроить сабагентов">${icon('settings', 17)}</button></div></div>`;
+  }).join('');
   const boundaries = columns.slice(0, -1).map((lane, index) => {
     const next = columns[index + 1];
     const grouped = lane.rootId === next.rootId;
@@ -199,15 +266,13 @@ function render() {
   }).join('');
   const first = columns[0];
   const last = columns.at(-1);
+  const rightOffset = board().lanes.some((item) => item.subagentOf === last?.rootId) ? 86 : 33;
   const outerZones = columns.length ? `<div class="outer-add-zone left-zone" style="left:${first.x - 99}px"><span class="outer-line"></span><button type="button" data-action="insert-session" data-insert-before="${first.id}" title="Добавить сессию слева" aria-label="Добавить сессию слева">${icon('plus', 19)}</button></div>
-    <div class="outer-add-zone right-zone" style="left:${last.x + last.width + 34}px"><span class="outer-line"></span><button type="button" data-action="insert-session" data-insert-after="${last.id}" title="Добавить сессию справа" aria-label="Добавить сессию справа">${icon('plus', 19)}</button></div>` : '';
+    <div class="outer-add-zone right-zone" style="left:${last.x + last.width + rightOffset}px"><span class="outer-line"></span><button type="button" data-action="insert-session" data-insert-after="${last.id}" title="Добавить сессию справа" aria-label="Добавить сессию справа">${icon('plus', 19)}</button></div>` : '';
   app.innerHTML = `<div class="prototype-shell">
-    <nav class="board-tabs" aria-label="Доски"><div class="board-tab-list">${boards.map((item) => `<button class="board-tab ${item.id === state.activeBoardId ? 'active' : ''}" type="button" data-action="select-board" data-board="${item.id}">${escapeHtml(item.name)}</button>`).join('')}
-      <button class="board-add icon-button" type="button" data-action="add-board" title="Создать доску" aria-label="Создать доску">${icon('plus', 18)}</button></div>
-      <div class="board-toolbar"><button class="archive-link" type="button" data-action="show-archive">Архив${archivedCount ? ` · ${archivedCount}` : ''}</button><span class="prototype-badge">Интерактивный макет · без API</span></div>
-    </nav>
+    ${renderTabs()}
     <main class="board-viewport" id="board-viewport" aria-label="Доска с сессиями">
-      <div class="board-stage" id="board-stage"><svg class="connection-layer" id="connections" aria-hidden="true"></svg>${outerZones}${boundaries}${columns.map(renderLane).join('')}</div>
+      <div class="board-stage" id="board-stage"><svg class="connection-layer" id="connections" aria-hidden="true"></svg>${outerZones}${boundaries}${rails}${columns.map(renderLane).join('')}</div>
       <div class="canvas-controls"><button class="mode-button" type="button" data-action="toggle-mode" title="Переключить режим перемещения">${icon(state.mode === 'free' ? 'free' : 'focus', 18)}<span>${state.mode === 'free' ? 'Свободный' : 'Фиксированный'}</span></button>
         <span class="control-divider"></span><button class="icon-button" type="button" data-action="zoom-out" title="Уменьшить" aria-label="Уменьшить">${icon('zoom-out', 18)}</button>
         <span class="zoom-level">${Math.round((board().camera?.zoom ?? 0.9) * 100)}%</span>
@@ -217,8 +282,9 @@ function render() {
   if (!board().camera) {
     const viewport = document.querySelector('#board-viewport');
     const lane = laneById(board().selectedLaneId);
-    const zoom = 1;
-    board().camera = { zoom, x: board().id === 'main' ? 105 - lane.x * zoom : viewport.clientWidth / 2 - (lane.x + lane.width / 2) * zoom, y: -lane.y * zoom };
+    const zoom = board().id === 'subagents' ? 0.85 : 1;
+    const x = board().id === 'main' ? 105 - lane.x * zoom : board().id === 'subagents' ? 55 - lane.x * zoom : viewport.clientWidth / 2 - (lane.x + lane.width / 2) * zoom;
+    board().camera = { zoom, x, y: -lane.y * zoom };
   }
   alignBranches();
   applyCamera();
@@ -230,14 +296,43 @@ function applyCamera() {
   const viewport = document.querySelector('#board-viewport');
   const stage = document.querySelector('#board-stage');
   if (!viewport || !stage) return;
+  camera().x = clampCameraX(camera().x);
+  if (state.scrollTarget) state.scrollTarget.x = clampCameraX(state.scrollTarget.x);
   const { x, y, zoom } = camera();
   stage.style.transform = `translate(${x}px, ${y}px) scale(${zoom})`;
   stage.style.setProperty('--board-center-y', `${50000 + (viewport.clientHeight / 2 - y) / zoom}px`);
+  const columns = visibleLanes();
+  const first = columns[0];
+  const last = columns.at(-1);
+  const leftZone = stage.querySelector('.left-zone');
+  const rightZone = stage.querySelector('.right-zone');
+  if (first && leftZone && rightZone) {
+    const viewportLeft = -x / zoom;
+    const viewportRight = (viewport.clientWidth - x) / zoom;
+    const leftBorder = first.x - 33;
+    const rightBorder = last.x + last.width + (board().lanes.some((item) => item.subagentOf === last.rootId) ? 86 : 33);
+    leftZone.style.left = `${viewportLeft}px`;
+    leftZone.style.width = `${Math.max(0, leftBorder - viewportLeft)}px`;
+    rightZone.style.left = `${rightBorder}px`;
+    rightZone.style.width = `${Math.max(0, viewportRight - rightBorder)}px`;
+  }
   viewport.style.backgroundSize = `${24 * zoom}px ${24 * zoom}px`;
   viewport.style.backgroundPosition = `${x}px ${y}px`;
   document.querySelector('.zoom-level').textContent = `${Math.round(zoom * 100)}%`;
   updateStickyHeaders();
   positionMenu();
+}
+
+function clampCameraX(value) {
+  const columns = visibleLanes();
+  if (!columns.length) return value;
+  const viewport = document.querySelector('#board-viewport');
+  const half = viewport.clientWidth / 2;
+  const zoom = camera().zoom;
+  const last = columns.at(-1);
+  const min = half - (last.x + last.width + (board().lanes.some((item) => item.subagentOf === last.rootId) ? 86 : 33)) * zoom;
+  const max = half - (columns[0].x - 33) * zoom;
+  return Math.max(min, Math.min(max, value));
 }
 
 function positionMenu() {
@@ -268,12 +363,10 @@ function renderConnections() {
   svg.innerHTML = visibleLanes().filter((lane) => lane.parentId).map((lane) => {
     const parent = laneById(lane.parentId);
     const source = document.querySelector(`[data-lane-id="${parent.id}"] [data-message-id="${lane.sourceMessageId}"]`);
-    const y1 = parent.y + (source?.offsetTop ?? 170) + (source?.offsetHeight ?? 40) / 2;
-    const x1 = parent.x + parent.width;
+    const y1 = parent.y + (source?.offsetTop ?? lane.sourceOffset ?? 190) - 9;
+    const x1 = parent.x + 1;
     const x2 = lane.x;
-    const y2 = lane.y + 22;
-    const curve = Math.max(34, (x2 - x1) / 2);
-    return `<path d="M ${x1} ${y1} C ${x1 + curve} ${y1}, ${x2 - curve} ${y2}, ${x2} ${y2}" />`;
+    return `<path d="M ${x1} ${y1} H ${x2}" />`;
   }).join('');
 }
 
@@ -411,7 +504,7 @@ function showMessageDialog(lane, message, kind) {
 }
 
 function addBoard() {
-  const number = boards.length + 1;
+  const number = ++state.boardCounter;
   const laneId = uid();
   const id = uid();
   boards.push({ id, name: `Доска ${number}`, camera: null, selectedLaneId: laneId, lanes: [{
@@ -421,6 +514,39 @@ function addBoard() {
   }] });
   state.activeBoardId = id;
   render();
+}
+
+function closeBoard(id) {
+  const item = boards.find((candidate) => candidate.id === id);
+  if (!item) return;
+  item.closed = true;
+  if (state.activeBoardId === id) state.activeBoardId = boards.find((candidate) => !candidate.closed && !candidate.archived)?.id ?? 'home';
+  render();
+}
+
+function archiveBoard(id) {
+  const item = boards.find((candidate) => candidate.id === id);
+  if (!item) return;
+  item.archived = true;
+  item.closed = true;
+  if (state.activeBoardId === id) state.activeBoardId = 'home';
+  render();
+}
+
+function showDeleteBoard(id) {
+  const item = boards.find((candidate) => candidate.id === id);
+  if (!item) return;
+  editDialog.innerHTML = `<form method="dialog" id="delete-board-form" data-board="${item.id}"><div class="dialog-heading"><h2>Удалить доску?</h2><button type="button" class="icon-button" data-action="close-edit" aria-label="Закрыть">${icon('close', 19)}</button></div><p class="dialog-note">«${escapeHtml(item.name)}» и все её сессии будут удалены из макета. Закрытие вкладки или архивирование сохраняет доску.</p><div class="dialog-actions"><button type="button" class="secondary-button" data-action="close-edit">Отмена</button><button type="submit" class="primary-button danger">Удалить</button></div></form>`;
+  editDialog.showModal();
+}
+
+function showSubagentSettings(parent) {
+  const agents = board().lanes.filter((lane) => lane.subagentOf === parent.id);
+  subagentsDialog.innerHTML = `<form method="dialog" id="subagent-form" data-parent="${parent.id}"><div class="dialog-heading"><h2>Сабагенты · ${escapeHtml(parent.title)}</h2><button type="button" class="icon-button" data-action="close-subagents" aria-label="Закрыть">${icon('close', 19)}</button></div>
+    <p class="dialog-note">Активные сессии видны всегда. Завершённые появляются на доске, если закрепить их и раскрыть список.</p>
+    <div class="subagent-list">${agents.map((lane) => `<label class="subagent-item"><span><strong>${escapeHtml(lane.title)}</strong><small>${lane.active ? 'Активен' : 'Завершён'}</small></span><span class="subagent-pin"><input type="checkbox" name="pinned" value="${lane.id}" ${lane.pinned ? 'checked' : ''}> Закрепить</span></label>`).join('')}</div>
+    <div class="dialog-actions"><button type="button" class="secondary-button" data-action="close-subagents">Отмена</button><button type="submit" class="primary-button">Сохранить</button></div></form>`;
+  subagentsDialog.showModal();
 }
 
 function insertSession(referenceId, before) {
@@ -443,7 +569,7 @@ function insertSession(referenceId, before) {
 function branchFrom(lane, message) {
   const id = uid();
   const branch = {
-    ...lane, id, rootId: lane.rootId, parentId: lane.id, sourceMessageId: message.id,
+    ...lane, id, rootId: lane.rootId, parentId: lane.id, subagentOf: null, sourceMessageId: message.id,
     sourceText: message.text.slice(0, 120), sourceOffset: document.querySelector(`[data-lane-id="${lane.id}"] [data-message-id="${message.id}"]`)?.offsetTop ?? 140,
     title: `${lane.title} · ветка`, context: Math.max(0, lane.context - 8),
     historyPrefix: [...(lane.historyPrefix || []), ...lane.messages.slice(0, lane.messages.indexOf(message) + 1)].map((item) => ({ ...item })), messages: [],
@@ -458,7 +584,7 @@ function branchFrom(lane, message) {
 
 function cloneLane(lane) {
   const id = uid();
-  board().lanes.push({ ...lane, id, rootId: id, parentId: null, sourceMessageId: null, historyPrefix: [],
+  board().lanes.push({ ...lane, id, rootId: id, parentId: null, subagentOf: null, active: false, pinned: false, sourceMessageId: null, historyPrefix: [],
     archived: false, title: `${lane.title} · копия`,
     messages: [...(lane.historyPrefix || []), ...lane.messages].map((message) => ({ ...message, id: uid() })) });
   board().selectedLaneId = id;
@@ -469,9 +595,10 @@ function cloneLane(lane) {
 
 function isDescendant(item, ancestorId) {
   let current = item;
-  while (current?.parentId) {
-    if (current.parentId === ancestorId) return true;
-    current = laneById(current.parentId);
+  while (current?.parentId || current?.subagentOf) {
+    const parentId = current.parentId || current.subagentOf;
+    if (parentId === ancestorId) return true;
+    current = laneById(parentId);
   }
   return false;
 }
@@ -481,7 +608,7 @@ function subtreeIds(lane) {
 }
 
 function moveRootGroup(lane, target) {
-  if (lane.id === target.id || lane.parentId || target.parentId) return;
+  if (lane.id === target.id || lane.parentId || lane.subagentOf || target.parentId || target.subagentOf) return;
   const moveAfter = lane.x < target.x;
   const ids = subtreeIds(lane);
   const moved = board().lanes.filter((item) => ids.has(item.id));
@@ -545,10 +672,15 @@ app.addEventListener('click', async (event) => {
   const button = event.target.closest('[data-action]');
   if (button) {
     const action = button.dataset.action;
+    if (action === 'show-home') { cancelSmoothScroll(); state.activeBoardId = 'home'; render(); return; }
+    if (action === 'select-board') { cancelSmoothScroll(); const item = boards.find((candidate) => candidate.id === button.dataset.board); if (!item) return; item.closed = false; state.activeBoardId = item.id; render(); return; }
+    if (action === 'close-board') { closeBoard(button.dataset.board); return; }
+    if (action === 'archive-board') { archiveBoard(button.dataset.board); return; }
+    if (action === 'restore-board') { const item = boards.find((candidate) => candidate.id === button.dataset.board); if (item) { item.archived = false; item.closed = false; render(); } return; }
+    if (action === 'delete-board') { showDeleteBoard(button.dataset.board); return; }
+    if (action === 'add-board') { addBoard(); return; }
     const lane = button.dataset.lane ? laneById(button.dataset.lane) : null;
     const message = lane?.messages.find((item) => item.id === button.dataset.message);
-    if (action === 'select-board') { state.activeBoardId = button.dataset.board; render(); return; }
-    if (action === 'add-board') { addBoard(); return; }
     if (action === 'insert-session') { insertSession(button.dataset.insertBefore ?? button.dataset.insertAfter, Boolean(button.dataset.insertBefore)); return; }
     if (action === 'toggle-mode') { state.mode = state.mode === 'free' ? 'fixed' : 'free'; render(); if (state.mode === 'fixed') focusLane(board().selectedLaneId); return; }
     if (action === 'zoom-in' || action === 'zoom-out') {
@@ -558,6 +690,14 @@ app.addEventListener('click', async (event) => {
     if (action === 'toggle-details') { state.expanded.has(button.dataset.message) ? state.expanded.delete(button.dataset.message) : state.expanded.add(button.dataset.message); render(); return; }
     if (action === 'toggle-request') { state.expandedRequests.has(button.dataset.message) ? state.expandedRequests.delete(button.dataset.message) : state.expandedRequests.add(button.dataset.message); render(); return; }
     if (action === 'settings') { showSettings(lane); return; }
+    if (action === 'toggle-subagents') {
+      board().expandedSubagents ??= {};
+      board().expandedSubagents[lane.id] = !board().expandedSubagents[lane.id];
+      if (!laneVisible(laneById(board().selectedLaneId))) board().selectedLaneId = lane.id;
+      render();
+      return;
+    }
+    if (action === 'subagent-settings') { showSubagentSettings(lane); return; }
     if (action === 'show-archive') { showArchive(); return; }
     if (action === 'toggle-config') {
       const key = `${lane.id}:${button.dataset.config}`;
@@ -684,6 +824,7 @@ window.addEventListener('pointermove', (event) => {
   const drag = state.drag;
   if (!drag) return;
   if (drag.kind === 'reorder') {
+    const descendants = subtreeIds(laneById(drag.laneId)).size - 1;
     if (!drag.active && Math.hypot(event.clientX - drag.x, event.clientY - drag.y) < 6) return;
     if (!drag.active) {
       drag.active = true;
@@ -691,19 +832,30 @@ window.addEventListener('pointermove', (event) => {
       document.querySelector(`[data-lane-id="${drag.laneId}"]`)?.classList.add('lane-dragging');
       drag.preview = document.createElement('div');
       drag.preview.className = 'drag-preview';
-      drag.preview.textContent = laneById(drag.laneId).title;
+      const title = document.createElement('strong');
+      title.textContent = laneById(drag.laneId).title;
+      const detail = document.createElement('small');
+      detail.textContent = descendants ? `Перемещается вместе с ${sessionCount(descendants)}` : 'Перемещается одна сессия';
+      drag.preview.append(title, detail);
+      drag.previewDetail = detail;
       document.body.append(drag.preview);
     }
     drag.preview.style.left = `${event.clientX + 12}px`;
     drag.preview.style.top = `${event.clientY + 12}px`;
     document.querySelectorAll('.drop-before,.drop-after').forEach((item) => item.classList.remove('drop-before', 'drop-after'));
     const source = laneById(drag.laneId);
-    const target = visibleLanes().filter((item) => !item.parentId && item.id !== source.id).find((item) => {
+    const target = visibleLanes().filter((item) => !item.parentId && !item.subagentOf && item.id !== source.id).find((item) => {
       const rect = document.querySelector(`[data-lane-id="${item.id}"] .lane-header`).getBoundingClientRect();
       return event.clientX >= rect.left - 33 * camera().zoom && event.clientX <= rect.right + 33 * camera().zoom;
     });
     drag.targetId = target?.id ?? null;
-    if (target) document.querySelector(`[data-lane-id="${target.id}"] .lane-header`).classList.add(source.x < target.x ? 'drop-after' : 'drop-before');
+    if (target) {
+      const header = document.querySelector(`[data-lane-id="${target.id}"] .lane-header`);
+      header.classList.add(source.x < target.x ? 'drop-after' : 'drop-before');
+      drag.previewDetail.textContent = `${source.x < target.x ? 'После' : 'Перед'} «${target.title}»`;
+    } else {
+      drag.previewDetail.textContent = descendants ? `Перемещается вместе с ${sessionCount(descendants)}` : 'Перемещается одна сессия';
+    }
   } else if (drag.kind === 'camera') {
     camera().x = drag.initialX + event.clientX - drag.x;
     camera().y = drag.initialY + event.clientY - drag.y;
@@ -828,6 +980,15 @@ editDialog.addEventListener('click', (event) => {
 editDialog.addEventListener('submit', (event) => {
   event.preventDefault();
   const form = event.target;
+  if (form.id === 'delete-board-form') {
+    const index = boards.findIndex((item) => item.id === form.dataset.board);
+    if (index >= 0) boards.splice(index, 1);
+    if (state.activeBoardId === form.dataset.board) state.activeBoardId = 'home';
+    editDialog.close();
+    render();
+    toast('Доска удалена из макета.');
+    return;
+  }
   if (form.id === 'delete-session-form') {
     const lane = laneById(form.dataset.lane);
     const ids = subtreeIds(lane);
@@ -877,6 +1038,20 @@ archiveDialog.addEventListener('input', (event) => {
     if (!item.hidden) visible += 1;
   });
   archiveDialog.querySelector('.archive-empty').hidden = visible > 0 || archiveDialog.querySelectorAll('[data-archive-item]').length === 0;
+});
+subagentsDialog.addEventListener('click', (event) => {
+  if (event.target.closest('[data-action="close-subagents"]')) subagentsDialog.close();
+});
+subagentsDialog.addEventListener('submit', (event) => {
+  event.preventDefault();
+  const parentId = event.target.dataset.parent;
+  const pinned = new Set(new FormData(event.target).getAll('pinned'));
+  board().lanes.filter((lane) => lane.subagentOf === parentId).forEach((lane) => { lane.pinned = pinned.has(lane.id); });
+  const parent = laneById(parentId);
+  if (!laneVisible(laneById(board().selectedLaneId))) board().selectedLaneId = parent.id;
+  subagentsDialog.close();
+  render();
+  toast('Закреплённые сабагенты обновлены.');
 });
 
 render();
