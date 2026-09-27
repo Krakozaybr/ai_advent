@@ -4,6 +4,8 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.async
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.buildJsonArray
@@ -15,6 +17,7 @@ import kotlinx.serialization.json.jsonPrimitive
 import kotlinx.serialization.json.put
 import java.nio.file.Files
 import java.nio.file.Path
+import java.sql.DriverManager
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
@@ -22,6 +25,57 @@ import kotlin.test.assertTrue
 import kotlin.test.assertNotNull
 
 class RunCoordinatorMcpTest {
+    @Test
+    fun `approval decisions are atomic and interrupted applying approvals require manual closure`() = runBlocking {
+        val temp = Files.createTempDirectory("v3-approval-recovery")
+        val database = temp.resolve("board.sqlite")
+        var store = WorkspaceStore(database)
+        val boardId = store.boards().first().jsonObject["id"]!!.jsonPrimitive.content
+        val lane = createOpenRouterLane(store, boardId)
+        val approvalId = store.addMcpApproval(lane, "sticky-facts", "update_fact", buildJsonObject {}, "test", null)
+        val otherStore = WorkspaceStore(database)
+        try {
+            val start = CompletableDeferred<Unit>()
+            val (claimed, denied) = coroutineScope {
+                val approve = async(Dispatchers.IO) { start.await(); store.claimApproval(lane, approvalId) }
+                val deny = async(Dispatchers.IO) { start.await(); otherStore.denyApproval(lane, approvalId) }
+                start.complete(Unit)
+                approve.await() to deny.await()
+            }
+            assertTrue((claimed != null) xor denied, "Exactly one pending -> applying or pending -> denied transition may win")
+            if (claimed != null) {
+                assertEquals("applying", claimed["status"]!!.jsonPrimitive.content)
+                assertFalse(otherStore.denyApproval(lane, approvalId))
+                assertTrue(store.finishApproval(lane, approvalId, "approved", "user"))
+            } else {
+                assertEquals("denied", store.approval(lane, approvalId)!!["status"]!!.jsonPrimitive.content)
+                assertFalse(store.finishApproval(lane, approvalId, "approved", "user"))
+            }
+
+            val interruptedId = store.addMcpApproval(lane, "sticky-facts", "update_fact", buildJsonObject {}, "restart", null)
+            assertNotNull(store.claimApproval(lane, interruptedId))
+            store.close()
+            otherStore.close()
+
+            // Simulate a pre-migration SQLite file, which has no interrupted_at column.
+            DriverManager.getConnection("jdbc:sqlite:${database.toAbsolutePath()}").use { db ->
+                db.createStatement().use { it.execute("ALTER TABLE mcp_approvals DROP COLUMN interrupted_at") }
+            }
+            store = WorkspaceStore(database)
+            val recovered = store.approval(lane, interruptedId)!!
+            assertEquals("uncertain", recovered["status"]!!.jsonPrimitive.content)
+            assertTrue(recovered["interruptedAt"]!!.jsonPrimitive.content.isNotBlank())
+            assertTrue(store.claimApproval(lane, interruptedId) == null, "Recovery must not replay the external MCP call")
+            assertFalse(store.finishApproval(lane, interruptedId, "approved", "user"))
+            assertTrue(store.closeUncertainApproval(lane, interruptedId))
+            assertEquals("uncertain_closed", store.approval(lane, interruptedId)!!["status"]!!.jsonPrimitive.content)
+            assertTrue(store.claimApproval(lane, interruptedId) == null)
+        } finally {
+            otherStore.close()
+            store.close()
+        }
+    }
+
     @Test
     fun `test board memory writes wait for approval and reject unavailable working memory`() = runBlocking {
         val temp = Files.createTempDirectory("v3-board-memory-proposal")

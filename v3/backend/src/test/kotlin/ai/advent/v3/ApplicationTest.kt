@@ -41,6 +41,73 @@ import java.util.concurrent.atomic.AtomicInteger
 
 class ApplicationTest {
     @Test
+    fun `uncertain MCP approval can be closed through API without retrying it`() = testApplication {
+        val directory = Files.createTempDirectory("approval-uncertain-api")
+        val database = directory.resolve("board.sqlite")
+        var store = WorkspaceStore(database)
+        val boardId = store.boards().first().jsonObject["id"]!!.jsonPrimitive.content
+        val laneId = store.board(boardId)["lanes"]!!.jsonArray.first().jsonObject["id"]!!.jsonPrimitive.content
+        val approvalId = store.addMcpApproval(laneId, "sticky-facts", "update_fact", buildJsonObject {}, "restart", null)
+        assertTrue(store.claimApproval(laneId, approvalId) != null)
+        store.close()
+
+        store = WorkspaceStore(database)
+        application { module(store, FakeCodexAppServer(), memoryStore = MemoryStore(directory.resolve("memory.sqlite"))) }
+        val response = client.post("/api/lanes/$laneId/mcp-approvals/$approvalId") {
+            header(HttpHeaders.ContentType, ContentType.Application.Json.toString())
+            setBody("""{"decision":"close_uncertain"}""")
+        }
+        assertEquals(HttpStatusCode.OK, response.status)
+        val responseLane = Json.parseToJsonElement(response.bodyAsText()).jsonObject["lanes"]!!.jsonArray.first().jsonObject
+        val approval = responseLane["mcpApprovals"]!!.jsonArray.single().jsonObject
+        assertEquals("uncertain_closed", approval["status"]!!.jsonPrimitive.content)
+        assertEquals("uncertain_closed", store.approval(laneId, approvalId)!!["status"]!!.jsonPrimitive.content)
+        assertTrue(store.claimApproval(laneId, approvalId) == null, "Closing an interrupted approval must not make it executable again")
+    }
+
+    @Test
+    fun `working memory named dash remains separate from board long term memory in API mutations`() = testApplication {
+        val directory = Files.createTempDirectory("working-memory-dash")
+        val store = WorkspaceStore(directory.resolve("board.sqlite"))
+        val memory = MemoryStore(directory.resolve("memory.sqlite"))
+        val boardId = store.boards().first().jsonObject["id"]!!.jsonPrimitive.content
+        memory.createWorkingMemory(boardId, "-")
+        memory.createWorkingMemory(boardId, "другая")
+        memory.upsert(boardId, "working", "-", "рабочий ключ", "рабочее значение")
+        memory.upsert(boardId, "working", "другая", "соседний ключ", "соседнее значение")
+        memory.upsert(boardId, "longTerm", "", "общий ключ", "долговременное значение")
+        application { module(store, FakeCodexAppServer(), memoryStore = memory) }
+
+        val edit = client.patch("/api/boards/$boardId/memories/working/-/%D1%80%D0%B0%D0%B1%D0%BE%D1%87%D0%B8%D0%B9%20%D0%BA%D0%BB%D1%8E%D1%87") {
+            header(HttpHeaders.ContentType, ContentType.Application.Json.toString())
+            setBody("""{"value":"обновлённое значение"}""")
+        }
+        assertEquals(HttpStatusCode.OK, edit.status, edit.bodyAsText())
+        var state = Json.parseToJsonElement(edit.bodyAsText()).jsonObject
+        assertEquals("обновлённое значение", state["workingMemories"]!!.jsonArray.first { it.jsonObject["name"]!!.jsonPrimitive.content == "-" }.jsonObject["items"]!!.jsonArray.single().jsonObject["value"]!!.jsonPrimitive.content)
+        assertEquals("долговременное значение", state["longTerm"]!!.jsonArray.single().jsonObject["value"]!!.jsonPrimitive.content)
+
+        val deleteItem = client.delete("/api/boards/$boardId/memories/working/-/%D1%80%D0%B0%D0%B1%D0%BE%D1%87%D0%B8%D0%B9%20%D0%BA%D0%BB%D1%8E%D1%87")
+        assertEquals(HttpStatusCode.OK, deleteItem.status)
+        state = Json.parseToJsonElement(deleteItem.bodyAsText()).jsonObject
+        assertTrue(state["workingMemories"]!!.jsonArray.first { it.jsonObject["name"]!!.jsonPrimitive.content == "-" }.jsonObject["items"]!!.jsonArray.isEmpty())
+        assertEquals("долговременное значение", state["longTerm"]!!.jsonArray.single().jsonObject["value"]!!.jsonPrimitive.content)
+
+        memory.upsert(boardId, "working", "-", "рабочий ключ", "не трогать")
+        val clearWorking = client.delete("/api/boards/$boardId/memories/working/-")
+        assertEquals(HttpStatusCode.OK, clearWorking.status)
+        state = Json.parseToJsonElement(clearWorking.bodyAsText()).jsonObject
+        assertTrue(state["workingMemories"]!!.jsonArray.first { it.jsonObject["name"]!!.jsonPrimitive.content == "-" }.jsonObject["items"]!!.jsonArray.isEmpty())
+        assertEquals("долговременное значение", state["longTerm"]!!.jsonArray.single().jsonObject["value"]!!.jsonPrimitive.content)
+
+        val clearLongTerm = client.delete("/api/boards/$boardId/memories/longTerm/-")
+        assertEquals(HttpStatusCode.OK, clearLongTerm.status)
+        state = Json.parseToJsonElement(clearLongTerm.bodyAsText()).jsonObject
+        assertTrue(state["longTerm"]!!.jsonArray.isEmpty())
+        assertEquals("соседнее значение", state["workingMemories"]!!.jsonArray.first { it.jsonObject["name"]!!.jsonPrimitive.content == "другая" }.jsonObject["items"]!!.jsonArray.single().jsonObject["value"]!!.jsonPrimitive.content)
+    }
+
+    @Test
     fun `all packaged boards import and repeated imports reuse them`() = testApplication {
         val project = generateSequence(Path.of("").toAbsolutePath()) { it.parent }
             .first { Files.isDirectory(it.resolve("examples/ai-advent/boards")) }

@@ -223,7 +223,7 @@ export function BoardChat() {
     } catch (cause) { setError(cause instanceof Error ? cause.message : "Не удалось сохранить настройку подтверждений"); }
   }
 
-  async function decideMcpApproval(laneId: string, approvalId: string, decision: "approve" | "deny") {
+  async function decideMcpApproval(laneId: string, approvalId: string, decision: "approve" | "deny" | "close_uncertain") {
     try {
       setBoard(await readJson<BoardResponse>(`/api/lanes/${encodeURIComponent(laneId)}/mcp-approvals/${encodeURIComponent(approvalId)}`, {
         method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ decision }),
@@ -512,7 +512,8 @@ function BoardMemoryOverview({ boardId, revision }: { boardId: string; revision:
   }
 
   function itemUrl(layer: "working" | "longTerm", memoryName: string, key: string) {
-    return `${base}/${layer}/${encodeURIComponent(memoryName || "-")}/${encodeURIComponent(key)}`;
+    const addressName = layer === "longTerm" ? "-" : memoryName;
+    return `${base}/${layer}/${encodeURIComponent(addressName)}/${encodeURIComponent(key)}`;
   }
 
   function saveItem(layer: "working" | "longTerm", memoryName: string, key: string, value: string) {
@@ -587,7 +588,7 @@ function LaneView({ lane, boardInstructions, agentName, lanes, authenticated, op
   onSaveInstructions: (instructions: string, mode: Lane["instructionMode"]) => void;
   onSaveMcpTools: (tools: Lane["mcpTools"]) => void;
   onAutoApprove: (enabled: boolean) => void;
-  onApproval: (approvalId: string, decision: "approve" | "deny") => void;
+  onApproval: (approvalId: string, decision: "approve" | "deny" | "close_uncertain") => void;
   onEditFact: (key: string, value: string | null) => void;
   onClearFacts: () => void;
   onCancelRun: (runId: string) => void;
@@ -874,12 +875,15 @@ function LaneView({ lane, boardInstructions, agentName, lanes, authenticated, op
             {lane.stickyFacts.length > 0 && <button type="button" onClick={onClearFacts}>Очистить факты</button>}
           </section>
           {lane.mcpApprovals.slice(0, 20).map((approval) => <section className="mcp-approval" key={approval.id}>
-            <strong>{approval.serverId}/{approval.toolName} · {({ pending: "ожидает подтверждения", applying: "выполняется", approved: "подтверждено", denied: "отклонено", failed: "ошибка выполнения" } as Record<string, string>)[approval.status] ?? approval.status}</strong>
+            <strong>{approval.serverId}/{approval.toolName} · {({ pending: "ожидает подтверждения", applying: "выполняется", approved: "подтверждено", denied: "отклонено", failed: "ошибка выполнения", uncertain: "результат неизвестен после прерывания", uncertain_closed: "закрыто вручную · результат неизвестен" } as Record<string, string>)[approval.status] ?? approval.status}</strong>
             <pre>{JSON.stringify(approval.arguments, null, 2)}</pre><p>Причина: {approval.reason}</p>
             {approval.approvalSource && <small>Источник согласия: {approval.approvalSource === "user" ? "подтверждение пользователя" : "настройка autoapprove ленты"}</small>}
             {approval.status === "pending" && <><p>Действие ещё не выполнено; {approval.serverId === "board-memory" ? "память не изменена" : "факт не сохранён"}.</p>
               <button type="button" onClick={() => onApproval(approval.id, "approve")}>Подтвердить</button>
               <button type="button" onClick={() => onApproval(approval.id, "deny")}>Отклонить</button></>}
+            {approval.status === "uncertain" && <><p>Выполнение прервалось. Внешнее действие могло выполниться; автоматического повтора не будет. Проверь результат вручную, затем закрой эту запись.</p>
+              <button type="button" onClick={() => onApproval(approval.id, "close_uncertain")}>Закрыть после ручной проверки</button></>}
+            {approval.status === "uncertain_closed" && <p>Запись закрыта вручную. Исход внешнего действия остаётся неизвестным.</p>}
           </section>)}
         </details>
         <label>История

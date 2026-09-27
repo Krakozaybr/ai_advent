@@ -110,6 +110,8 @@ class WorkspaceStore(private val originalFile: Path) : Closeable {
         storeForLane(laneId).addMcpApproval(laneId, serverId, toolName, arguments, reason, source)
     fun approval(laneId: String, approvalId: String): JsonObject? = storeForLane(laneId).approval(laneId, approvalId)
     fun claimApproval(laneId: String, approvalId: String): JsonObject? = storeForLane(laneId).claimApproval(laneId, approvalId)
+    fun denyApproval(laneId: String, approvalId: String): Boolean = storeForLane(laneId).denyApproval(laneId, approvalId)
+    fun closeUncertainApproval(laneId: String, approvalId: String): Boolean = storeForLane(laneId).closeUncertainApproval(laneId, approvalId)
     fun finishApproval(laneId: String, approvalId: String, status: String, source: String? = null) =
         storeForLane(laneId).finishApproval(laneId, approvalId, status, source)
     fun editFact(laneId: String, key: String, value: String?): JsonObject =

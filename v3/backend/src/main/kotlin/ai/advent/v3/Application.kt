@@ -120,7 +120,7 @@ fun Application.module(
             val memoryName = call.parameters["memoryName"] ?: ""; val key = call.parameters["key"] ?: ""
             val value = runCatching { call.receive<JsonObject>()["value"]?.jsonPrimitive?.contentOrNull }.getOrNull()
             if (value.isNullOrBlank()) { call.respond(HttpStatusCode.BadRequest, buildJsonObject { put("error", "Укажи значение записи.") }); return@patch }
-            try { store.board(boardId); call.respond(memoryStore.upsert(boardId, layer, if (memoryName == "-") "" else memoryName, key, value)) }
+            try { store.board(boardId); call.respond(memoryStore.upsert(boardId, layer, if (layer == "longTerm") "" else memoryName, key, value)) }
             catch (error: IllegalArgumentException) { call.respond(HttpStatusCode.BadRequest, buildJsonObject { put("error", error.message ?: "Запись памяти некорректна.") }) }
             catch (error: Exception) { call.respond(HttpStatusCode.NotFound, buildJsonObject { put("error", error.message ?: "Память не найдена.") }) }
         }
@@ -128,7 +128,7 @@ fun Application.module(
         delete("/api/boards/{boardId}/memories/{layer}/{memoryName}/{key}") {
             val boardId = call.parameters["boardId"] ?: ""; val layer = call.parameters["layer"] ?: ""
             val memoryName = call.parameters["memoryName"] ?: ""; val key = call.parameters["key"] ?: ""
-            try { store.board(boardId); call.respond(memoryStore.deleteItem(boardId, layer, if (memoryName == "-") "" else memoryName, key)) }
+            try { store.board(boardId); call.respond(memoryStore.deleteItem(boardId, layer, if (layer == "longTerm") "" else memoryName, key)) }
             catch (error: Exception) { call.respond(HttpStatusCode.NotFound, buildJsonObject { put("error", error.message ?: "Память не найдена.") }) }
         }
 
@@ -137,7 +137,7 @@ fun Application.module(
             val memoryName = call.parameters["memoryName"] ?: ""
             try {
                 store.board(boardId)
-                call.respond(memoryStore.clear(boardId, layer, if (memoryName == "-") "" else memoryName))
+                call.respond(memoryStore.clear(boardId, layer, if (layer == "longTerm") "" else memoryName))
             } catch (error: Exception) { call.respond(HttpStatusCode.NotFound, buildJsonObject { put("error", error.message ?: "Память не найдена.") }) }
         }
 
@@ -500,15 +500,20 @@ fun Application.module(
             val laneId = call.parameters["laneId"]
             val approvalId = call.parameters["approvalId"]
             val decision = runCatching { call.receive<JsonObject>()["decision"]?.jsonPrimitive?.content }.getOrNull()
-            if (laneId == null || approvalId == null || decision !in setOf("approve", "deny")) {
-                call.respond(HttpStatusCode.BadRequest, buildJsonObject { put("error", "Укажи решение approve или deny.") })
+            if (laneId == null || approvalId == null || decision !in setOf("approve", "deny", "close_uncertain")) {
+                call.respond(HttpStatusCode.BadRequest, buildJsonObject { put("error", "Укажи решение approve, deny или close_uncertain.") })
                 return@post
             }
             try {
                 if (decision == "deny") {
-                    val approval = store.approval(laneId, approvalId)
-                    if (approval == null) { call.respond(HttpStatusCode.NotFound); return@post }
-                    if (approval["status"]?.jsonPrimitive?.content == "pending") store.finishApproval(laneId, approvalId, "denied", "user")
+                    if (store.approval(laneId, approvalId) == null) { call.respond(HttpStatusCode.NotFound); return@post }
+                    store.denyApproval(laneId, approvalId)
+                    call.respond(store.boardForLane(laneId))
+                    return@post
+                }
+                if (decision == "close_uncertain") {
+                    if (store.approval(laneId, approvalId) == null) { call.respond(HttpStatusCode.NotFound); return@post }
+                    store.closeUncertainApproval(laneId, approvalId)
                     call.respond(store.boardForLane(laneId))
                     return@post
                 }

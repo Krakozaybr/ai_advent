@@ -272,9 +272,11 @@ class BoardStore(
             db.createStatement().use { it.execute("CREATE UNIQUE INDEX IF NOT EXISTS boards_external_id ON boards(external_id) WHERE external_id IS NOT NULL") }
             ensureColumn(db, "runs", "request_config", "TEXT")
             ensureColumn(db, "runs", "technical_details", "TEXT")
+            ensureColumn(db, "mcp_approvals", "interrupted_at", "TEXT")
             backfillLaneLayout(db)
             ensureBoard(db, initialBoardTitle, createDefaultLane)
             markInterruptedRuns(db)
+            markInterruptedApprovals(db)
         }
     }
 
@@ -692,11 +694,30 @@ class BoardStore(
         } catch (error: Exception) { db.rollback(); throw error } finally { db.autoCommit = true } }
     }
 
-    fun finishApproval(laneId: String, approvalId: String, status: String, source: String? = null) = synchronized(lock) {
-        require(status in setOf("approved", "denied", "failed"))
-        connect().use { db -> db.prepareStatement("UPDATE mcp_approvals SET status=?, approval_source=COALESCE(?, approval_source), resolved_at=? WHERE lane_id=? AND id=? AND status IN ('applying','pending')").use { query ->
-            query.setString(1, status); query.setString(2, source); query.setString(3, Instant.now().toString()); query.setString(4, laneId); query.setString(5, approvalId); query.executeUpdate()
+    fun denyApproval(laneId: String, approvalId: String): Boolean = synchronized(lock) {
+        connect().use { db -> db.prepareStatement("UPDATE mcp_approvals SET status='denied', approval_source='user', resolved_at=? WHERE lane_id=? AND id=? AND status='pending'").use { query ->
+            query.setString(1, Instant.now().toString()); query.setString(2, laneId); query.setString(3, approvalId); query.executeUpdate() == 1
         } }
+    }
+
+    fun closeUncertainApproval(laneId: String, approvalId: String): Boolean = synchronized(lock) {
+        connect().use { db -> db.prepareStatement("UPDATE mcp_approvals SET status='uncertain_closed', resolved_at=? WHERE lane_id=? AND id=? AND status='uncertain'").use { query ->
+            query.setString(1, Instant.now().toString()); query.setString(2, laneId); query.setString(3, approvalId); query.executeUpdate() == 1
+        } }
+    }
+
+    fun finishApproval(laneId: String, approvalId: String, status: String, source: String? = null): Boolean = synchronized(lock) {
+        require(status in setOf("approved", "failed"))
+        connect().use { db -> db.prepareStatement("UPDATE mcp_approvals SET status=?, approval_source=COALESCE(?, approval_source), resolved_at=? WHERE lane_id=? AND id=? AND status='applying'").use { query ->
+            query.setString(1, status); query.setString(2, source); query.setString(3, Instant.now().toString()); query.setString(4, laneId); query.setString(5, approvalId); query.executeUpdate() == 1
+        } }
+    }
+
+    private fun markInterruptedApprovals(db: Connection) {
+        db.prepareStatement("UPDATE mcp_approvals SET status='uncertain', interrupted_at=? WHERE status='applying'").use { query ->
+            query.setString(1, Instant.now().toString())
+            query.executeUpdate()
+        }
     }
 
     fun editFact(laneId: String, key: String, value: String?) = synchronized(lock) {
@@ -1253,6 +1274,7 @@ class BoardStore(
         put("toolName", result.getString("tool_name")); put("arguments", kotlinx.serialization.json.Json.parseToJsonElement(result.getString("arguments")))
         put("reason", result.getString("reason")); put("status", result.getString("status")); result.getString("approval_source")?.let { put("approvalSource", it) }
         put("createdAt", result.getString("created_at")); result.getString("resolved_at")?.let { put("resolvedAt", it) }
+        result.getString("interrupted_at")?.let { put("interruptedAt", it) }
     }
 
     fun appendRunEvent(runId: String, type: String, data: JsonObject) = synchronized(lock) {
