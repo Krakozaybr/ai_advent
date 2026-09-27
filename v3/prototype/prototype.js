@@ -61,7 +61,7 @@ const boards = [
 
 boards[0].lanes[1].historyPrefix = boards[0].lanes[0].messages.slice(0, 2).map((message) => ({ ...message }));
 
-const state = { activeBoardId: 'main', mode: 'free', expanded: new Set(), drafts: new Map(), drag: null, openMenu: null, settingsDraft: null, toastTimer: null };
+const state = { activeBoardId: 'main', mode: 'free', expanded: new Set(), drafts: new Map(), drag: null, openMenu: null, settingsDraft: null, scrollTarget: null, scrollFrame: null, toastTimer: null };
 const app = document.querySelector('#app');
 const settingsDialog = document.querySelector('#settings-dialog');
 const editDialog = document.querySelector('#edit-dialog');
@@ -95,7 +95,7 @@ function alignBranches() {
 function configMenu(lane, key, label, values, className = '') {
   const open = state.openMenu === `${lane.id}:${key}`;
   return `<div class="config-menu ${className}"><span class="config-label">${escapeHtml(label)}</span>
-    <button class="config-trigger" type="button" data-action="toggle-config" data-lane="${lane.id}" data-config="${key}" aria-label="${escapeHtml(label)}: ${escapeHtml(lane[key])}" aria-expanded="${open}" aria-haspopup="menu">${escapeHtml(lane[key])}${icon('chevron', 13)}</button>
+    <button class="config-trigger" type="button" data-action="toggle-config" data-lane="${lane.id}" data-config="${key}" aria-label="${escapeHtml(label)}: ${escapeHtml(lane[key])}" aria-expanded="${open}" aria-haspopup="menu">${escapeHtml(lane[key])}</button>
     ${open ? `<div class="config-popover" role="menu" aria-label="${escapeHtml(label)}">${values.map((value) => `<button class="config-option" type="button" role="menuitemradio" aria-checked="${String(lane[key]) === value}" data-action="config-choice" data-lane="${lane.id}" data-config="${key}" data-value="${escapeHtml(value)}"><span>${escapeHtml(value)}</span>${String(lane[key]) === value ? icon('check', 14) : ''}</button>`).join('')}</div>` : ''}
   </div>`;
 }
@@ -129,14 +129,14 @@ function renderMessage(lane, message) {
     <button class="icon-button" type="button" data-action="delete-message" data-lane="${lane.id}" data-message="${message.id}" title="Удалить сообщение" aria-label="Удалить сообщение">${icon('trash', 15)}</button>
   </div>`;
   if (message.role === 'user') {
-    return `<article class="message user-message" ${common}><div class="user-bubble">${textContent(message.text)}${actions}</div></article>`;
+    return `<article class="message user-message" ${common}><div class="user-bubble">${textContent(message.text)}</div>${actions}</article>`;
   }
   const expanded = state.expanded.has(message.id);
   return `<article class="message assistant-message" ${common}>
     <button class="run-toggle" type="button" data-action="toggle-details" data-message="${message.id}" aria-expanded="${expanded}">
       <span class="run-duration">Выполнена за ${escapeHtml(message.duration || '3,0 с')}</span>${icon('chevron', 14)}
     </button>
-    ${expanded ? `<div class="run-details"><div class="detail-line"><span>Запрос к LLM</span><code>${escapeHtml(message.request || '{ "stream": true }')}</code></div><div class="detail-line"><span>Использование инструментов</span><p>${escapeHtml(message.tools || 'Инструменты не вызывались.')}</p></div></div>` : ''}
+    ${expanded ? `<div class="run-details"><div class="detail-line"><span>Запрос к LLM</span><code>${escapeHtml(message.request || '{ "stream": true }')}</code></div>${message.tools && message.tools !== 'Инструменты не вызывались.' ? `<div class="detail-line"><span>Использование инструментов</span><p>${escapeHtml(message.tools)}</p></div>` : ''}</div>` : ''}
     <div class="assistant-copy">${textContent(message.text)}</div>
     ${actions}
   </article>`;
@@ -163,13 +163,12 @@ function renderLane(lane) {
         <div class="composer-bottom">
           <button class="send-button" type="button" data-action="send" data-lane="${lane.id}" title="Отправить корректировку" aria-label="Отправить корректировку">${icon('send', 17)}</button>
         </div>
+        <footer class="lane-footer"><div class="footer-first"><span class="provider-name">${escapeHtml(lane.provider)} <span class="provider-sep">·</span> ${configMenu(lane, 'model', 'Модель', MODEL_CHOICES[lane.provider], 'model-menu')}</span>
+          <span class="context-meter" role="img" aria-label="Контекст заполнен на ${lane.context}%" data-tooltip="Контекст ${lane.context}%" style="--context:${Math.min(100, lane.context)}%"></span><button class="icon-button settings-button" type="button" data-action="settings" data-lane="${lane.id}" title="Настройки сессии" aria-label="Настройки сессии">${icon('settings', 17)}</button></div>
+          <div class="footer-second">${providerMeta}</div>
+        </footer>
       </div>
-      <footer class="lane-footer"><div class="footer-first"><span class="provider-name">${escapeHtml(lane.provider)} <span class="provider-sep">·</span> ${configMenu(lane, 'model', 'Модель', MODEL_CHOICES[lane.provider], 'model-menu')}</span>
-        <span class="context-label">Контекст ${lane.context}%</span><button class="icon-button settings-button" type="button" data-action="settings" data-lane="${lane.id}" title="Настройки сессии" aria-label="Настройки сессии">${icon('settings', 17)}</button></div>
-        <div class="context-track"><span style="width:${Math.min(100, lane.context)}%"></span></div>
-        <div class="footer-second">${providerMeta}</div>
-      </footer>
-    </div><div class="resize-handle" data-resize-lane="${lane.id}" title="Изменить ширину сессии"></div>
+    </div>
   </section>`;
 }
 
@@ -177,14 +176,25 @@ function render() {
   layoutLanes();
   const archivedCount = board().lanes.filter((lane) => lane.archived).length;
   const columns = visibleLanes();
-  const dividers = columns.flatMap((lane, index) => index === 0 ? [lane.x - 33, lane.x + lane.width + 33] : [lane.x + lane.width + 33]);
+  const boundaries = columns.slice(0, -1).map((lane, index) => {
+    const next = columns[index + 1];
+    const grouped = lane.rootId === next.rootId;
+    return `<div class="column-boundary ${grouped ? 'group-boundary' : ''}" style="left:${lane.x + lane.width}px" data-boundary-after="${lane.id}">
+      <div class="boundary-line"></div><div class="boundary-resize" data-resize-boundary="${lane.id}" title="Изменить ширину сессии"></div>
+      ${grouped ? '' : `<div class="boundary-actions"><button class="boundary-add" type="button" data-action="insert-session" data-insert-after="${lane.id}" title="Добавить сессию слева от границы" aria-label="Добавить сессию слева от границы">${icon('plus', 16)}</button><button class="boundary-add" type="button" data-action="insert-session" data-insert-before="${next.id}" title="Добавить сессию справа от границы" aria-label="Добавить сессию справа от границы">${icon('plus', 16)}</button></div>`}
+    </div>`;
+  }).join('');
+  const first = columns[0];
+  const last = columns.at(-1);
+  const outerZones = columns.length ? `<div class="outer-add-zone left-zone" style="left:${first.x - 99}px"><span class="outer-line"></span><button type="button" data-action="insert-session" data-insert-before="${first.id}" title="Добавить сессию слева" aria-label="Добавить сессию слева">${icon('plus', 19)}</button></div>
+    <div class="outer-add-zone right-zone" style="left:${last.x + last.width + 34}px"><span class="outer-line"></span><button type="button" data-action="insert-session" data-insert-after="${last.id}" title="Добавить сессию справа" aria-label="Добавить сессию справа">${icon('plus', 19)}</button></div>` : '';
   app.innerHTML = `<div class="prototype-shell">
     <nav class="board-tabs" aria-label="Доски"><div class="board-tab-list">${boards.map((item) => `<button class="board-tab ${item.id === state.activeBoardId ? 'active' : ''}" type="button" data-action="select-board" data-board="${item.id}">${escapeHtml(item.name)}</button>`).join('')}
       <button class="board-add icon-button" type="button" data-action="add-board" title="Создать доску" aria-label="Создать доску">${icon('plus', 18)}</button></div>
       <div class="board-toolbar"><button class="archive-link" type="button" data-action="show-archive">Архив${archivedCount ? ` · ${archivedCount}` : ''}</button><span class="prototype-badge">Интерактивный макет · без API</span></div>
     </nav>
     <main class="board-viewport" id="board-viewport" aria-label="Доска с сессиями">
-      <div class="board-stage" id="board-stage"><svg class="connection-layer" id="connections" aria-hidden="true"></svg>${dividers.map((x) => `<span class="column-divider" style="left:${x}px"></span>`).join('')}${columns.map(renderLane).join('')}</div>
+      <div class="board-stage" id="board-stage"><svg class="connection-layer" id="connections" aria-hidden="true"></svg>${outerZones}${boundaries}${columns.map(renderLane).join('')}</div>
       <div class="canvas-controls"><button class="mode-button" type="button" data-action="toggle-mode" title="Переключить режим перемещения">${icon(state.mode === 'free' ? 'free' : 'focus', 18)}<span>${state.mode === 'free' ? 'Свободный' : 'Фиксированный'}</span></button>
         <span class="control-divider"></span><button class="icon-button" type="button" data-action="zoom-out" title="Уменьшить" aria-label="Уменьшить">${icon('zoom-out', 18)}</button>
         <span class="zoom-level">${Math.round((board().camera?.zoom ?? 0.9) * 100)}%</span>
@@ -195,7 +205,7 @@ function render() {
     const viewport = document.querySelector('#board-viewport');
     const lane = laneById(board().selectedLaneId);
     const zoom = 1;
-    board().camera = { zoom, x: board().id === 'main' ? 36 - lane.x * zoom : viewport.clientWidth / 2 - (lane.x + lane.width / 2) * zoom, y: -lane.y * zoom };
+    board().camera = { zoom, x: board().id === 'main' ? 105 - lane.x * zoom : viewport.clientWidth / 2 - (lane.x + lane.width / 2) * zoom, y: -lane.y * zoom };
   }
   alignBranches();
   applyCamera();
@@ -209,6 +219,7 @@ function applyCamera() {
   if (!viewport || !stage) return;
   const { x, y, zoom } = camera();
   stage.style.transform = `translate(${x}px, ${y}px) scale(${zoom})`;
+  stage.style.setProperty('--board-center-y', `${50000 + (viewport.clientHeight / 2 - y) / zoom}px`);
   viewport.style.backgroundSize = `${24 * zoom}px ${24 * zoom}px`;
   viewport.style.backgroundPosition = `${x}px ${y}px`;
   document.querySelector('.zoom-level').textContent = `${Math.round(zoom * 100)}%`;
@@ -254,6 +265,7 @@ function renderConnections() {
 }
 
 function focusLane(laneId, smooth = true) {
+  cancelSmoothScroll();
   const lane = laneById(laneId);
   if (!lane) return;
   board().selectedLaneId = laneId;
@@ -269,6 +281,7 @@ function focusLane(laneId, smooth = true) {
 }
 
 function zoomAt(factor, clientX, clientY) {
+  cancelSmoothScroll();
   const rect = document.querySelector('#board-viewport').getBoundingClientRect();
   const pointX = clientX - rect.left;
   const pointY = clientY - rect.top;
@@ -284,6 +297,31 @@ function zoomAt(factor, clientX, clientY) {
   applyCamera();
 }
 
+function cancelSmoothScroll() {
+  if (state.scrollFrame) cancelAnimationFrame(state.scrollFrame);
+  state.scrollFrame = null;
+  state.scrollTarget = null;
+}
+
+function smoothScrollBy(deltaX, deltaY) {
+  state.scrollTarget ??= { x: camera().x, y: camera().y };
+  state.scrollTarget.x -= deltaX;
+  state.scrollTarget.y -= deltaY;
+  if (state.scrollFrame) return;
+  const step = () => {
+    const target = state.scrollTarget;
+    if (!target) return;
+    camera().x += (target.x - camera().x) * 0.28;
+    camera().y += (target.y - camera().y) * 0.28;
+    const settled = Math.abs(target.x - camera().x) < 0.35 && Math.abs(target.y - camera().y) < 0.35;
+    if (settled) { camera().x = target.x; camera().y = target.y; }
+    applyCamera();
+    state.scrollFrame = settled ? null : requestAnimationFrame(step);
+    if (settled) state.scrollTarget = null;
+  };
+  state.scrollFrame = requestAnimationFrame(step);
+}
+
 function autoGrow(textarea) {
   textarea.style.height = '0px';
   textarea.style.height = `${Math.min(textarea.scrollHeight, 180)}px`;
@@ -295,6 +333,8 @@ function renderSettingsPanel() {
   const panel = settingsDialog.querySelector('#settings-panel');
   if (draft.tab === 'agents') {
     panel.innerHTML = `<label class="settings-agents-label">AGENTS.md<textarea name="agentsMd" rows="8" placeholder="Инструкции для этой сессии">${escapeHtml(draft.agentsMd)}</textarea></label>`;
+  } else if (draft.tab === 'system') {
+    panel.innerHTML = `<label class="settings-agents-label">Системный промпт<textarea name="systemPrompt" rows="8" placeholder="Инструкции для модели OpenRouter">${escapeHtml(draft.systemPrompt)}</textarea></label>`;
   } else if (draft.tab === 'skills') {
     panel.innerHTML = `<label class="search-label">Поиск скиллов<input type="search" data-search="skills" placeholder="Найти скилл…" value="${escapeHtml(draft.skillSearch)}"></label>
       <div class="settings-list">${SKILLS.map((item) => `<label class="check-option" data-filter-item><input type="checkbox" data-setting="skill" value="${escapeHtml(item)}" ${draft.skills.includes(item) ? 'checked' : ''}><span>${escapeHtml(item)}</span></label>`).join('')}</div>
@@ -305,11 +345,10 @@ function renderSettingsPanel() {
       <div class="settings-list mcp-list">${MCP_SERVERS.map((server) => {
         const expanded = draft.expandedMcp.has(server.name);
         const tools = draft.mcpTools[server.name];
-        return `<section class="mcp-server" data-filter-item>
-          <div class="mcp-server-main"><label class="check-option"><input type="checkbox" data-setting="mcp" value="${escapeHtml(server.name)}" ${draft.mcp.includes(server.name) ? 'checked' : ''}><span>${escapeHtml(server.name)}</span></label>
-            <span class="tool-count">${tools.length}/${server.tools.length} инструментов</span>
-            <button class="icon-button mcp-expand" type="button" data-action="toggle-mcp-tools" data-server="${escapeHtml(server.name)}" aria-label="Инструменты: ${escapeHtml(server.name)}" aria-expanded="${expanded}">${icon('chevron', 16)}</button></div>
-          <div class="mcp-tools" ${expanded ? '' : 'hidden'}>${server.tools.map((tool) => `<label class="check-option tool-option"><input type="checkbox" data-setting="mcp-tool" data-server="${escapeHtml(server.name)}" value="${escapeHtml(tool.id)}" ${tools.includes(tool.id) ? 'checked' : ''}><span><strong>${escapeHtml(tool.id)}</strong><small>${escapeHtml(tool.description)}</small></span></label>`).join('')}</div>
+        return `<section class="mcp-server ${expanded ? 'expanded' : ''}" data-filter-item>
+          <div class="mcp-server-main"><label class="mcp-enable" title="Включить MCP"><input type="checkbox" data-setting="mcp" value="${escapeHtml(server.name)}" aria-label="Включить ${escapeHtml(server.name)}" ${draft.mcp.includes(server.name) ? 'checked' : ''}></label>
+            <button class="mcp-server-toggle" type="button" data-action="toggle-mcp-tools" data-server="${escapeHtml(server.name)}" aria-label="Инструменты: ${escapeHtml(server.name)}" aria-expanded="${expanded}" aria-controls="mcp-tools-${MCP_SERVERS.indexOf(server)}"><span>${escapeHtml(server.name)}</span><span class="tool-count">${tools.length}/${server.tools.length} инструментов</span>${icon('chevron', 16)}</button></div>
+          <div class="mcp-tools" id="mcp-tools-${MCP_SERVERS.indexOf(server)}" aria-hidden="${!expanded}" ${expanded ? '' : 'inert'}><div class="mcp-tools-inner">${server.tools.map((tool) => `<label class="check-option tool-option"><input type="checkbox" data-setting="mcp-tool" data-server="${escapeHtml(server.name)}" value="${escapeHtml(tool.id)}" ${tools.includes(tool.id) ? 'checked' : ''}><span><strong>${escapeHtml(tool.id)}</strong><small>${escapeHtml(tool.description)}</small></span></label>`).join('')}</div></div>
         </section>`;
       }).join('')}</div><p class="search-empty" hidden>Ничего не найдено.</p>`;
     filterSettingsList(draft.mcpSearch);
@@ -330,14 +369,14 @@ function filterSettingsList(query) {
 
 function showSettings(lane) {
   state.settingsDraft = {
-    laneId: lane.id, tab: 'agents', agentsMd: lane.agentsMd ?? '',
+    laneId: lane.id, tab: lane.provider === 'OpenRouter' ? 'system' : 'agents', agentsMd: lane.agentsMd ?? '', systemPrompt: lane.systemPrompt ?? '',
     skills: [...(lane.skills ?? ['Работа с файлами'])], mcp: [...(lane.mcp ?? [])],
     mcpTools: Object.fromEntries(MCP_SERVERS.map((server) => [server.name, [...(lane.mcpTools?.[server.name] ?? server.tools.map((tool) => tool.id))]])),
     skillSearch: '', mcpSearch: '', expandedMcp: new Set(),
   };
   settingsDialog.innerHTML = `<form method="dialog" id="settings-form" data-lane="${lane.id}">
     <div class="dialog-heading"><h2>Настройки сессии</h2><button type="button" class="icon-button" data-action="close-settings" aria-label="Закрыть">${icon('close', 19)}</button></div>
-    <div class="settings-tabs" role="tablist" aria-label="Раздел настроек">${[['agents', 'AGENTS.md'], ['skills', 'Скиллы'], ['mcp', 'MCP']].map(([key, label]) => `<button class="settings-tab ${key === 'agents' ? 'active' : ''}" type="button" role="tab" data-action="settings-tab" data-tab="${key}" aria-selected="${key === 'agents'}">${label}</button>`).join('')}</div>
+    <div class="settings-tabs" role="tablist" aria-label="Раздел настроек">${[...(lane.provider === 'OpenRouter' ? [['system', 'Системный промпт']] : [['agents', 'AGENTS.md']]), ['skills', 'Скиллы'], ['mcp', 'MCP']].map(([key, label]) => `<button class="settings-tab ${key === state.settingsDraft.tab ? 'active' : ''}" type="button" role="tab" data-action="settings-tab" data-tab="${key}" aria-selected="${key === state.settingsDraft.tab}">${label}</button>`).join('')}</div>
     <div id="settings-panel" class="settings-panel" role="tabpanel"></div>
     <div class="dialog-actions"><button type="button" class="secondary-button" data-action="close-settings">Отмена</button><button type="submit" class="primary-button">Сохранить</button></div>
   </form>`;
@@ -367,6 +406,23 @@ function addBoard() {
   }] });
   state.activeBoardId = id;
   render();
+}
+
+function insertSession(referenceId, before) {
+  const reference = laneById(referenceId);
+  if (!reference) return;
+  const id = uid();
+  const index = board().lanes.findIndex((lane) => lane.id === referenceId) + (before ? 0 : 1);
+  board().lanes.splice(index, 0, {
+    id, rootId: id, parentId: null, x: 0, y: 0, width: 476,
+    title: 'Новая сессия', provider: reference.provider,
+    model: reference.model, context: 0,
+    approval: 'Ручное', effort: 'Средний', speed: 'Обычная', temperature: 0.7, messages: [],
+  });
+  board().selectedLaneId = id;
+  render();
+  focusLane(id);
+  toast('Сессия добавлена.');
 }
 
 function branchFrom(lane, message) {
@@ -436,7 +492,8 @@ function archiveLane(lane) {
 function showArchive() {
   const archived = board().lanes.filter((lane) => lane.archived);
   archiveDialog.innerHTML = `<div class="dialog-heading"><h2>Архив сессий</h2><button type="button" class="icon-button" data-action="close-archive" aria-label="Закрыть">${icon('close', 19)}</button></div>
-    <div class="archive-list">${archived.length ? archived.map((lane) => `<div class="archive-item"><span>${escapeHtml(lane.title)}</span><button type="button" class="secondary-button" data-action="restore" data-lane="${lane.id}">Восстановить</button></div>`).join('') : '<p>Архив пуст.</p>'}</div>`;
+    <label class="search-label">Поиск сессии<input type="search" data-search="archive" placeholder="Найти в архиве…"></label>
+    <div class="archive-list">${archived.length ? archived.map((lane) => `<div class="archive-item" data-archive-item><span>${escapeHtml(lane.title)}</span><button type="button" class="secondary-button" data-action="restore" data-lane="${lane.id}">Восстановить</button></div>`).join('') : '<p>Архив пуст.</p>'}</div><p class="search-empty archive-empty" hidden>Ничего не найдено.</p>`;
   archiveDialog.showModal();
 }
 
@@ -477,6 +534,7 @@ app.addEventListener('click', async (event) => {
     const message = lane?.messages.find((item) => item.id === button.dataset.message);
     if (action === 'select-board') { state.activeBoardId = button.dataset.board; render(); return; }
     if (action === 'add-board') { addBoard(); return; }
+    if (action === 'insert-session') { insertSession(button.dataset.insertBefore ?? button.dataset.insertAfter, Boolean(button.dataset.insertBefore)); return; }
     if (action === 'toggle-mode') { state.mode = state.mode === 'free' ? 'fixed' : 'free'; render(); if (state.mode === 'fixed') focusLane(board().selectedLaneId); return; }
     if (action === 'zoom-in' || action === 'zoom-out') {
       const rect = document.querySelector('#board-viewport').getBoundingClientRect();
@@ -563,13 +621,16 @@ app.addEventListener('keydown', (event) => {
 
 app.addEventListener('wheel', (event) => {
   if (!event.target.closest('#board-viewport')) return;
+  if (event.target.closest('textarea,.config-popover')) return;
   event.preventDefault();
   if (event.metaKey || event.ctrlKey) {
     zoomAt(Math.exp(-event.deltaY * 0.002), event.clientX, event.clientY);
   } else {
-    camera().y -= event.deltaY;
-    if (state.mode === 'free' && event.shiftKey) camera().x -= event.deltaY;
-    applyCamera();
+    const viewport = document.querySelector('#board-viewport');
+    const unit = event.deltaMode === 1 ? 16 : event.deltaMode === 2 ? viewport.clientHeight : 1;
+    const horizontal = state.mode === 'free' ? (event.deltaX || (event.shiftKey ? event.deltaY : 0)) * unit : 0;
+    const vertical = event.shiftKey && !event.deltaX && state.mode === 'free' ? 0 : event.deltaY * unit;
+    smoothScrollBy(horizontal, vertical);
   }
 }, { passive: false });
 
@@ -578,20 +639,22 @@ app.addEventListener('pointerdown', (event) => {
   if (!viewport) return;
   if (event.button === 1) {
     event.preventDefault();
+    cancelSmoothScroll();
     state.drag = { kind: 'camera', x: event.clientX, y: event.clientY, initialX: camera().x, initialY: camera().y };
+    return;
+  }
+  const boundary = event.target.closest('[data-resize-boundary]');
+  if (event.button === 0 && boundary) {
+    event.preventDefault();
+    cancelSmoothScroll();
+    const lane = laneById(boundary.dataset.resizeBoundary);
+    state.drag = { kind: 'resize-boundary', x: event.clientX, laneId: lane.id, width: lane.width };
+    document.body.classList.add('is-resizing');
     return;
   }
   const reorder = event.target.closest('[data-drop-root]');
   if (event.button === 0 && reorder && !event.target.closest('button,input,textarea')) {
     state.drag = { kind: 'reorder', laneId: reorder.dataset.dropRoot, x: event.clientX, y: event.clientY, active: false, targetId: null, preview: null };
-    return;
-  }
-  if (event.button !== 0 || event.target.closest('button,input,textarea,.lane-title')) return;
-  const resize = event.target.closest('[data-resize-lane]');
-  if (resize) {
-    event.preventDefault();
-    const lane = laneById(resize.dataset.resizeLane);
-    state.drag = { kind: 'resize', x: event.clientX, laneId: lane.id, width: lane.width };
     return;
   }
 });
@@ -628,18 +691,20 @@ window.addEventListener('pointermove', (event) => {
       camera().x = document.querySelector('#board-viewport').clientWidth / 2 - (lane.x + lane.width / 2) * camera().zoom;
     }
     applyCamera();
-  } else if (drag.kind === 'resize') {
+  } else if (drag.kind === 'resize-boundary') {
     const lane = laneById(drag.laneId);
-    lane.width = Math.max(360, Math.min(640, Math.round(drag.width + (event.clientX - drag.x) / camera().zoom)));
+    const width = Math.max(360, Math.min(900, Math.round(drag.width + (event.clientX - drag.x) / camera().zoom)));
+    if (width === lane.width) return;
+    lane.width = width;
     render();
-    renderConnections();
-    updateStickyHeaders();
+    if (state.mode === 'fixed') focusLane(board().selectedLaneId, false);
   }
 });
 
 window.addEventListener('pointerup', () => {
   const drag = state.drag;
   state.drag = null;
+  document.body.classList.remove('is-resizing');
   if (drag?.kind !== 'reorder') return;
   document.body.classList.remove('is-reordering');
   drag.preview?.remove();
@@ -665,13 +730,19 @@ settingsDialog.addEventListener('click', (event) => {
   if (button.dataset.action === 'toggle-mcp-tools') {
     const expanded = state.settingsDraft.expandedMcp;
     expanded.has(button.dataset.server) ? expanded.delete(button.dataset.server) : expanded.add(button.dataset.server);
-    button.setAttribute('aria-expanded', String(expanded.has(button.dataset.server)));
-    button.closest('.mcp-server').querySelector('.mcp-tools').hidden = !expanded.has(button.dataset.server);
+    const isExpanded = expanded.has(button.dataset.server);
+    button.setAttribute('aria-expanded', String(isExpanded));
+    const server = button.closest('.mcp-server');
+    server.classList.toggle('expanded', isExpanded);
+    const tools = server.querySelector('.mcp-tools');
+    tools.setAttribute('aria-hidden', String(!isExpanded));
+    tools.inert = !isExpanded;
   }
 });
 settingsDialog.addEventListener('input', (event) => {
   if (!state.settingsDraft) return;
   if (event.target.name === 'agentsMd') state.settingsDraft.agentsMd = event.target.value;
+  if (event.target.name === 'systemPrompt') state.settingsDraft.systemPrompt = event.target.value;
   if (event.target.dataset.search) {
     state.settingsDraft[event.target.dataset.search === 'skills' ? 'skillSearch' : 'mcpSearch'] = event.target.value;
     filterSettingsList(event.target.value);
@@ -701,6 +772,8 @@ settingsDialog.addEventListener('submit', (event) => {
   const changes = [];
   const agentsMd = draft.agentsMd.trim();
   if ((lane.agentsMd ?? '') !== agentsMd) { lane.agentsMd = agentsMd; changes.push('AGENTS.md'); }
+  const systemPrompt = draft.systemPrompt.trim();
+  if (lane.provider === 'OpenRouter' && (lane.systemPrompt ?? '') !== systemPrompt) { lane.systemPrompt = systemPrompt; changes.push('системный промпт'); }
   for (const key of ['skills', 'mcp']) {
     const values = draft[key];
     const original = lane[key] ?? (key === 'skills' ? ['Работа с файлами'] : []);
@@ -767,6 +840,16 @@ archiveDialog.addEventListener('click', (event) => {
     render();
     toast('Сессия восстановлена.');
   }
+});
+archiveDialog.addEventListener('input', (event) => {
+  if (event.target.dataset.search !== 'archive') return;
+  const query = event.target.value.trim().toLocaleLowerCase('ru');
+  let visible = 0;
+  archiveDialog.querySelectorAll('[data-archive-item]').forEach((item) => {
+    item.hidden = !item.querySelector('span').textContent.toLocaleLowerCase('ru').includes(query);
+    if (!item.hidden) visible += 1;
+  });
+  archiveDialog.querySelector('.archive-empty').hidden = visible > 0 || archiveDialog.querySelectorAll('[data-archive-item]').length === 0;
 });
 
 render();
