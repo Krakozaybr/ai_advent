@@ -27,6 +27,8 @@ import kotlinx.serialization.json.contentOrNull
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 import kotlinx.serialization.json.put
+import kotlinx.serialization.json.doubleOrNull
+import kotlinx.serialization.json.intOrNull
 import io.ktor.server.netty.Netty
 import io.ktor.server.engine.embeddedServer
 import java.nio.file.Path
@@ -36,10 +38,12 @@ private val json = Json { ignoreUnknownKeys = true }
 fun Application.module(
     store: WorkspaceStore = WorkspaceStore(Path.of(System.getenv("AI_ADVENT_V3_DB") ?: "v3/data/board.sqlite")),
     codex: CodexGateway = CodexAppServer(),
+    openRouter: OpenRouterGateway = OpenRouterHttpGateway(),
+    openRouterKeys: OpenRouterKeyStore = OpenRouterKeyStore(Path.of(System.getenv("AI_ADVENT_V3_SETTINGS") ?: "../data/openrouter.key")),
 ) {
     install(ContentNegotiation) { json(json) }
     install(SSE)
-    val coordinator = RunCoordinator(store, codex)
+    val coordinator = RunCoordinator(store, codex, openRouter, openRouterKeys)
     monitor.subscribe(ApplicationStopped) { coordinator.close() }
 
     routing {
@@ -77,10 +81,39 @@ fun Application.module(
 
         post("/api/boards/{boardId}/lanes") {
             val boardId = call.parameters["boardId"]
+            val provider = runCatching { call.receive<JsonObject>()["provider"]?.jsonPrimitive?.contentOrNull }.getOrNull() ?: "codex"
+            if (provider !in setOf("codex", "openrouter")) {
+                call.respond(HttpStatusCode.BadRequest, buildJsonObject { put("error", "Провайдер ленты должен быть Codex или OpenRouter.") })
+                return@post
+            }
             try {
-                call.respond(HttpStatusCode.Created, store.createLane(boardId ?: ""))
+                call.respond(HttpStatusCode.Created, store.createLane(boardId ?: "", provider))
             } catch (_: IllegalStateException) {
                 call.respond(HttpStatusCode.NotFound, buildJsonObject { put("error", "Доска не найдена.") })
+            }
+        }
+
+        patch("/api/lanes/{laneId}/config") {
+            val laneId = call.parameters["laneId"]
+            val body = runCatching { call.receive<JsonObject>() }.getOrNull()
+            val model = body?.get("model")?.jsonPrimitive?.contentOrNull
+            val temperature = body?.get("temperature")?.jsonPrimitive?.doubleOrNull
+            val maxTokens = body?.get("maxTokens")?.jsonPrimitive?.intOrNull
+            val stop = body?.get("stop")?.jsonPrimitive?.contentOrNull
+            if (laneId == null || model == null) {
+                call.respond(HttpStatusCode.BadRequest, buildJsonObject { put("error", "Укажи модель и параметры ленты.") })
+                return@patch
+            }
+            try {
+                if (store.providerForLane(laneId) == "codex" && (temperature != null || maxTokens != null || !stop.isNullOrBlank())) {
+                    call.respond(HttpStatusCode.BadRequest, buildJsonObject { put("error", "Codex не принимает эти параметры.") })
+                    return@patch
+                }
+                call.respond(store.updateLaneConfig(laneId, model, temperature, maxTokens, stop))
+            } catch (error: IllegalArgumentException) {
+                call.respond(HttpStatusCode.BadRequest, buildJsonObject { put("error", error.message ?: "Параметры некорректны.") })
+            } catch (_: IllegalStateException) {
+                call.respond(HttpStatusCode.NotFound, buildJsonObject { put("error", "Лента не найдена.") })
             }
         }
 
@@ -228,6 +261,32 @@ fun Application.module(
             }
         }
 
+        get("/api/codex/models") {
+            try {
+                call.respond(buildJsonObject { put("models", codex.models()) })
+            } catch (_: Exception) {
+                call.respond(HttpStatusCode.ServiceUnavailable, buildJsonObject { put("error", "Список моделей Codex недоступен.") })
+            }
+        }
+
+        get("/api/openrouter/status") {
+            call.respond(buildJsonObject { put("configured", openRouterKeys.isConfigured()) })
+        }
+
+        post("/api/openrouter/key") {
+            val key = runCatching { call.receive<JsonObject>()["apiKey"]?.jsonPrimitive?.contentOrNull }.getOrNull()
+            if (key.isNullOrBlank()) {
+                call.respond(HttpStatusCode.BadRequest, buildJsonObject { put("error", "Введи API-ключ OpenRouter.") })
+                return@post
+            }
+            try {
+                openRouterKeys.save(key)
+                call.respond(buildJsonObject { put("configured", true) })
+            } catch (error: IllegalArgumentException) {
+                call.respond(HttpStatusCode.BadRequest, buildJsonObject { put("error", error.message ?: "Ключ некорректен.") })
+            }
+        }
+
         post("/api/codex/login") {
             try {
                 val login = codex.beginLogin()
@@ -242,34 +301,53 @@ fun Application.module(
 
         post("/api/lanes/{laneId}/messages") {
             val laneId = call.parameters["laneId"]
-            val prompt = try {
-                call.receive<JsonObject>()["text"]?.jsonPrimitive?.contentOrNull?.trim().orEmpty()
+            val body = try {
+                call.receive<JsonObject>()
             } catch (_: Exception) {
-                ""
+                buildJsonObject {}
             }
+            val prompt = body["text"]?.jsonPrimitive?.contentOrNull?.trim().orEmpty()
+            val parameters = body["parameters"]?.jsonObject
             if (laneId == null || prompt.isBlank() || prompt.length > 6_000) {
                 call.respond(HttpStatusCode.BadRequest, buildJsonObject {
                     put("error", "Введи сообщение длиной до 6000 символов.")
                 })
                 return@post
             }
-            val status = try {
-                codex.status()
-            } catch (_: Exception) {
-                call.respond(HttpStatusCode.ServiceUnavailable, buildJsonObject {
-                    put("error", "Codex app-server недоступен.")
-                })
+            val provider = try { store.providerForLane(laneId) } catch (_: IllegalStateException) {
+                call.respond(HttpStatusCode.NotFound, buildJsonObject { put("error", "Лента не найдена.") })
                 return@post
             }
-            if (!status.authenticated) {
-                call.respond(HttpStatusCode.Unauthorized, buildJsonObject {
-                    put("error", "Сначала войди в Codex через подписку ChatGPT.")
-                })
+            if (provider == "codex") {
+                val status = try { codex.status() } catch (_: Exception) {
+                    call.respond(HttpStatusCode.ServiceUnavailable, buildJsonObject { put("error", "Codex app-server недоступен.") })
+                    return@post
+                }
+                if (!status.authenticated) {
+                    call.respond(HttpStatusCode.Unauthorized, buildJsonObject { put("error", "Сначала войди в Codex через подписку ChatGPT.") })
+                    return@post
+                }
+            } else if (!openRouterKeys.isConfigured()) {
+                call.respond(HttpStatusCode.Unauthorized, buildJsonObject { put("error", "Сначала сохрани API-ключ OpenRouter в настройках.") })
+                return@post
+            }
+            val overrides = RequestOverrides(
+                parameters?.get("model")?.jsonPrimitive?.contentOrNull,
+                parameters?.get("temperature")?.jsonPrimitive?.doubleOrNull,
+                parameters?.get("maxTokens")?.jsonPrimitive?.intOrNull,
+                parameters?.get("stop")?.jsonPrimitive?.contentOrNull,
+            )
+            if (provider == "codex" && parameters != null &&
+                listOf("temperature", "maxTokens", "stop").any { parameters.containsKey(it) }
+            ) {
+                call.respond(HttpStatusCode.BadRequest, buildJsonObject { put("error", "Codex не принимает temperature, max tokens и stop.") })
                 return@post
             }
             try {
-                val runId = coordinator.submit(laneId, prompt)
+                val runId = coordinator.submit(laneId, prompt, overrides)
                 call.respond(HttpStatusCode.Accepted, buildJsonObject { put("runId", runId) })
+            } catch (error: IllegalArgumentException) {
+                call.respond(HttpStatusCode.BadRequest, buildJsonObject { put("error", error.message ?: "Параметры запроса некорректны.") })
             } catch (_: ActiveRunException) {
                 call.respond(HttpStatusCode.Conflict, buildJsonObject {
                     put("error", "В этой ленте уже выполняется запрос.")
@@ -277,6 +355,15 @@ fun Application.module(
             } catch (_: IllegalStateException) {
                 call.respond(HttpStatusCode.NotFound, buildJsonObject { put("error", "Лента не найдена.") })
             }
+        }
+
+        post("/api/runs/{runId}/cancel") {
+            val runId = call.parameters["runId"]
+            if (runId == null || !store.runExists(runId)) {
+                call.respond(HttpStatusCode.NotFound, buildJsonObject { put("error", "Запрос не найден.") })
+                return@post
+            }
+            call.respond(buildJsonObject { put("cancelled", coordinator.cancel(runId)) })
         }
 
         sse("/api/runs/{runId}/events") {

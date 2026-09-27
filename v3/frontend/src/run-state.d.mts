@@ -1,4 +1,4 @@
-export type RunStatus = "idle" | "running" | "completed" | "failed";
+export type RunStatus = "idle" | "running" | "completed" | "failed" | "cancelled";
 
 export type RunState = {
   sequence: number;
@@ -9,7 +9,7 @@ export type RunState = {
 
 export type RunEvent = {
   sequence: number;
-  type: "run.started" | "text.delta" | "run.completed" | "run.failed";
+  type: "run.started" | "text.delta" | "run.completed" | "run.failed" | "run.cancelled";
   data: { text?: string; error?: string };
 };
 

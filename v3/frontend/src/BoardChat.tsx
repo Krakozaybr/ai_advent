@@ -13,6 +13,8 @@ type Message = {
   runError?: string;
   hasBranches?: boolean;
   createdAt?: string;
+  requestConfig?: Record<string, unknown>;
+  technicalDetails?: Record<string, unknown>;
 };
 
 type Lane = {
@@ -26,11 +28,17 @@ type Lane = {
   x: number;
   y: number;
   width: number;
+  provider: "codex" | "openrouter";
+  model: string;
+  temperature?: number;
+  maxTokens?: number;
+  stop?: string;
 };
 
 type BoardSummary = { id: string; title: string };
 type BoardResponse = { board: BoardSummary; lanes: Lane[] };
 type CodexStatus = { authenticated: boolean; planType?: string; error?: string };
+type CodexModel = { slug?: string; displayName?: string; isDefault?: boolean };
 
 async function readJson<T>(url: string, init?: RequestInit): Promise<T> {
   const response = await fetch(url, init);
@@ -45,6 +53,10 @@ export function BoardChat() {
   const [board, setBoard] = useState<BoardResponse | null>(null);
   const [codex, setCodex] = useState<CodexStatus | null>(null);
   const [authUrl, setAuthUrl] = useState<string | null>(null);
+  const [codexModels, setCodexModels] = useState<CodexModel[]>([]);
+  const [openRouterConfigured, setOpenRouterConfigured] = useState(false);
+  const [openRouterKey, setOpenRouterKey] = useState("");
+  const [newLaneProvider, setNewLaneProvider] = useState<"codex" | "openrouter">("codex");
   const [error, setError] = useState<string | null>(null);
   const [focusMode, setFocusMode] = useState(() => window.localStorage.getItem("workspace.focusMode") === "true");
   const [selectedLaneId, setSelectedLaneId] = useState(() => window.localStorage.getItem("workspace.selectedLaneId"));
@@ -59,9 +71,16 @@ export function BoardChat() {
   const refreshCodex = useCallback(async () => {
     try {
       setCodex(await readJson<CodexStatus>("/api/codex/status"));
+      const result = await readJson<{ models: CodexModel[] }>("/api/codex/models");
+      setCodexModels(result.models);
     } catch (cause) {
       setCodex({ authenticated: false, error: cause instanceof Error ? cause.message : "Codex недоступен" });
     }
+  }, []);
+
+  const refreshOpenRouter = useCallback(async () => {
+    const status = await readJson<{ configured: boolean }>("/api/openrouter/status");
+    setOpenRouterConfigured(status.configured);
   }, []);
 
   const refreshBoards = useCallback(async () => {
@@ -77,10 +96,10 @@ export function BoardChat() {
   }, [refreshBoard]);
 
   useEffect(() => {
-    void Promise.all([refreshBoards(), refreshCodex()]).catch((cause: unknown) => {
+    void Promise.all([refreshBoards(), refreshCodex(), refreshOpenRouter()]).catch((cause: unknown) => {
       setError(cause instanceof Error ? cause.message : "Не удалось загрузить доски");
     });
-  }, [refreshBoards, refreshCodex]);
+  }, [refreshBoards, refreshCodex, refreshOpenRouter]);
 
   useEffect(() => {
     if (!authUrl || codex?.authenticated) return;
@@ -114,9 +133,48 @@ export function BoardChat() {
     if (!activeBoardId) return;
     setError(null);
     try {
-      setBoard(await readJson<BoardResponse>(`/api/boards/${encodeURIComponent(activeBoardId)}/lanes`, { method: "POST" }));
+      setBoard(await readJson<BoardResponse>(`/api/boards/${encodeURIComponent(activeBoardId)}/lanes`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ provider: newLaneProvider }),
+      }));
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : "Не удалось создать ленту");
+    }
+  }
+
+  async function saveLaneConfig(laneId: string, config: Pick<Lane, "model" | "temperature" | "maxTokens" | "stop">) {
+    try {
+      setBoard(await readJson<BoardResponse>(`/api/lanes/${encodeURIComponent(laneId)}/config`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(config),
+      }));
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : "Не удалось сохранить параметры ленты");
+    }
+  }
+
+  async function saveOpenRouterKey() {
+    try {
+      const result = await readJson<{ configured: boolean }>("/api/openrouter/key", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ apiKey: openRouterKey }),
+      });
+      setOpenRouterConfigured(result.configured);
+      setOpenRouterKey("");
+      setError(null);
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : "Не удалось сохранить ключ OpenRouter");
+    }
+  }
+
+  async function cancelRun(runId: string) {
+    try {
+      await readJson(`/api/runs/${encodeURIComponent(runId)}/cancel`, { method: "POST" });
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : "Не удалось отменить запрос");
     }
   }
 
@@ -247,6 +305,14 @@ export function BoardChat() {
           {!codex?.authenticated && <button className="login-link" onClick={() => void startLogin()}>{authUrl ? "Открыть вход" : "Войти"}</button>}
           {authUrl && !codex?.authenticated && <a className="auth-link" href={authUrl} target="_blank" rel="noreferrer" aria-label="Открыть вход через ChatGPT">↗</a>}
         </div>
+        <details className="provider-settings">
+          <summary>Ключ OpenRouter</summary>
+          <form onSubmit={(event) => { event.preventDefault(); void saveOpenRouterKey(); }}>
+            <span>{openRouterConfigured ? "Ключ сохранён на сервере" : "Ключ не задан"}</span>
+            <input type="password" autoComplete="new-password" value={openRouterKey} onChange={(event) => setOpenRouterKey(event.target.value)} placeholder="sk-or-…" aria-label="API-ключ OpenRouter" />
+            <button type="submit" disabled={!openRouterKey.trim()}>Сохранить</button>
+          </form>
+        </details>
       </header>
 
       {!codex?.authenticated && (
@@ -273,6 +339,8 @@ export function BoardChat() {
                 lane={lane}
                 lanes={board.lanes}
                 authenticated={Boolean(codex?.authenticated)}
+                openRouterConfigured={openRouterConfigured}
+                codexModels={codexModels}
                 onRefresh={() => refreshBoard(board.board.id)}
                 onBranch={(messageId) => void createBranch(lane.id, messageId)}
                 onClone={() => void cloneLane(lane.id)}
@@ -280,14 +348,20 @@ export function BoardChat() {
                 onSaveLayout={(layout) => void saveLaneLayout(lane.id, layout)}
                 onCopy={(messageId, targetLaneId) => void copyMessage(lane.id, messageId, targetLaneId)}
                 onMutate={mutateMessage}
+                onSaveConfig={(config) => void saveLaneConfig(lane.id, config)}
+                onCancelRun={cancelRun}
                 selected={selectedLaneId === lane.id}
               />
             ))}
-            <button
+            <div
               className="new-lane"
               style={{ left: 24, top: canvasExtent!.newLaneY }}
-              onClick={() => void createLane()}
-            ><span>＋</span> Добавить ленту</button>
+            >
+              <select aria-label="Провайдер новой ленты" value={newLaneProvider} onChange={(event) => setNewLaneProvider(event.target.value as "codex" | "openrouter")}>
+                <option value="codex">Codex</option><option value="openrouter">OpenRouter</option>
+              </select>
+              <button type="button" onClick={() => void createLane()}><span>＋</span> Добавить ленту</button>
+            </div>
           </div>
         ) : <div className="loading">Открываю доску…</div>}
       </section>
@@ -295,10 +369,12 @@ export function BoardChat() {
   );
 }
 
-function LaneView({ lane, lanes, authenticated, onRefresh, onBranch, onClone, onSelect, onSaveLayout, onCopy, onMutate, selected }: {
+function LaneView({ lane, lanes, authenticated, openRouterConfigured, codexModels, onRefresh, onBranch, onClone, onSelect, onSaveLayout, onCopy, onMutate, onSaveConfig, onCancelRun, selected }: {
   lane: Lane;
   lanes: Lane[];
   authenticated: boolean;
+  openRouterConfigured: boolean;
+  codexModels: CodexModel[];
   onRefresh: () => Promise<BoardResponse>;
   onBranch: (messageId: string) => void;
   onClone: () => void;
@@ -306,6 +382,8 @@ function LaneView({ lane, lanes, authenticated, onRefresh, onBranch, onClone, on
   onSaveLayout: (layout: { x: number; y: number; width: number }) => void;
   onCopy: (messageId: string, targetLaneId: string) => void;
   onMutate: (messageId: string, content: string | null) => Promise<void>;
+  onSaveConfig: (config: Pick<Lane, "model" | "temperature" | "maxTokens" | "stop">) => void;
+  onCancelRun: (runId: string) => void;
   selected: boolean;
 }) {
   const [message, setMessage] = useState("");
@@ -318,8 +396,15 @@ function LaneView({ lane, lanes, authenticated, onRefresh, onBranch, onClone, on
   const [editingMessageId, setEditingMessageId] = useState<string | null>(null);
   const [editedContent, setEditedContent] = useState("");
   const [copyTarget, setCopyTarget] = useState("");
+  const [config, setConfig] = useState({ model: lane.model, temperature: lane.temperature ?? 0.7, maxTokens: lane.maxTokens ?? 2048, stop: lane.stop ?? "" });
+  const providerReady = lane.provider === "codex" ? authenticated : openRouterConfigured;
+
+  function persistConfig(next = config) {
+    onSaveConfig(lane.provider === "codex" ? { model: next.model } : next);
+  }
 
   useEffect(() => setLayout({ x: lane.x, y: lane.y, width: lane.width }), [lane.x, lane.y, lane.width]);
+  useEffect(() => setConfig({ model: lane.model, temperature: lane.temperature ?? 0.7, maxTokens: lane.maxTokens ?? 2048, stop: lane.stop ?? "" }), [lane.model, lane.temperature, lane.maxTokens, lane.stop]);
 
   const listenToRun = useCallback((id: string, after: number) => {
     sourceRef.current?.close();
@@ -328,7 +413,7 @@ function LaneView({ lane, lanes, authenticated, onRefresh, onBranch, onClone, on
     source.onmessage = (event: MessageEvent<string>) => {
       const data = JSON.parse(event.data) as RunEvent;
       setRunState((current) => applyRunEvent(current, data));
-      if (data.type === "run.completed" || data.type === "run.failed") {
+      if (data.type === "run.completed" || data.type === "run.failed" || data.type === "run.cancelled") {
         source.close();
         if (sourceRef.current === source) sourceRef.current = null;
         setRunId(null);
@@ -357,7 +442,7 @@ function LaneView({ lane, lanes, authenticated, onRefresh, onBranch, onClone, on
   }
 
   function startMove(event: ReactPointerEvent<HTMLDivElement>) {
-    if (event.button !== 0 || (event.target as HTMLElement).closest("button, select, textarea")) return;
+    if (event.button !== 0 || (event.target as HTMLElement).closest("button, select, textarea, input, details")) return;
     event.preventDefault();
     onSelect();
     const startX = event.clientX;
@@ -434,10 +519,16 @@ function LaneView({ lane, lanes, authenticated, onRefresh, onBranch, onClone, on
     if (textareaRef.current) resizeTextarea(textareaRef.current);
     setRunState(emptyRunState());
     try {
+      const parameters = lane.provider === "codex" ? { model: config.model } : {
+        model: config.model,
+        temperature: config.temperature,
+        maxTokens: config.maxTokens,
+        stop: config.stop,
+      };
       const result = await readJson<{ runId: string }>(`/api/lanes/${lane.id}/messages`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ text }),
+        body: JSON.stringify({ text, parameters }),
       });
       setRunId(result.runId);
       const updated = await onRefresh();
@@ -459,9 +550,25 @@ function LaneView({ lane, lanes, authenticated, onRefresh, onBranch, onClone, on
   return (
     <article className={`lane ${selected ? "selected" : ""}`} data-lane-id={lane.id} style={{ left: layout.x, top: layout.y, width: layout.width }}>
       <div className="lane-heading" onPointerDown={startMove} onClick={onSelect}>
-        <span className="lane-dot" /><h2>{lane.title}</h2><span className="lane-provider">CODEX</span>
+        <span className="lane-dot" /><h2>{lane.title}</h2><span className="lane-provider">{lane.provider.toUpperCase()}</span>
         <button className="lane-clone" type="button" onPointerDown={(event) => event.stopPropagation()} onClick={onClone} disabled={running}>Клон</button>
       </div>
+      <details className="lane-settings">
+        <summary>Запрос · {config.model || "модель по умолчанию"}</summary>
+        <label>Модель
+          {lane.provider === "codex" && codexModels.length > 0 ? (
+            <select value={config.model} onChange={(event) => { const next = { ...config, model: event.target.value }; setConfig(next); persistConfig(next); }}>
+              <option value="">Модель Codex по умолчанию</option>
+              {codexModels.map((model) => model.slug && <option key={model.slug} value={model.slug}>{model.displayName ?? model.slug}{model.isDefault ? " · по умолчанию" : ""}</option>)}
+            </select>
+          ) : <input value={config.model} onChange={(event) => setConfig({ ...config, model: event.target.value })} onBlur={() => persistConfig()} aria-label="Модель" />}
+        </label>
+        {lane.provider === "openrouter" && <>
+          <label>Temperature<input type="number" min="0" max="2" step="0.1" value={config.temperature} onChange={(event) => setConfig({ ...config, temperature: Number(event.target.value) })} onBlur={() => persistConfig()} /></label>
+          <label>Максимум токенов<input type="number" min="1" max="200000" step="1" value={config.maxTokens} onChange={(event) => setConfig({ ...config, maxTokens: Number(event.target.value) })} onBlur={() => persistConfig()} /></label>
+          <label>Stop<input value={config.stop} onChange={(event) => setConfig({ ...config, stop: event.target.value })} onBlur={() => persistConfig()} /></label>
+        </>}
+      </details>
       {lane.originKind && (
         <div className={`lane-origin ${lane.originKind}`}>
           <span aria-hidden="true">↳</span>
@@ -472,7 +579,7 @@ function LaneView({ lane, lanes, authenticated, onRefresh, onBranch, onClone, on
       <div className="lane-messages" aria-live="polite">
         {lane.messages.filter((item) => !(item.role === "assistant" && item.runStatus === "running")).map((item) => (
           <article className={`message ${item.role}`} key={item.id}>
-            <div className="message-label">{item.role === "user" ? "ТЫ" : "CODEX"}</div>
+            <div className="message-label">{item.role === "user" ? "ТЫ" : lane.provider.toUpperCase()}</div>
             {editingMessageId === item.id ? (
               <div className="message-editor">
                 <textarea value={editedContent} onChange={(event) => setEditedContent(event.target.value)} aria-label="Изменить сообщение" />
@@ -481,6 +588,7 @@ function LaneView({ lane, lanes, authenticated, onRefresh, onBranch, onClone, on
               </div>
             ) : <MarkdownContent content={item.content} />}
             {item.runStatus === "failed" && <p className="message-error">{item.runError ?? "Ответ не завершён."}</p>}
+            {item.requestConfig && <details className="request-details"><summary>Параметры запроса</summary><pre>{JSON.stringify({ config: item.requestConfig, result: item.technicalDetails }, null, 2)}</pre></details>}
             <div className="message-actions">
               {item.hasBranches && <span className="branch-existing">Есть ветка</span>}
               <button type="button" onClick={() => onBranch(item.id)} disabled={running}>Ответвиться здесь</button>
@@ -502,8 +610,8 @@ function LaneView({ lane, lanes, authenticated, onRefresh, onBranch, onClone, on
           </article>
         ))}
         {runId && runState.status === "running" && runState.answer && (
-                <article className="message assistant streaming" aria-label="Ответ Codex поступает">
-            <div className="message-label">CODEX · ОТВЕТ</div>
+                <article className="message assistant streaming" aria-label="Ответ модели поступает">
+            <div className="message-label">{lane.provider.toUpperCase()} · ОТВЕТ</div>
           <MarkdownContent content={runState.answer} /><span className="cursor" />
           </article>
         )}
@@ -515,7 +623,7 @@ function LaneView({ lane, lanes, authenticated, onRefresh, onBranch, onClone, on
         <textarea
           ref={textareaRef}
           aria-label={`Сообщение для ${lane.title}`}
-          placeholder={authenticated ? "Напиши сообщение…" : "Войди в Codex, чтобы отправить запрос"}
+          placeholder={providerReady ? "Напиши сообщение…" : lane.provider === "codex" ? "Войди в Codex, чтобы отправить запрос" : "Добавь ключ OpenRouter в настройках"}
           value={message}
           onChange={(event) => { setMessage(event.target.value); resizeTextarea(event.currentTarget); }}
           onKeyDown={(event) => {
@@ -525,11 +633,12 @@ function LaneView({ lane, lanes, authenticated, onRefresh, onBranch, onClone, on
             }
           }}
           rows={1}
-          disabled={!authenticated || running}
+          disabled={!providerReady || running}
         />
         <div className="composer-footer">
           <span>{running ? "Запрос выполняется" : "Enter — отправить · Shift+Enter — новая строка"}</span>
-          <button className="button primary" type="submit" disabled={!authenticated || running || !message.trim()} aria-label="Отправить сообщение">
+          {running && runId && <button type="button" className="cancel-run" onClick={() => onCancelRun(runId)}>Отменить</button>}
+          <button className="button primary" type="submit" disabled={!providerReady || running || !message.trim()} aria-label="Отправить сообщение">
             ↗
           </button>
         </div>

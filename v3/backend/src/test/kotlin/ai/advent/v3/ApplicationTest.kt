@@ -6,17 +6,27 @@ import io.ktor.client.request.patch
 import io.ktor.client.request.post
 import io.ktor.client.request.delete
 import io.ktor.client.request.setBody
+import io.ktor.client.engine.mock.MockEngine
+import io.ktor.client.engine.mock.respond
+import io.ktor.client.HttpClient
 import io.ktor.client.statement.bodyAsText
 import io.ktor.http.ContentType
 import io.ktor.http.HttpHeaders
 import io.ktor.http.HttpStatusCode
+import io.ktor.http.headersOf
+import io.ktor.utils.io.ByteReadChannel
 import io.ktor.server.testing.testApplication
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.withTimeout
 import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.JsonArray
+import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
+import kotlinx.serialization.json.put
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
@@ -27,6 +37,64 @@ import java.util.concurrent.atomic.AtomicInteger
 
 class ApplicationTest {
     @Test
+    fun `test Codex app-server model selection uses the supported JSON-RPC fields`() = runBlocking {
+        val directory = Files.createTempDirectory("codex-app-server-mock-")
+        val executable = directory.resolve("fake-codex")
+        Files.writeString(executable, """#!/usr/bin/env python3
+import json, sys
+for line in sys.stdin:
+    request = json.loads(line)
+    method = request.get("method")
+    request_id = request.get("id")
+    if request_id is None:
+        continue
+    if method == "initialize":
+        result = {}
+    elif method == "account/read":
+        result = {"account": {"type": "chatgpt", "planType": "pro"}}
+    elif method == "model/list":
+        result = {"models": [{"slug": "gpt-test", "displayName": "Test"}]}
+    elif method in ("thread/start", "thread/resume"):
+        result = {"thread": {"id": "mock-thread"}}
+    elif method == "turn/start":
+        result = {"turn": {"id": "mock-turn"}}
+    else:
+        result = {}
+    print(json.dumps({"jsonrpc": "2.0", "id": request_id, "result": result}), flush=True)
+    if method == "turn/start":
+        print(json.dumps({"jsonrpc": "2.0", "method": "item/agentMessage/delta", "params": {"threadId": "mock-thread", "delta": request["params"].get("model", "default")}}), flush=True)
+        print(json.dumps({"jsonrpc": "2.0", "method": "turn/completed", "params": {"threadId": "mock-thread", "turn": {"status": "completed"}}}), flush=True)
+""")
+        Files.setPosixFilePermissions(executable, java.nio.file.attribute.PosixFilePermissions.fromString("rwx------"))
+        val codex = CodexAppServer(executable.toString(), directory.toString())
+        try {
+            assertTrue(codex.status().authenticated)
+            assertEquals("gpt-test", codex.models().single().jsonObject["slug"]!!.jsonPrimitive.content)
+            var threadId: String? = null
+            var seeded = false
+            val text = StringBuilder()
+            withTimeout(5_000) {
+                codex.stream(
+                    threadId = null,
+                    prompt = "Проверь модель",
+                    contextToSeed = emptyList(),
+                    shouldSeedContext = true,
+                    model = "gpt-test",
+                    onThreadId = { threadId = it },
+                    onContextSeeded = { seeded = true },
+                    onContextSeedFailed = { error("Не удалось подготовить контекст") },
+                    onText = { text.append(it) },
+                )
+            }
+            assertEquals("mock-thread", threadId)
+            assertTrue(seeded)
+            assertEquals("gpt-test", text.toString())
+        } finally {
+            codex.close()
+        }
+    }
+
+    @Test
     fun `test streamed answer is saved and restored with the Codex session`() = testApplication {
         val database = Files.createTempDirectory("ai-advent-v3-").resolve("board.sqlite")
         val store = WorkspaceStore(database)
@@ -36,6 +104,11 @@ class ApplicationTest {
         val initialBoard = client.get("/api/board").bodyAsText().let { Json.parseToJsonElement(it).jsonObject }
         val lane = initialBoard["lanes"]!!.jsonArray[0].jsonObject
         val laneId = lane["id"]!!.jsonPrimitive.content
+        val codexConfig = client.patch("/api/lanes/$laneId/config") {
+            header(HttpHeaders.ContentType, ContentType.Application.Json.toString())
+            setBody("""{"model":"gpt-test"}""")
+        }
+        assertEquals(HttpStatusCode.OK, codexConfig.status)
         val response = client.post("/api/lanes/$laneId/messages") {
             header(HttpHeaders.ContentType, ContentType.Application.Json.toString())
             setBody("""{"text":"Привет"}""")
@@ -44,6 +117,7 @@ class ApplicationTest {
         val runId = response.bodyAsText().let { Json.parseToJsonElement(it).jsonObject }
             .getValue("runId").jsonPrimitive.content
         fake.finished.await()
+        assertEquals("gpt-test", fake.runs.single().model)
 
         val stream = client.get("/api/runs/$runId/events").bodyAsText()
         assertTrue(stream.contains("\"type\":\"text.delta\""))
@@ -59,8 +133,135 @@ class ApplicationTest {
         val restoredBoardId = restored.boards()[0].jsonObject["id"]!!.jsonPrimitive.content
         val restoredLane = restored.board(restoredBoardId)["lanes"]!!.jsonArray[0].jsonObject
         assertEquals("fake-codex-thread-1", restoredLane["codexThreadId"]!!.jsonPrimitive.content)
+        val completedAssistant = restoredLane["messages"]!!.jsonArray.last().jsonObject
+        assertEquals("codex", completedAssistant["requestConfig"]!!.jsonObject["provider"]!!.jsonPrimitive.content)
+        assertEquals("gpt-test", completedAssistant["technicalDetails"]!!.jsonObject["model"]!!.jsonPrimitive.content)
+        assertTrue(!completedAssistant["requestConfig"]!!.jsonObject.containsKey("temperature"))
         assertEquals(messages.size, restoredLane["messages"]!!.jsonArray.size)
         restored.close()
+    }
+
+    @Test
+    fun `test OpenRouter HTTP stream uses server key and saves sanitized request details`() = testApplication {
+        val database = Files.createTempDirectory("ai-advent-openrouter-").resolve("board.sqlite")
+        val store = WorkspaceStore(database)
+        val keyFile = database.parent.resolve("openrouter.key")
+        val keys = OpenRouterKeyStore(keyFile).also { it.save("sk-test-secret") }
+        val openRouterStarted = CompletableDeferred<Unit>()
+        val releaseOpenRouter = CompletableDeferred<Unit>()
+        var receivedRequest = ""
+        val httpClient = HttpClient(MockEngine { request ->
+            assertEquals("Bearer sk-test-secret", request.headers[HttpHeaders.Authorization])
+            receivedRequest = (request.body as io.ktor.http.content.TextContent).text
+            openRouterStarted.complete(Unit)
+            releaseOpenRouter.await()
+            respond(
+                content = ByteReadChannel(
+                    "data: {\"model\":\"openai/gpt-test\",\"choices\":[{\"delta\":{\"content\":\"Open\"},\"finish_reason\":null}]}\n\n" +
+                        "data: {\"choices\":[{\"delta\":{\"content\":\"Router\"},\"finish_reason\":\"stop\"}],\"usage\":{\"total_tokens\":7}}\n\n" +
+                        "data: [DONE]\n\n",
+                ),
+                headers = headersOf(HttpHeaders.ContentType, "text/event-stream"),
+            )
+        })
+        val gateway = OpenRouterHttpGateway("https://openrouter.example.test/chat?debug=sk-test-secret", httpClient)
+        val fakeCodex = FakeCodexAppServer(blockUntilReleased = true)
+        application { module(store, fakeCodex, gateway, keys) }
+
+        val board = client.get("/api/board").bodyAsText().let(Json::parseToJsonElement).jsonObject
+        val boardId = board["board"]!!.jsonObject["id"]!!.jsonPrimitive.content
+        val created = client.post("/api/boards/$boardId/lanes") {
+            header(HttpHeaders.ContentType, ContentType.Application.Json.toString())
+            setBody("""{"provider":"openrouter"}""")
+        }
+        assertEquals(HttpStatusCode.Created, created.status)
+        val lane = created.bodyAsText().let(Json::parseToJsonElement).jsonObject["lanes"]!!.jsonArray.last().jsonObject
+        val laneId = lane["id"]!!.jsonPrimitive.content
+        assertEquals("openrouter", lane["provider"]!!.jsonPrimitive.content)
+        assertEquals("openai/gpt-4o-mini", lane["model"]!!.jsonPrimitive.content)
+        assertEquals(0.7, lane["temperature"]!!.jsonPrimitive.content.toDouble())
+        assertEquals(2048, lane["maxTokens"]!!.jsonPrimitive.content.toInt())
+
+        val response = client.post("/api/lanes/$laneId/messages") {
+            header(HttpHeaders.ContentType, ContentType.Application.Json.toString())
+            setBody("""{"text":"Hello","parameters":{"model":"openai/gpt-test","temperature":0.2,"maxTokens":32,"stop":"END"}}""")
+        }
+        assertEquals(HttpStatusCode.Accepted, response.status)
+        val runId = response.bodyAsText().let(Json::parseToJsonElement).jsonObject["runId"]!!.jsonPrimitive.content
+        openRouterStarted.await()
+        val codexLaneId = board["lanes"]!!.jsonArray.first().jsonObject["id"]!!.jsonPrimitive.content
+        val codexResponse = client.post("/api/lanes/$codexLaneId/messages") {
+            header(HttpHeaders.ContentType, ContentType.Application.Json.toString())
+            setBody("""{"text":"Codex одновременно"}""")
+        }
+        assertEquals(HttpStatusCode.Accepted, codexResponse.status)
+        val codexRunId = codexResponse.bodyAsText().let(Json::parseToJsonElement).jsonObject["runId"]!!.jsonPrimitive.content
+        fakeCodex.started.await()
+        assertFalse(store.isTerminal(runId))
+        assertFalse(store.isTerminal(codexRunId))
+        releaseOpenRouter.complete(Unit)
+        fakeCodex.release.complete(Unit)
+        val deadline = System.nanoTime() + 5_000_000_000
+        while ((!store.isTerminal(runId) || !store.isTerminal(codexRunId)) && System.nanoTime() < deadline) delay(10)
+        assertTrue(store.isTerminal(runId) && store.isTerminal(codexRunId))
+        val finalLane = client.get("/api/boards/$boardId").bodyAsText().let(Json::parseToJsonElement).jsonObject["lanes"]!!.jsonArray
+            .first { it.jsonObject["id"]!!.jsonPrimitive.content == laneId }.jsonObject
+        val answer = finalLane["messages"]!!.jsonArray.last().jsonObject
+        assertEquals("OpenRouter", answer["content"]!!.jsonPrimitive.content)
+        assertEquals("openai/gpt-test", answer["requestConfig"]!!.jsonObject["model"]!!.jsonPrimitive.content)
+        assertEquals(0.2, answer["requestConfig"]!!.jsonObject["temperature"]!!.jsonPrimitive.content.toDouble())
+        assertEquals(7, answer["technicalDetails"]!!.jsonObject["usage"]!!.jsonObject["total_tokens"]!!.jsonPrimitive.content.toInt())
+        assertFalse(answer["technicalDetails"].toString().contains("sk-test-secret"))
+        assertEquals("https://openrouter.example.test/chat", answer["technicalDetails"]!!.jsonObject["endpoint"]!!.jsonPrimitive.content)
+        val sent = Json.parseToJsonElement(receivedRequest).jsonObject
+        assertFalse(receivedRequest.contains("sk-test-secret"))
+        assertEquals("openai/gpt-test", sent["model"]!!.jsonPrimitive.content)
+        assertEquals(0.2, sent["temperature"]!!.jsonPrimitive.content.toDouble())
+        assertEquals(32, sent["max_tokens"]!!.jsonPrimitive.content.toInt())
+        assertEquals("END", sent["stop"]!!.jsonArray.single().jsonPrimitive.content)
+        assertFalse(response.bodyAsText().contains("sk-test-secret"))
+        val cloned = client.post("/api/lanes/$laneId/clone").bodyAsText().let(Json::parseToJsonElement).jsonObject
+            .getValue("lanes").jsonArray.last().jsonObject
+        assertEquals("openrouter", cloned["provider"]!!.jsonPrimitive.content)
+        assertEquals("openai/gpt-4o-mini", cloned["model"]!!.jsonPrimitive.content)
+        assertEquals(0.7, cloned["temperature"]!!.jsonPrimitive.content.toDouble())
+        assertEquals(2048, cloned["maxTokens"]!!.jsonPrimitive.content.toInt())
+        val copiedAnswer = cloned["messages"]!!.jsonArray.last().jsonObject
+        assertEquals("openai/gpt-test", copiedAnswer["requestConfig"]!!.jsonObject["model"]!!.jsonPrimitive.content)
+        assertEquals(7, copiedAnswer["technicalDetails"]!!.jsonObject["usage"]!!.jsonObject["total_tokens"]!!.jsonPrimitive.content.toInt())
+        assertEquals(HttpStatusCode.OK, client.patch("/api/lanes/${cloned["id"]!!.jsonPrimitive.content}/config") {
+            header(HttpHeaders.ContentType, ContentType.Application.Json.toString())
+            setBody("""{"provider":"codex","model":"openai/gpt-4o-mini"}""")
+        }.status)
+        val unchangedProvider = client.get("/api/boards/$boardId").bodyAsText().let(Json::parseToJsonElement)
+            .jsonObject["lanes"]!!.jsonArray.last().jsonObject
+        assertEquals("openrouter", unchangedProvider["provider"]!!.jsonPrimitive.content)
+        assertTrue(Files.getPosixFilePermissions(keyFile).contains(java.nio.file.attribute.PosixFilePermission.OWNER_READ))
+        assertTrue(Files.getPosixFilePermissions(keyFile).contains(java.nio.file.attribute.PosixFilePermission.OWNER_WRITE))
+        assertFalse(Files.getPosixFilePermissions(keyFile).contains(java.nio.file.attribute.PosixFilePermission.GROUP_READ))
+    }
+
+    @Test
+    fun `test cancelling a run ends the saved stream as cancelled`() = testApplication {
+        val database = Files.createTempDirectory("ai-advent-cancel-").resolve("board.sqlite")
+        val store = WorkspaceStore(database)
+        val fake = FakeCodexAppServer(blockUntilReleased = true)
+        application { module(store, fake) }
+        val laneId = client.get("/api/board").bodyAsText().let(Json::parseToJsonElement).jsonObject
+            .getValue("lanes").jsonArray.first().jsonObject.getValue("id").jsonPrimitive.content
+        val response = client.post("/api/lanes/$laneId/messages") {
+            header(HttpHeaders.ContentType, ContentType.Application.Json.toString())
+            setBody("""{"text":"Отмени меня"}""")
+        }
+        val runId = response.bodyAsText().let(Json::parseToJsonElement).jsonObject.getValue("runId").jsonPrimitive.content
+        fake.started.await()
+        val cancelled = client.post("/api/runs/$runId/cancel")
+        assertEquals("true", cancelled.bodyAsText().let(Json::parseToJsonElement).jsonObject.getValue("cancelled").jsonPrimitive.content)
+        val deadline = System.nanoTime() + 5_000_000_000
+        while (!store.isTerminal(runId) && System.nanoTime() < deadline) delay(10)
+        assertTrue(store.isTerminal(runId))
+        assertTrue(client.get("/api/runs/$runId/events").bodyAsText().contains("run.cancelled"))
+        assertEquals(1, fake.interruptedThreads.size)
     }
 
     @Test
@@ -458,6 +659,7 @@ class ApplicationTest {
         val lane = lanes[0].jsonObject
         assertEquals("old-lane", lane["id"]!!.jsonPrimitive.content)
         assertEquals("old-thread", lane["codexThreadId"]!!.jsonPrimitive.content)
+        assertEquals("codex", lane["provider"]!!.jsonPrimitive.content)
         assertEquals("Не теряй меня", lane["messages"]!!.jsonArray.single().jsonObject["content"]!!.jsonPrimitive.content)
         assertTrue(lane["originKind"] == null)
         assertTrue(lanes[1].jsonObject["x"]!!.jsonPrimitive.content.toInt() > lanes[0].jsonObject["x"]!!.jsonPrimitive.content.toInt())
@@ -478,9 +680,21 @@ private class FakeCodexAppServer(
     private var finishedCount = 0
     private val nextThreadId = AtomicInteger()
     val runs = java.util.Collections.synchronizedList(mutableListOf<CapturedRun>())
+    val interruptedThreads = java.util.Collections.synchronizedList(mutableListOf<String>())
     var failNextSeed = false
 
     override suspend fun status() = CodexStatus(authenticated = true, planType = "pro")
+
+    override suspend fun models() = JsonArray(listOf(buildJsonObject {
+        put("slug", "gpt-test")
+        put("displayName", "Test model")
+        put("isDefault", true)
+    }))
+
+    override suspend fun interrupt(threadId: String): Boolean {
+        interruptedThreads += threadId
+        return true
+    }
 
     override suspend fun beginLogin() = CodexLogin("https://example.invalid/login")
 
@@ -489,6 +703,7 @@ private class FakeCodexAppServer(
         prompt: String,
         contextToSeed: List<ContextMessage>,
         shouldSeedContext: Boolean,
+        model: String,
         onThreadId: suspend (String) -> Unit,
         onContextSeeded: suspend () -> Unit,
         onContextSeedFailed: suspend () -> Unit,
@@ -496,7 +711,7 @@ private class FakeCodexAppServer(
     ) {
         val resolvedThreadId = threadId ?: "fake-codex-thread-${nextThreadId.incrementAndGet()}"
         onThreadId(resolvedThreadId)
-        runs += CapturedRun(resolvedThreadId, prompt, contextToSeed, shouldSeedContext)
+        runs += CapturedRun(resolvedThreadId, prompt, contextToSeed, shouldSeedContext, model)
         if (shouldSeedContext && failNextSeed) {
             failNextSeed = false
             onContextSeedFailed()
@@ -532,5 +747,6 @@ private class FakeCodexAppServer(
         val prompt: String,
         val contextToSeed: List<ContextMessage>,
         val shouldSeedContext: Boolean,
+        val model: String,
     )
 }

@@ -17,6 +17,25 @@ import java.util.UUID
 
 data class ContextMessage(val role: String, val content: String)
 
+data class LaneConfig(
+    val provider: String,
+    val model: String,
+    val temperature: Double?,
+    val maxTokens: Int?,
+    val stop: String?,
+)
+
+private fun LaneConfig.toJson(): String = kotlinx.serialization.json.Json.encodeToString(
+    JsonObject.serializer(),
+    buildJsonObject {
+        put("provider", provider)
+        put("model", model)
+        temperature?.let { put("temperature", it) }
+        maxTokens?.let { put("maxTokens", it) }
+        stop?.let { put("stop", it) }
+    },
+)
+
 private data class CopyableMessage(
     val id: String,
     val role: String,
@@ -25,6 +44,8 @@ private data class CopyableMessage(
     val runStartedAt: String?,
     val runCompletedAt: String?,
     val runError: String?,
+    val requestConfig: String?,
+    val technicalDetails: String?,
 )
 
 data class StartedRun(
@@ -34,9 +55,17 @@ data class StartedRun(
     val threadId: String?,
     val contextToSeed: List<ContextMessage>,
     val shouldSeedContext: Boolean,
+    val config: LaneConfig,
 ) {
     override fun toString(): String = super.toString()
 }
+
+data class RequestOverrides(
+    val model: String? = null,
+    val temperature: Double? = null,
+    val maxTokens: Int? = null,
+    val stop: String? = null,
+)
 
 class ActiveRunException : IllegalStateException("A request is already running in this lane")
 
@@ -91,7 +120,9 @@ class BoardStore(private val file: Path, private val initialBoardTitle: String =
                         status TEXT NOT NULL,
                         started_at TEXT NOT NULL,
                         completed_at TEXT,
-                        error TEXT
+                        error TEXT,
+                        request_config TEXT,
+                        technical_details TEXT
                     )
                     """.trimIndent(),
                 )
@@ -119,6 +150,13 @@ class BoardStore(private val file: Path, private val initialBoardTitle: String =
             ensureColumn(db, "lanes", "position_x", "INTEGER")
             ensureColumn(db, "lanes", "position_y", "INTEGER")
             ensureColumn(db, "lanes", "width", "INTEGER")
+            ensureColumn(db, "lanes", "provider", "TEXT NOT NULL DEFAULT 'codex'")
+            ensureColumn(db, "lanes", "model", "TEXT NOT NULL DEFAULT ''")
+            ensureColumn(db, "lanes", "temperature", "REAL")
+            ensureColumn(db, "lanes", "max_tokens", "INTEGER")
+            ensureColumn(db, "lanes", "stop", "TEXT")
+            ensureColumn(db, "runs", "request_config", "TEXT")
+            ensureColumn(db, "runs", "technical_details", "TEXT")
             backfillLaneLayout(db)
             ensureBoard(db, initialBoardTitle)
             markInterruptedRuns(db)
@@ -142,7 +180,7 @@ class BoardStore(private val file: Path, private val initialBoardTitle: String =
             db.prepareStatement(
                 "SELECT id, title, codex_thread_id, origin_lane_id, origin_message_id, origin_kind, " +
                     "origin_message_role, origin_message_content, " +
-                    "position_x, position_y, width " +
+                    "position_x, position_y, width, provider, model, temperature, max_tokens, stop " +
                     "FROM lanes WHERE board_id = ? ORDER BY created_at, rowid",
             ).use { query ->
                 query.setString(1, board["id"]!!.jsonPrimitive.content)
@@ -152,6 +190,11 @@ class BoardStore(private val file: Path, private val initialBoardTitle: String =
                         lanes += buildJsonObject {
                             put("id", laneId)
                             put("title", result.getString("title"))
+                            put("provider", result.getString("provider"))
+                            put("model", result.getString("model"))
+                            result.getDouble("temperature").takeUnless { result.wasNull() }?.let { put("temperature", it) }
+                            result.getInt("max_tokens").takeUnless { result.wasNull() }?.let { put("maxTokens", it) }
+                            result.getString("stop")?.let { put("stop", it) }
                             put("x", result.getInt("position_x").takeUnless { result.wasNull() } ?: 24)
                             put("y", result.getInt("position_y").takeUnless { result.wasNull() } ?: 24)
                             put("width", result.getInt("width").takeUnless { result.wasNull() } ?: 440)
@@ -189,7 +232,8 @@ class BoardStore(private val file: Path, private val initialBoardTitle: String =
         }
     }
 
-    fun createLane(): String = synchronized(lock) {
+    fun createLane(provider: String): String = synchronized(lock) {
+        require(provider in setOf("codex", "openrouter")) { "Unsupported provider" }
         connect().use { db ->
             val boardId = db.createStatement().use { statement ->
                 statement.executeQuery("SELECT id FROM boards LIMIT 1").use { result ->
@@ -203,13 +247,18 @@ class BoardStore(private val file: Path, private val initialBoardTitle: String =
             }
             val laneId = UUID.randomUUID().toString()
             db.prepareStatement(
-                "INSERT INTO lanes(id, board_id, title, created_at, position_x, position_y, width) VALUES (?, ?, ?, ?, ?, 24, 440)",
+                "INSERT INTO lanes(id, board_id, title, created_at, position_x, position_y, width, provider, model, temperature, max_tokens) " +
+                    "VALUES (?, ?, ?, ?, ?, 24, 440, ?, ?, ?, ?)",
             ).use { query ->
                 query.setString(1, laneId)
                 query.setString(2, boardId)
                 query.setString(3, "Лента ${count + 1}")
                 query.setString(4, Instant.now().toString())
                 query.setInt(5, 24 + count * 460)
+                query.setString(6, provider)
+                query.setString(7, if (provider == "codex") "" else "openai/gpt-4o-mini")
+                if (provider == "openrouter") query.setDouble(8, 0.7) else query.setNull(8, java.sql.Types.REAL)
+                if (provider == "openrouter") query.setInt(9, 2048) else query.setNull(9, java.sql.Types.INTEGER)
                 query.executeUpdate()
             }
             laneId
@@ -303,6 +352,23 @@ class BoardStore(private val file: Path, private val initialBoardTitle: String =
         }
     }
 
+    fun updateLaneConfig(laneId: String, model: String, temperature: Double?, maxTokens: Int?, stop: String?) = synchronized(lock) {
+        require(model.length <= 200) { "Model is too long" }
+        require(temperature == null || temperature in 0.0..2.0) { "Temperature must be between 0 and 2" }
+        require(maxTokens == null || maxTokens in 1..200_000) { "Max tokens is out of range" }
+        require(stop == null || stop.length <= 500) { "Stop sequence is too long" }
+        connect().use { db ->
+            db.prepareStatement("UPDATE lanes SET model = ?, temperature = ?, max_tokens = ?, stop = ? WHERE id = ?").use { query ->
+                query.setString(1, model.trim())
+                if (temperature == null) query.setNull(2, java.sql.Types.REAL) else query.setDouble(2, temperature)
+                if (maxTokens == null) query.setNull(3, java.sql.Types.INTEGER) else query.setInt(3, maxTokens)
+                query.setString(4, stop?.takeIf(String::isNotBlank))
+                query.setString(5, laneId)
+                check(query.executeUpdate() == 1) { "Unknown lane" }
+            }
+        }
+    }
+
     private fun activeRunForMessage(messageId: String): Boolean = connect().use { db ->
         db.prepareStatement(
             "SELECT 1 FROM messages m JOIN runs r ON r.id = m.run_id WHERE m.id = ? AND r.status = 'running'",
@@ -381,12 +447,13 @@ class BoardStore(private val file: Path, private val initialBoardTitle: String =
             db.autoCommit = false
             try {
                 val source = db.prepareStatement(
-                    "SELECT board_id, title FROM lanes WHERE id = ?",
+                    "SELECT board_id, title, provider, model, temperature, max_tokens, stop FROM lanes WHERE id = ?",
                 ).use { query ->
                     query.setString(1, sourceLaneId)
                     query.executeQuery().use { result ->
                         check(result.next()) { "Unknown lane" }
-                        result.getString("board_id") to result.getString("title")
+                        listOf(result.getString("board_id"), result.getString("title"), result.getString("provider"),
+                            result.getString("model"), result.getString("temperature"), result.getString("max_tokens"), result.getString("stop"))
                     }
                 }
                 check(!hasActiveRun(db, sourceLaneId)) { "Cannot copy a lane while a request is running" }
@@ -409,18 +476,19 @@ class BoardStore(private val file: Path, private val initialBoardTitle: String =
                     }
                 }
                 val count = db.prepareStatement("SELECT COUNT(*) FROM lanes WHERE board_id = ?").use { query ->
-                    query.setString(1, source.first)
+                    query.setString(1, source[0])
                     query.executeQuery().use { result -> result.next(); result.getInt(1) }
                 }
                 val laneId = UUID.randomUUID().toString()
                 db.prepareStatement(
                     "INSERT INTO lanes(id, board_id, title, created_at, origin_lane_id, origin_message_id, " +
-                        "origin_kind, codex_context_seeded, origin_message_role, origin_message_content, " +
-                        "position_x, position_y, width) VALUES (?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?, 24, 440)",
+                    "origin_kind, codex_context_seeded, origin_message_role, origin_message_content, " +
+                        "position_x, position_y, width, provider, model, temperature, max_tokens, stop) " +
+                        "VALUES (?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?, 24, 440, ?, ?, ?, ?, ?)",
                 ).use { query ->
                     query.setString(1, laneId)
-                    query.setString(2, source.first)
-                    query.setString(3, "${source.second} · ${if (kind == "branch") "ветка" else "клон"} ${count + 1}")
+                    query.setString(2, source[0])
+                    query.setString(3, "${source[1]} · ${if (kind == "branch") "ветка" else "клон"} ${count + 1}")
                     query.setString(4, Instant.now().toString())
                     query.setString(5, sourceLaneId)
                     query.setString(6, throughMessageId)
@@ -428,10 +496,16 @@ class BoardStore(private val file: Path, private val initialBoardTitle: String =
                     query.setString(8, originSnapshot?.first)
                     query.setString(9, originSnapshot?.second)
                     query.setInt(10, 24 + count * 460)
+                    query.setString(11, source[2])
+                    query.setString(12, source[3])
+                    source[4]?.toDoubleOrNull()?.let { query.setDouble(13, it) } ?: query.setNull(13, java.sql.Types.REAL)
+                    source[5]?.toIntOrNull()?.let { query.setInt(14, it) } ?: query.setNull(14, java.sql.Types.INTEGER)
+                    query.setString(15, source[6])
                     query.executeUpdate()
                 }
                 val sourceMessages = db.prepareStatement(
-                    """SELECT m.id, m.role, m.content, r.status, r.started_at, r.completed_at, r.error
+                    """SELECT m.id, m.role, m.content, r.status, r.started_at, r.completed_at, r.error,
+                              r.request_config, r.technical_details
                        FROM messages m LEFT JOIN runs r ON r.id = m.run_id
                        WHERE m.lane_id = ? ORDER BY m.created_at, m.rowid""",
                 ).use { query ->
@@ -447,6 +521,8 @@ class BoardStore(private val file: Path, private val initialBoardTitle: String =
                                     result.getString("started_at"),
                                     result.getString("completed_at"),
                                     result.getString("error"),
+                                    result.getString("request_config"),
+                                    result.getString("technical_details"),
                                 )
                                 add(item)
                                 if (item.id == throughMessageId) break
@@ -474,17 +550,19 @@ class BoardStore(private val file: Path, private val initialBoardTitle: String =
                     }
                     if (copiedRunId != null) {
                         db.prepareStatement(
-                            "INSERT INTO runs(id, board_id, lane_id, assistant_message_id, status, started_at, completed_at, error) " +
-                                "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                            "INSERT INTO runs(id, board_id, lane_id, assistant_message_id, status, started_at, completed_at, error, request_config, technical_details) " +
+                                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                         ).use { query ->
                             query.setString(1, copiedRunId)
-                            query.setString(2, source.first)
+                            query.setString(2, source[0])
                             query.setString(3, laneId)
                             query.setString(4, copiedMessageId)
                             query.setString(5, item.runStatus)
                             query.setString(6, item.runStartedAt)
                             query.setString(7, item.runCompletedAt)
                             query.setString(8, item.runError)
+                            query.setString(9, item.requestConfig)
+                            query.setString(10, item.technicalDetails)
                             query.executeUpdate()
                         }
                     }
@@ -509,6 +587,18 @@ class BoardStore(private val file: Path, private val initialBoardTitle: String =
         }
     }
 
+    fun providerForLane(laneId: String): String = synchronized(lock) {
+        connect().use { db ->
+            db.prepareStatement("SELECT provider FROM lanes WHERE id = ?").use { query ->
+                query.setString(1, laneId)
+                query.executeQuery().use { result ->
+                    check(result.next()) { "Unknown lane" }
+                    result.getString(1)
+                }
+            }
+        }
+    }
+
     fun hasMessage(messageId: String): Boolean = synchronized(lock) {
         connect().use { db ->
             db.prepareStatement("SELECT 1 FROM messages WHERE id = ?").use { query ->
@@ -524,17 +614,20 @@ class BoardStore(private val file: Path, private val initialBoardTitle: String =
         }
     }
 
-    fun startRun(laneId: String, prompt: String): StartedRun = synchronized(lock) {
+    fun startRun(laneId: String, prompt: String, overrides: RequestOverrides = RequestOverrides()): StartedRun = synchronized(lock) {
         connect().use { db ->
             db.autoCommit = false
             try {
                 val lane = db.prepareStatement(
-                    "SELECT board_id, codex_thread_id, codex_context_seeded FROM lanes WHERE id = ?",
+                    "SELECT board_id, codex_thread_id, codex_context_seeded, provider, model, temperature, max_tokens, stop " +
+                        "FROM lanes WHERE id = ?",
                 ).use { query ->
                     query.setString(1, laneId)
                     query.executeQuery().use { result ->
                         check(result.next()) { "Unknown lane" }
-                        Triple(result.getString("board_id"), result.getString("codex_thread_id"), result.getInt("codex_context_seeded") == 0)
+                        listOf(result.getString("board_id"), result.getString("codex_thread_id"),
+                            (result.getInt("codex_context_seeded") == 0).toString(), result.getString("provider"),
+                            result.getString("model"), result.getString("temperature"), result.getString("max_tokens"), result.getString("stop"))
                     }
                 }
                 val isActive = db.prepareStatement(
@@ -545,8 +638,21 @@ class BoardStore(private val file: Path, private val initialBoardTitle: String =
                 }
                 if (isActive) throw ActiveRunException()
 
-                val contextToSeed = if (lane.second == null || lane.third) history(db, laneId) else emptyList()
-                val reusableThreadId = if (lane.third) null else lane.second
+                val needsSeed = lane[2].toBoolean()
+                val contextToSeed = if (lane[1] == null || needsSeed) history(db, laneId) else emptyList()
+                val reusableThreadId = if (needsSeed) null else lane[1]
+                val provider = lane[3]
+                val config = LaneConfig(
+                    provider,
+                    overrides.model?.takeIf(String::isNotBlank) ?: lane[4],
+                    if (provider == "openrouter") overrides.temperature ?: lane[5]?.toDoubleOrNull() else null,
+                    if (provider == "openrouter") overrides.maxTokens ?: lane[6]?.toIntOrNull() else null,
+                    if (provider == "openrouter") (overrides.stop ?: lane[7])?.takeIf(String::isNotBlank) else null,
+                )
+                require(config.provider != "openrouter" || config.model.isNotBlank()) { "OpenRouter model is required" }
+                require(config.temperature == null || config.temperature in 0.0..2.0) { "Temperature must be between 0 and 2" }
+                require(config.maxTokens == null || config.maxTokens in 1..200_000) { "Max tokens is out of range" }
+                require(config.stop == null || config.stop.length <= 500) { "Stop sequence is too long" }
 
                 val now = Instant.now().toString()
                 val userMessageId = UUID.randomUUID().toString()
@@ -572,25 +678,27 @@ class BoardStore(private val file: Path, private val initialBoardTitle: String =
                     query.executeUpdate()
                 }
                 db.prepareStatement(
-                    "INSERT INTO runs(id, board_id, lane_id, assistant_message_id, status, started_at) " +
-                        "VALUES (?, ?, ?, ?, 'running', ?)",
+                    "INSERT INTO runs(id, board_id, lane_id, assistant_message_id, status, started_at, request_config) " +
+                        "VALUES (?, ?, ?, ?, 'running', ?, ?)",
                 ).use { query ->
                     query.setString(1, runId)
-                    query.setString(2, lane.first)
+                    query.setString(2, lane[0])
                     query.setString(3, laneId)
                     query.setString(4, answerId)
                     query.setString(5, now)
+                    query.setString(6, config.toJson())
                     query.executeUpdate()
                 }
-                insertEvent(db, lane.first, laneId, runId, "run.started", buildJsonObject {})
+                insertEvent(db, lane[0], laneId, runId, "run.started", buildJsonObject {})
                 db.commit()
                 StartedRun(
-                    lane.first,
+                    lane[0],
                     laneId,
                     runId,
                     reusableThreadId,
                     contextToSeed,
-                    shouldSeedContext = reusableThreadId == null || lane.third,
+                    shouldSeedContext = reusableThreadId == null || needsSeed,
+                    config = config,
                 )
             } catch (error: SQLException) {
                 db.rollback()
@@ -644,6 +752,18 @@ class BoardStore(private val file: Path, private val initialBoardTitle: String =
             insertEvent(db, run.boardId, run.laneId, runId, "text.delta", buildJsonObject { put("text", delta) })
         }
     }
+
+    fun saveTechnicalDetails(runId: String, details: JsonObject) = synchronized(lock) {
+        connect().use { db ->
+            db.prepareStatement("UPDATE runs SET technical_details = ? WHERE id = ?").use { query ->
+                query.setString(1, kotlinx.serialization.json.Json.encodeToString(JsonObject.serializer(), details))
+                query.setString(2, runId)
+                check(query.executeUpdate() == 1) { "Unknown run" }
+            }
+        }
+    }
+
+    fun cancelRun(runId: String) = finishRun(runId, "cancelled", null, "run.cancelled")
 
     fun completeRun(runId: String) = finishRun(runId, "completed", null, "run.completed")
 
@@ -825,7 +945,8 @@ class BoardStore(private val file: Path, private val initialBoardTitle: String =
 
     private fun messages(db: Connection, laneId: String) = kotlinx.serialization.json.JsonArray(
         db.prepareStatement(
-            """SELECT m.id, m.role, m.content, m.created_at, r.status AS run_status, r.error AS run_error
+            """SELECT m.id, m.role, m.content, m.created_at, r.status AS run_status, r.error AS run_error,
+                      r.request_config, r.technical_details
                FROM messages m LEFT JOIN runs r ON r.id = m.run_id
                WHERE m.lane_id = ? ORDER BY m.created_at, m.rowid""",
         ).use { query ->
@@ -847,6 +968,14 @@ class BoardStore(private val file: Path, private val initialBoardTitle: String =
                             put("createdAt", result.getString("created_at"))
                             result.getString("run_status")?.let { put("runStatus", it) }
                             result.getString("run_error")?.let { put("runError", it) }
+                            result.getString("request_config")?.let { runConfig ->
+                                runCatching { kotlinx.serialization.json.Json.parseToJsonElement(runConfig) }
+                                    .getOrNull()?.let { put("requestConfig", it) }
+                            }
+                            result.getString("technical_details")?.let { details ->
+                                runCatching { kotlinx.serialization.json.Json.parseToJsonElement(details) }
+                                    .getOrNull()?.let { put("technicalDetails", it) }
+                            }
                         })
                     }
                 }

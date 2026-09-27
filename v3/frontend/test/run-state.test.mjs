@@ -43,3 +43,13 @@ test("failed runs expose an error without becoming a completed answer", () => {
   assert.equal(state.error, "Отключено");
   assert.equal(state.answer, "");
 });
+
+test("cancelled runs reach a terminal state", () => {
+  const state = applyRunEvent(emptyRunState(), {
+    sequence: 1,
+    type: "run.cancelled",
+    data: {},
+  });
+
+  assert.equal(state.status, "cancelled");
+});

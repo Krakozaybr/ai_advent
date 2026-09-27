@@ -8,6 +8,7 @@ import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withTimeout
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.contentOrNull
 import kotlinx.serialization.json.longOrNull
@@ -35,6 +36,10 @@ data class CodexLogin(val authUrl: String) {
 interface CodexGateway : Closeable {
     suspend fun status(): CodexStatus
 
+    suspend fun models(): JsonArray
+
+    suspend fun interrupt(threadId: String): Boolean
+
     suspend fun beginLogin(): CodexLogin
 
     suspend fun stream(
@@ -42,6 +47,7 @@ interface CodexGateway : Closeable {
         prompt: String,
         contextToSeed: List<ContextMessage>,
         shouldSeedContext: Boolean,
+        model: String,
         onThreadId: suspend (String) -> Unit,
         onContextSeeded: suspend () -> Unit,
         onContextSeedFailed: suspend () -> Unit,
@@ -57,6 +63,7 @@ class CodexAppServer(
     private val ids = AtomicLong()
     private val pending = ConcurrentHashMap<Long, CompletableFuture<JsonObject>>()
     private val listeners = ConcurrentHashMap<String, Channel<JsonObject>>()
+    private val activeTurns = ConcurrentHashMap<String, String>()
     private val writeLock = Any()
     private val startLock = Mutex()
     private lateinit var process: Process
@@ -71,6 +78,23 @@ class CodexAppServer(
             authenticated = account?.get("type")?.jsonPrimitive?.content == "chatgpt",
             planType = account?.get("planType")?.jsonPrimitive?.contentOrNull,
         )
+    }
+
+    override suspend fun models(): JsonArray {
+        ensureStarted()
+        val result = request("model/list", buildJsonObject { put("limit", 100) })
+        return result["data"]?.let { it as? JsonArray }
+            ?: result["models"]?.let { it as? JsonArray }
+            ?: JsonArray(emptyList())
+    }
+
+    override suspend fun interrupt(threadId: String): Boolean {
+        val turnId = activeTurns[threadId] ?: return false
+        request("turn/interrupt", buildJsonObject {
+            put("threadId", threadId)
+            put("turnId", turnId)
+        })
+        return true
     }
 
     override suspend fun beginLogin(): CodexLogin {
@@ -93,6 +117,7 @@ class CodexAppServer(
         prompt: String,
         contextToSeed: List<ContextMessage>,
         shouldSeedContext: Boolean,
+        model: String,
         onThreadId: suspend (String) -> Unit,
         onContextSeeded: suspend () -> Unit,
         onContextSeedFailed: suspend () -> Unit,
@@ -106,6 +131,7 @@ class CodexAppServer(
             put("approvalPolicy", "on-request")
             put("sandbox", "read-only")
             put("serviceName", "ai-advent-v3")
+            if (model.isNotBlank()) put("model", model)
         }
         val thread = request(threadMethod, threadParams)
             .getValue("thread").jsonObject.getValue("id").jsonPrimitive.content
@@ -149,10 +175,11 @@ class CodexAppServer(
         val events = Channel<JsonObject>(Channel.UNLIMITED)
         check(listeners.putIfAbsent(thread, events) == null) { "Codex thread already has an active run" }
         try {
-            request(
+            val started = request(
                 "turn/start",
                 buildJsonObject {
                     put("threadId", thread)
+                    if (model.isNotBlank()) put("model", model)
                     put("cwd", workingDirectory)
                     put("approvalPolicy", "on-request")
                     put("sandboxPolicy", buildJsonObject { put("type", "readOnly") })
@@ -164,6 +191,7 @@ class CodexAppServer(
                     })
                 },
             )
+            started["turn"]?.jsonObject?.get("id")?.jsonPrimitive?.content?.let { activeTurns[thread] = it }
 
             for (event in events) {
                 when (event["method"]?.jsonPrimitive?.content) {
@@ -181,6 +209,7 @@ class CodexAppServer(
             }
             error("Codex event stream closed before the turn completed")
         } finally {
+            activeTurns.remove(thread)
             listeners.remove(thread, events)
             events.close()
         }

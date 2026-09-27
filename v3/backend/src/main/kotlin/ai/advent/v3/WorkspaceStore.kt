@@ -40,11 +40,17 @@ class WorkspaceStore(private val originalFile: Path) : Closeable {
         openBoard(path, "Доска ${stores.size + 1}").board()
     }
 
-    fun createLane(boardId: String): JsonObject = synchronized(lock) {
+    fun createLane(boardId: String, provider: String = "codex"): JsonObject = synchronized(lock) {
         val boardStore = store(boardId)
-        boardStore.createLane()
+        boardStore.createLane(provider)
         boardStore.board()
     }
+
+    fun updateLaneConfig(laneId: String, model: String, temperature: Double?, maxTokens: Int?, stop: String?): JsonObject = synchronized(lock) {
+        storeForLane(laneId).also { it.updateLaneConfig(laneId, model, temperature, maxTokens, stop) }.board()
+    }
+
+    fun providerForLane(laneId: String): String = storeForLane(laneId).providerForLane(laneId)
 
     fun branchLane(laneId: String, messageId: String): JsonObject = synchronized(lock) {
         val boardStore = storeForLane(laneId)
@@ -78,13 +84,15 @@ class WorkspaceStore(private val originalFile: Path) : Closeable {
         storeForLane(laneId).also { it.saveLayout(laneId, x, y, width) }.board()
     }
 
-    fun startRun(laneId: String, prompt: String): StartedRun = storeForLane(laneId).startRun(laneId, prompt)
+    fun startRun(laneId: String, prompt: String, overrides: RequestOverrides = RequestOverrides()): StartedRun = storeForLane(laneId).startRun(laneId, prompt, overrides)
     fun saveThread(laneId: String, threadId: String) = storeForLane(laneId).saveThread(laneId, threadId)
     fun markContextSeeded(laneId: String) = storeForLane(laneId).markContextSeeded(laneId)
     fun markContextSeedFailed(laneId: String) = storeForLane(laneId).markContextSeedFailed(laneId)
     fun appendText(runId: String, delta: String) = storeForRun(runId).appendText(runId, delta)
     fun completeRun(runId: String) = storeForRun(runId).completeRun(runId)
     fun failRun(runId: String, reason: String) = storeForRun(runId).failRun(runId, reason)
+    fun cancelRun(runId: String) = storeForRun(runId).cancelRun(runId)
+    fun saveTechnicalDetails(runId: String, details: JsonObject) = storeForRun(runId).saveTechnicalDetails(runId, details)
     fun eventsAfter(runId: String, sequence: Long): List<Pair<Long, JsonObject>> =
         storeForRun(runId).eventsAfter(runId, sequence)
     fun isTerminal(runId: String): Boolean = storeForRun(runId).isTerminal(runId)

@@ -22,6 +22,11 @@ button { color: inherit; }
 .board-tab.selected { color: #35392f; background: #e9eadf; font-weight: 650; }
 .add-board { width: 35px; flex: 0 0 35px; font-size: 19px; }
 .connection { display: flex; align-items: center; gap: 8px; color: #77796d; font-size: 11px; white-space: nowrap; }
+.provider-settings { position: relative; color: #77796d; font-size: 10px; }
+.provider-settings summary { cursor: pointer; white-space: nowrap; }
+.provider-settings form { position: absolute; z-index: 20; top: 24px; right: 0; width: 285px; display: grid; gap: 7px; padding: 12px; border: 1px solid #e3e0d7; border-radius: 9px; background: #fbfaf7; box-shadow: 0 8px 24px #393d2c20; }
+.provider-settings input, .lane-settings input, .lane-settings select { min-width: 0; padding: 5px 7px; border: 1px solid #e1ded4; border-radius: 5px; background: #fffefa; color: #45473e; font: inherit; }
+.provider-settings button { padding: 5px; border: 0; border-radius: 5px; color: #fffefa; background: #343a2f; cursor: pointer; }
 .canvas-mode { padding: 7px 10px; border: 1px solid #e3e0d7; border-radius: 7px; background: #fbfaf7; color: #737568; font-size: 10px; cursor: pointer; white-space: nowrap; }
 .canvas-mode.selected { border-color: #9ba489; color: #414a37; background: #e9eadf; }
 .status-dot { width: 7px; height: 7px; border-radius: 50%; background: #bc755c; }
@@ -38,6 +43,14 @@ button { color: inherit; }
 .lane-heading h2 { margin: 0; font-size: 12px; font-weight: 650; }
 .lane-dot { width: 7px; height: 7px; border-radius: 50%; background: #87946c; }
 .lane-provider { margin-left: auto; color: #a0a094; font: 500 9px ui-monospace, SFMono-Regular, Menlo, monospace; letter-spacing: .8px; }
+.lane-settings { display: grid; grid-template-columns: repeat(4, minmax(65px, 1fr)); align-items: end; gap: 6px; padding: 7px 12px; border-bottom: 1px solid #ebe8e0; color: #7f8175; font-size: 9px; }
+.lane-settings summary { grid-column: 1 / -1; cursor: pointer; font: 500 9px ui-monospace, SFMono-Regular, Menlo, monospace; letter-spacing: .4px; }
+.lane-settings:not([open]) { display: block; }
+.lane-settings label { min-width: 0; display: grid; gap: 3px; }
+.lane-settings input, .lane-settings select { width: 100%; font-size: 10px; }
+.request-details { margin-top: 8px; color: #858679; font-size: 9px; }
+.request-details summary { cursor: pointer; }
+.request-details pre { max-height: 130px; overflow: auto; padding: 7px; border-radius: 6px; background: #f0efe9; white-space: pre-wrap; overflow-wrap: anywhere; }
 .lane-clone { border: 0; padding: 5px 7px; border-radius: 6px; background: transparent; color: #77796c; font-size: 10px; cursor: pointer; }
 .lane-clone:hover:not(:disabled) { color: #35392e; background: #eeede6; }
 .lane-clone:disabled { opacity: .45; cursor: default; }
@@ -93,9 +106,12 @@ button { color: inherit; }
 .primary:hover:not(:disabled) { background: #4a5142; }
 .lane-error { margin: 0 12px 8px; padding: 8px 10px; color: #9a493b; background: #f7e9e4; border-radius: 8px; font-size: 11px; }
 .error-banner { max-width: 600px; margin: 0 auto 12px; padding: 9px 12px; color: #9a493b; background: #f7e9e4; border-radius: 8px; font-size: 11px; }
-.new-lane { position: absolute; width: 175px; min-height: 130px; display: flex; align-items: center; justify-content: center; gap: 8px; border: 1px dashed #c9c7bd; border-radius: 13px; background: #fbfaf766; color: #858679; font-size: 12px; cursor: pointer; }
-.new-lane:hover { border-color: #929781; color: #4b5141; background: #fbfaf7; }
-.new-lane span { font-size: 18px; }
+.new-lane { position: absolute; width: 175px; min-height: 130px; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 10px; border: 1px dashed #c9c7bd; border-radius: 13px; background: #fbfaf766; color: #858679; font-size: 12px; }
+.new-lane select { max-width: 130px; padding: 4px; border: 1px solid #e0ded4; border-radius: 5px; background: #fbfaf7; color: #707267; font-size: 10px; }
+.new-lane button { padding: 6px 8px; border: 0; border-radius: 6px; background: transparent; color: inherit; font-size: 11px; cursor: pointer; }
+.new-lane button:hover { color: #4b5141; background: #fbfaf7; }
+.new-lane span { font-size: 15px; }
+.cancel-run { padding: 4px 7px; border: 1px solid #e7c9bd; border-radius: 5px; background: #fbf1ec; color: #9a493b; font-size: 9px; cursor: pointer; }
 .loading { display: grid; place-items: center; height: 100%; color: #929387; font-size: 12px; }
 .lane-resize { position: absolute; right: 2px; bottom: 2px; width: 16px; height: 16px; border-right: 2px solid #bbb9ae; border-bottom: 2px solid #bbb9ae; cursor: nwse-resize; touch-action: none; }
 

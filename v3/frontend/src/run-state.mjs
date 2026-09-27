@@ -11,6 +11,8 @@ export function applyRunEvent(current, event) {
   } else if (event.type === "run.failed") {
     next.status = "failed";
     next.error = event.data.error;
+  } else if (event.type === "run.cancelled") {
+    next.status = "cancelled";
   }
   return next;
 }
