@@ -59,6 +59,7 @@ type Agent = { id: string; name: string; description: string; instructions: stri
 type BoardResponse = { board: BoardSummary; lanes: Lane[]; agents?: Agent[] };
 type MemoryItem = { key: string; value: string; updatedAt: string };
 type BoardMemoryState = { workingMemories: Array<{ id: string; name: string; createdAt: string; items: MemoryItem[] }>; longTerm: MemoryItem[] };
+type BoardTask = { id: string; title: string; description: string; status: "open" | "done"; stage: "planning" | "execution" | "validation" | "done"; plan: string; planApproved: boolean; currentStep: string; expectedAction: string; paused: boolean; comments: Array<{ content: string; createdAt: string }> };
 type CodexStatus = { authenticated: boolean; planType?: string; error?: string };
 type CodexModel = { slug?: string; displayName?: string; isDefault?: boolean };
 type McpCatalogServer = { id: string; name: string; description: string; status: "connected" | "error"; error?: string; tools: Array<{ name: string; description: string; inputSchema: Record<string, unknown>; readOnly?: boolean }> };
@@ -422,6 +423,7 @@ export function BoardChat() {
       {board && <BoardInstructionEditor boardId={board.board.id} value={board.board.instructions} onSave={(value) => void saveBoardInstructions(board.board.id, value)} />}
 
       {board && board.board.id === activeBoardId && <BoardMemoryOverview boardId={board.board.id} revision={memoryRevision} />}
+      {board && board.board.id === activeBoardId && <BoardTaskOverview key={`tasks-${board.board.id}`} boardId={board.board.id} />}
 
       <section className="canvas" ref={canvasRef} aria-label="Рабочая область доски">
         {error && <p className="error-banner" role="alert">{error}</p>}
@@ -542,6 +544,77 @@ function BoardMemoryOverview({ boardId, revision }: { boardId: string; revision:
       {error && <p className="memory-overview-error" role="alert">{error}</p>}
     </div>
   </details>;
+}
+
+function BoardTaskOverview({ boardId }: { boardId: string }) {
+  const [tasks, setTasks] = useState<BoardTask[]>([]);
+  const [title, setTitle] = useState("");
+  const [description, setDescription] = useState("");
+  const [error, setError] = useState<string | null>(null);
+  const base = `/api/boards/${encodeURIComponent(boardId)}/tasks`;
+  const refresh = useCallback(async () => setTasks((await readJson<{ tasks: BoardTask[] }>(base)).tasks), [base]);
+  useEffect(() => { void refresh().catch((cause: unknown) => setError(cause instanceof Error ? cause.message : "Не удалось загрузить задачи")); }, [refresh]);
+
+  async function mutate(taskId: string, patch: Record<string, unknown>) {
+    try { const updated = await readJson<BoardTask>(`${base}/${encodeURIComponent(taskId)}`, { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify(patch) }); setTasks((items) => items.map((item) => item.id === taskId ? updated : item)); setError(null); }
+    catch (cause) { setError(cause instanceof Error ? cause.message : "Изменение задачи отклонено"); }
+  }
+  async function create(event: FormEvent) {
+    event.preventDefault();
+    try { const created = await readJson<BoardTask>(base, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ title: title.trim(), description: description.trim() }) }); setTasks((items) => [created, ...items]); setTitle(""); setDescription(""); setError(null); }
+    catch (cause) { setError(cause instanceof Error ? cause.message : "Не удалось создать задачу"); }
+  }
+
+  const nextStage: Record<BoardTask["stage"], BoardTask["stage"] | null> = { planning: "execution", execution: "validation", validation: "done", done: null };
+  return <details className="board-tasks" open>
+    <summary>Задачи доски · {tasks.length}</summary>
+    <div className="board-tasks-content">
+      <p>Состояние хранится отдельно для каждой доски. Переход возможен только на следующий этап; план нужно утвердить до выполнения.</p>
+      <form className="task-create-form" onSubmit={(event) => void create(event)}>
+        <input aria-label="Название задачи" placeholder="Новая задача" maxLength={200} value={title} onChange={(event) => setTitle(event.target.value)} />
+        <input aria-label="Описание задачи" placeholder="Описание" maxLength={10000} value={description} onChange={(event) => setDescription(event.target.value)} />
+        <button type="submit" disabled={!title.trim()}>Создать</button>
+      </form>
+      {tasks.map((task) => <TaskEditor key={task.id} task={task} onSave={(patch) => mutate(task.id,patch)} />)}
+      {tasks.length === 0 && <small>На этой доске пока нет задач.</small>}
+      {error && <p className="task-error" role="alert">{error}</p>}
+    </div>
+  </details>;
+}
+
+function TaskEditor({ task, onSave }: { task: BoardTask; onSave: (patch: Record<string, unknown>) => Promise<void> }) {
+  const [title, setTitle] = useState(task.title);
+  const [description, setDescription] = useState(task.description);
+  const [plan, setPlan] = useState(task.plan);
+  const [step, setStep] = useState(task.currentStep);
+  const [action, setAction] = useState(task.expectedAction);
+  const [comment, setComment] = useState("");
+  const next: Record<BoardTask["stage"], BoardTask["stage"] | null> = { planning: "execution", execution: "validation", validation: "done", done: null };
+  useEffect(() => { setTitle(task.title); setDescription(task.description); setPlan(task.plan); setStep(task.currentStep); setAction(task.expectedAction); }, [task]);
+  return <article className="task-card">
+    <div className="task-heading"><strong>{task.title}</strong><span>{task.stage} · {task.status}{task.paused ? " · пауза" : ""}</span></div>
+    <div className="task-edit-fields">
+      <input aria-label="Название задачи" value={title} onChange={(event) => setTitle(event.target.value)} maxLength={200} />
+      <textarea aria-label="Описание задачи" value={description} onChange={(event) => setDescription(event.target.value)} maxLength={10000} />
+      <button type="button" onClick={() => void onSave({ title, description })}>Сохранить описание</button>
+      <label>План<textarea aria-label="План задачи" value={plan} onChange={(event) => setPlan(event.target.value)} maxLength={10000} disabled={task.stage !== "planning"} /></label>
+      <div className="task-actions">
+        <button type="button" onClick={() => void onSave({ plan })} disabled={task.stage !== "planning" || plan === task.plan}>Сохранить план</button>
+        <button type="button" onClick={() => void onSave({ approvePlan: true })} disabled={task.stage !== "planning" || !task.plan.trim() || task.planApproved}>Утвердить план</button>
+        <button type="button" onClick={() => void onSave({ stage: next[task.stage] })} disabled={!next[task.stage] || task.paused || (task.stage === "planning" && !task.planApproved)}>{next[task.stage] ? `Перейти: ${next[task.stage]}` : "Завершено"}</button>
+        {task.stage !== "done" && <button type="button" onClick={() => void onSave({ paused: !task.paused })}>{task.paused ? "Продолжить" : "Пауза"}</button>}
+      </div>
+      <label>Текущий шаг<input value={step} onChange={(event) => setStep(event.target.value)} maxLength={1000} /></label>
+      <label>Ожидаемое действие<input value={action} onChange={(event) => setAction(event.target.value)} maxLength={1000} /></label>
+      <button type="button" onClick={() => void onSave({ currentStep: step, expectedAction: action })}>Сохранить состояние шага</button>
+      <form className="task-comment-form" onSubmit={(event) => { event.preventDefault(); if (comment.trim()) void onSave({ comment }).then(() => setComment("")); }}>
+        <input aria-label="Комментарий" placeholder="Комментарий" value={comment} onChange={(event) => setComment(event.target.value)} maxLength={4000} />
+        <button type="submit" disabled={!comment.trim()}>Добавить</button>
+      </form>
+    </div>
+    {task.planApproved && <small>План утверждён</small>}
+    {task.comments.length > 0 && <ul className="task-comments">{task.comments.map((item, index) => <li key={`${item.createdAt}:${index}`}>{item.content}</li>)}</ul>}
+  </article>;
 }
 
 function MemoryLayerEditor({ title, items, onSave, onDelete, onClear, onRemove }: {

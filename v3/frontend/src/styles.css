@@ -49,6 +49,24 @@ button { color: inherit; }
 .board-memory-layer button, .memory-create-form button, .memory-item-form button { padding: 4px 7px; border: 1px solid #e0ded4; border-radius: 5px; background: #fbfaf7; color: #66685d; font-size: 9px; cursor: pointer; }
 .board-memory-layer button:disabled, .memory-create-form button:disabled, .memory-item-form button:disabled { opacity: .45; cursor: default; }
 .memory-overview-error { color: #9a493b; }
+.board-tasks { flex: 0 0 auto; max-height: 34vh; overflow: auto; margin: 0 18px 8px; padding: 8px 12px; border: 1px solid #e3e0d7; border-radius: 9px; background: #fbfaf7; color: #77796d; font-size: 10px; }
+.board-tasks > summary { cursor: pointer; font-weight: 650; }
+.board-tasks-content { padding-top: 8px; }
+.board-tasks-content > p { margin: 0 0 8px; }
+.task-create-form, .task-comment-form { display: flex; gap: 5px; margin: 6px 0; }
+.task-create-form input, .task-comment-form input, .task-edit-fields input, .task-edit-fields textarea { min-width: 0; padding: 5px 7px; border: 1px solid #e1ded4; border-radius: 5px; background: #fffefa; color: #45473e; font: inherit; }
+.task-create-form input:nth-child(2) { flex: 1; }
+.task-create-form button, .task-comment-form button, .task-edit-fields button { padding: 4px 7px; border: 1px solid #e0ded4; border-radius: 5px; background: #fbfaf7; color: #66685d; font-size: 9px; cursor: pointer; }
+.task-create-form button:disabled, .task-comment-form button:disabled, .task-edit-fields button:disabled { opacity: .45; cursor: default; }
+.task-card { margin: 8px 0; padding: 8px; border: 1px solid #e9e6dd; border-radius: 7px; background: #fffefa; }
+.task-heading { display: flex; flex-wrap: wrap; justify-content: space-between; gap: 7px; }
+.task-heading span, .task-card > small { color: #77796d; }
+.task-edit-fields { display: grid; gap: 5px; padding-top: 7px; }
+.task-edit-fields label { display: grid; gap: 3px; }
+.task-edit-fields textarea { min-height: 48px; resize: vertical; }
+.task-actions { display: flex; flex-wrap: wrap; gap: 5px; }
+.task-comments { margin: 6px 0 0; padding-left: 18px; }
+.task-error { color: #9a493b; }
 .lanes { position: relative; width: max-content; min-width: 100%; height: max-content; min-height: 100%; }
 .lane { position: absolute; height: 620px; min-height: 260px; display: flex; flex-direction: column; overflow: hidden; border: 1px solid #e3e0d7; border-radius: 13px; background: #fbfaf7; box-shadow: 0 5px 18px #393d2c0a; }
 .lane.selected { border-color: #a3ab92; box-shadow: 0 0 0 2px #87946c22, 0 5px 18px #393d2c0a; }
