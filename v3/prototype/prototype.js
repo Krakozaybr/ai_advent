@@ -22,7 +22,7 @@ const boards = [
       {
         id: 'planning', rootId: 'planning', parentId: null, x: 160, y: 110, width: 476,
         title: 'Планирование', provider: 'Codex', model: 'GPT-6 Sol', context: 42,
-        approval: 'Ручное', effort: 'Высокий', speed: 'Обычная', temperature: 0.7,
+        approval: 'Требует подтверждения', effort: 'Высокий', speed: 'Обычная', temperature: 0.7,
         messages: [
           { id: 'p1', role: 'user', text: 'Нужно спроектировать рабочую доску для диалогов с AI. Что должно быть видно сразу?' },
           { id: 'p2', role: 'assistant', text: 'На первом экране я бы оставил сами сессии и вкладки досок. Управление камерой — в небольшой плавающей панели. Настройки конкретной сессии находятся у поля ввода.', duration: '4,8 с', request: '{ "model": "sol", "stream": true }', tools: 'Инструменты не вызывались.' },
@@ -32,7 +32,7 @@ const boards = [
         id: 'branch', rootId: 'planning', parentId: 'planning', sourceMessageId: 'p2',
         sourceText: 'На первом экране я бы оставил сами сессии и вкладки досок.',
         x: 706, y: 260, width: 458, title: 'Вариант с деталями', provider: 'Codex', model: 'GPT-6 Sol', context: 17,
-        approval: 'Ручное', effort: 'Средний', speed: 'Обычная', temperature: 0.7,
+        approval: 'Требует подтверждения', effort: 'Средний', speed: 'Обычная', temperature: 0.7,
         messages: [
           { id: 'b1', role: 'user', text: 'А если детали выполнения раскрывать отдельно у каждого ответа?' },
           { id: 'b2', role: 'assistant', text: 'Да. В свернутом состоянии остаётся строка «Выполнена за 5,1 с». Нажатие открывает запрос и вызовы инструментов именно для этого ответа.', duration: '5,1 с', request: '{ "model": "sol", "stream": true }', tools: 'Инструменты не вызывались.' },
@@ -41,10 +41,10 @@ const boards = [
       {
         id: 'notes', rootId: 'notes', parentId: null, x: 1286, y: 142, width: 450,
         title: 'Отдельная гипотеза', provider: 'OpenRouter', model: 'Qwen 3', context: 23,
-        approval: 'Ручное', effort: '—', speed: '—', temperature: 0.7,
+        approval: 'Требует подтверждения', effort: '—', speed: '—', temperature: 0.7,
         messages: [
           { id: 'n1', role: 'user', text: 'Предложи альтернативу боковой панели для настроек.' },
-          { id: 'n2', role: 'assistant', text: 'Показывать настройки рядом с полем ввода текущей сессии. Тогда доска остаётся свободной, а источник ответа читается там, где пользователь его ожидает.', duration: '2,7 с', request: '{ "model": "qwen", "temperature": 0.7 }', tools: 'Инструменты не вызывались.' },
+          { id: 'n2', role: 'assistant', text: 'Показывать настройки рядом с полем ввода текущей сессии. Тогда доска остаётся свободной, а источник ответа читается там, где пользователь его ожидает.', duration: '2,7 с', request: JSON.stringify({ model: 'qwen', temperature: 0.7, messages: [{ role: 'system', content: 'Предложи компактное размещение настроек без боковой панели.' }, { role: 'user', content: 'Предложи альтернативу боковой панели для настроек.' }], stream: true }), reasoningSummary: 'Сопоставил место настроек с точкой отправки сообщения и оставил доску свободной для сессий.', toolUses: [{ name: 'search_messages', input: { query: 'настройки сессии' }, result: 'Найдено 2 сообщения о панели настроек.' }, { name: 'save_fact', input: { key: 'settings_location', value: 'рядом с полем ввода' }, result: 'Факт сохранён в памяти доски.' }] },
         ],
       },
     ],
@@ -54,14 +54,14 @@ const boards = [
     lanes: [{
       id: 'first', rootId: 'first', parentId: null, x: 190, y: 140, width: 476,
       title: 'Новая сессия', provider: 'Codex', model: 'GPT-6 Sol', context: 0,
-      approval: 'Ручное', effort: 'Средний', speed: 'Обычная', temperature: 0.7, messages: [],
+      approval: 'Требует подтверждения', effort: 'Средний', speed: 'Обычная', temperature: 0.7, messages: [],
     }],
   },
 ];
 
 boards[0].lanes[1].historyPrefix = boards[0].lanes[0].messages.slice(0, 2).map((message) => ({ ...message }));
 
-const state = { activeBoardId: 'main', mode: 'free', expanded: new Set(), drafts: new Map(), drag: null, openMenu: null, settingsDraft: null, scrollTarget: null, scrollFrame: null, toastTimer: null };
+const state = { activeBoardId: 'main', mode: 'free', expanded: new Set(), expandedRequests: new Set(), drafts: new Map(), drag: null, openMenu: null, settingsDraft: null, scrollTarget: null, scrollFrame: null, toastTimer: null };
 const app = document.querySelector('#app');
 const settingsDialog = document.querySelector('#settings-dialog');
 const editDialog = document.querySelector('#edit-dialog');
@@ -94,8 +94,9 @@ function alignBranches() {
 
 function configMenu(lane, key, label, values, className = '') {
   const open = state.openMenu === `${lane.id}:${key}`;
+  const valueHtml = key === 'speed' ? icon('bolt', 16) : escapeHtml(lane[key]);
   return `<div class="config-menu ${className}"><span class="config-label">${escapeHtml(label)}</span>
-    <button class="config-trigger" type="button" data-action="toggle-config" data-lane="${lane.id}" data-config="${key}" aria-label="${escapeHtml(label)}: ${escapeHtml(lane[key])}" aria-expanded="${open}" aria-haspopup="menu">${escapeHtml(lane[key])}</button>
+    <button class="config-trigger" type="button" data-action="toggle-config" data-lane="${lane.id}" data-config="${key}" aria-label="${escapeHtml(label)}: ${escapeHtml(lane[key])}" title="${escapeHtml(label)}: ${escapeHtml(lane[key])}" aria-expanded="${open}" aria-haspopup="menu">${valueHtml}</button>
     ${open ? `<div class="config-popover" role="menu" aria-label="${escapeHtml(label)}">${values.map((value) => `<button class="config-option" type="button" role="menuitemradio" aria-checked="${String(lane[key]) === value}" data-action="config-choice" data-lane="${lane.id}" data-config="${key}" data-value="${escapeHtml(value)}"><span>${escapeHtml(value)}</span>${String(lane[key]) === value ? icon('check', 14) : ''}</button>`).join('')}</div>` : ''}
   </div>`;
 }
@@ -109,6 +110,11 @@ function toast(message) {
 
 function textContent(value) {
   return escapeHtml(value).split('\n').map((line) => line || '&nbsp;').join('<br>');
+}
+
+function formatRequest(request) {
+  try { return JSON.stringify(JSON.parse(request), null, 2); }
+  catch { return request; }
 }
 
 function renderMessage(lane, message) {
@@ -132,11 +138,19 @@ function renderMessage(lane, message) {
     return `<article class="message user-message" ${common}><div class="user-bubble">${textContent(message.text)}</div>${actions}</article>`;
   }
   const expanded = state.expanded.has(message.id);
+  const request = formatRequest(message.request || '{ "stream": true }');
+  const longRequest = request.length > 180 || request.split('\n').length > 8;
+  const requestExpanded = state.expandedRequests.has(message.id);
+  const detailHtml = `<div class="run-details"><div class="detail-line"><div class="detail-heading"><span>Запрос к LLM</span><button class="icon-button" type="button" data-action="copy-request" data-lane="${lane.id}" data-message="${message.id}" title="Копировать запрос" aria-label="Копировать запрос">${icon('copy', 15)}</button></div>
+    <pre class="request-code ${longRequest && !requestExpanded ? 'collapsed' : ''}"><code>${escapeHtml(request)}</code></pre>
+    ${longRequest ? `<button class="request-expand" type="button" data-action="toggle-request" data-message="${message.id}" aria-expanded="${requestExpanded}">${requestExpanded ? 'Свернуть запрос' : 'Показать весь запрос'}${icon('chevron', 13)}</button>` : ''}</div>
+    ${message.reasoningSummary ? `<div class="detail-line"><span>Ход работы · краткое публичное описание</span><p>${escapeHtml(message.reasoningSummary)}</p></div>` : ''}
+    ${message.toolUses?.length ? `<div class="detail-line"><span>Использование инструментов</span>${message.toolUses.map((tool) => `<div class="tool-use"><strong>${escapeHtml(tool.name)}</strong><div><small>Вход</small><code>${escapeHtml(JSON.stringify(tool.input, null, 2))}</code></div><div><small>Результат</small><p>${escapeHtml(tool.result)}</p></div></div>`).join('')}</div>` : message.tools && message.tools !== 'Инструменты не вызывались.' ? `<div class="detail-line"><span>Использование инструментов</span><p>${escapeHtml(message.tools)}</p></div>` : ''}</div>`;
   return `<article class="message assistant-message" ${common}>
     <button class="run-toggle" type="button" data-action="toggle-details" data-message="${message.id}" aria-expanded="${expanded}">
       <span class="run-duration">Выполнена за ${escapeHtml(message.duration || '3,0 с')}</span>${icon('chevron', 14)}
     </button>
-    ${expanded ? `<div class="run-details"><div class="detail-line"><span>Запрос к LLM</span><code>${escapeHtml(message.request || '{ "stream": true }')}</code></div>${message.tools && message.tools !== 'Инструменты не вызывались.' ? `<div class="detail-line"><span>Использование инструментов</span><p>${escapeHtml(message.tools)}</p></div>` : ''}</div>` : ''}
+    ${expanded ? detailHtml : ''}
     <div class="assistant-copy">${textContent(message.text)}</div>
     ${actions}
   </article>`;
@@ -144,10 +158,10 @@ function renderMessage(lane, message) {
 
 function renderLane(lane) {
   const selected = board().selectedLaneId === lane.id;
-  const independent = !lane.parentId;
+  const independent = !lane.parentId && !lane.subagentOf;
   const providerMeta = lane.provider === 'Codex'
-    ? `${configMenu(lane, 'approval', 'Подтверждение', ['Ручное', 'Авто'])}${configMenu(lane, 'effort', 'Effort', ['Низкий', 'Средний', 'Высокий'])}${configMenu(lane, 'speed', 'Скорость', ['Обычная', 'Быстрая'])}`
-    : `${configMenu(lane, 'approval', 'Подтверждение', ['Ручное', 'Авто'])}${configMenu(lane, 'temperature', 'Температура', ['0', '0.3', '0.7', '1', '1.2', '1.5', '2'])}`;
+    ? `${configMenu(lane, 'approval', 'Подтверждение', ['Требует подтверждения', 'Автоподтверждение'], 'approval-menu')}${configMenu(lane, 'effort', 'Уровень рассуждения', ['Низкий', 'Средний', 'Высокий'], 'effort-menu')}${configMenu(lane, 'speed', 'Скорость', ['Обычная', 'Быстрая'], 'speed-menu')}`
+    : `${configMenu(lane, 'approval', 'Подтверждение', ['Требует подтверждения', 'Автоподтверждение'], 'approval-menu')}`;
   return `<section class="lane ${selected ? 'selected' : ''} ${independent ? 'independent' : 'linked'}" data-lane-id="${lane.id}" style="left:${lane.x}px;top:${lane.y}px;width:${lane.width}px">
     <header class="lane-header" ${independent ? `data-drop-root="${lane.id}"` : ''}>
       <div class="lane-header-main">${independent ? `<span class="drag-grip" data-drag-root="${lane.id}" title="Перетащить сессию вместе с ветками" aria-label="Перетащить сессию вместе с ветками">${icon('grip', 16)}</span>` : ''}<span class="lane-title" data-title-lane="${lane.id}" title="Двойной щелчок — изменить название">${escapeHtml(lane.title)}</span>
@@ -158,15 +172,14 @@ function renderLane(lane) {
     <div class="lane-body">
       ${lane.parentId ? `<div class="branch-context"><span>Ответвление от сообщения</span><p>${escapeHtml(lane.sourceText || '')}</p></div>` : ''}
       <div class="messages">${lane.messages.length ? lane.messages.map((message) => renderMessage(lane, message)).join('') : '<p class="empty-lane">Сессия пуста. Начни с сообщения внизу.</p>'}</div>
+      <div class="provider-label">${escapeHtml(lane.provider)}</div>
       <div class="composer"><label class="sr-only" for="composer-${lane.id}">Сообщение в сессию ${escapeHtml(lane.title)}</label>
         <textarea id="composer-${lane.id}" data-composer="${lane.id}" rows="1" placeholder="Написать сообщение…" spellcheck="true">${escapeHtml(state.drafts.get(lane.id) || '')}</textarea>
-        <div class="composer-bottom">
+        <footer class="lane-footer"><div class="composer-controls">${configMenu(lane, 'model', 'Модель', MODEL_CHOICES[lane.provider], 'model-menu')}${providerMeta}
+          <span class="context-meter" role="img" aria-label="Контекст заполнен на ${lane.context}%" data-tooltip="Контекст ${lane.context}%" style="--context:${Math.min(100, lane.context)}%"></span>
+          <button class="icon-button settings-button" type="button" data-action="settings" data-lane="${lane.id}" title="Настройки сессии" aria-label="Настройки сессии">${icon('settings', 17)}</button>
           <button class="send-button" type="button" data-action="send" data-lane="${lane.id}" title="Отправить корректировку" aria-label="Отправить корректировку">${icon('send', 17)}</button>
-        </div>
-        <footer class="lane-footer"><div class="footer-first"><span class="provider-name">${escapeHtml(lane.provider)} <span class="provider-sep">·</span> ${configMenu(lane, 'model', 'Модель', MODEL_CHOICES[lane.provider], 'model-menu')}</span>
-          <span class="context-meter" role="img" aria-label="Контекст заполнен на ${lane.context}%" data-tooltip="Контекст ${lane.context}%" style="--context:${Math.min(100, lane.context)}%"></span><button class="icon-button settings-button" type="button" data-action="settings" data-lane="${lane.id}" title="Настройки сессии" aria-label="Настройки сессии">${icon('settings', 17)}</button></div>
-          <div class="footer-second">${providerMeta}</div>
-        </footer>
+        </div></footer>
       </div>
     </div>
   </section>`;
@@ -335,6 +348,8 @@ function renderSettingsPanel() {
     panel.innerHTML = `<label class="settings-agents-label">AGENTS.md<textarea name="agentsMd" rows="8" placeholder="Инструкции для этой сессии">${escapeHtml(draft.agentsMd)}</textarea></label>`;
   } else if (draft.tab === 'system') {
     panel.innerHTML = `<label class="settings-agents-label">Системный промпт<textarea name="systemPrompt" rows="8" placeholder="Инструкции для модели OpenRouter">${escapeHtml(draft.systemPrompt)}</textarea></label>`;
+  } else if (draft.tab === 'parameters') {
+    panel.innerHTML = `<label class="parameter-label">Температура<input type="number" name="temperature" min="0" max="2" step="0.1" value="${draft.temperature}"></label><p class="dialog-note">Чем выше значение, тем разнообразнее ответы модели.</p>`;
   } else if (draft.tab === 'skills') {
     panel.innerHTML = `<label class="search-label">Поиск скиллов<input type="search" data-search="skills" placeholder="Найти скилл…" value="${escapeHtml(draft.skillSearch)}"></label>
       <div class="settings-list">${SKILLS.map((item) => `<label class="check-option" data-filter-item><input type="checkbox" data-setting="skill" value="${escapeHtml(item)}" ${draft.skills.includes(item) ? 'checked' : ''}><span>${escapeHtml(item)}</span></label>`).join('')}</div>
@@ -369,14 +384,14 @@ function filterSettingsList(query) {
 
 function showSettings(lane) {
   state.settingsDraft = {
-    laneId: lane.id, tab: lane.provider === 'OpenRouter' ? 'system' : 'agents', agentsMd: lane.agentsMd ?? '', systemPrompt: lane.systemPrompt ?? '',
+    laneId: lane.id, tab: lane.provider === 'OpenRouter' ? 'system' : 'agents', agentsMd: lane.agentsMd ?? '', systemPrompt: lane.systemPrompt ?? '', temperature: lane.temperature,
     skills: [...(lane.skills ?? ['Работа с файлами'])], mcp: [...(lane.mcp ?? [])],
     mcpTools: Object.fromEntries(MCP_SERVERS.map((server) => [server.name, [...(lane.mcpTools?.[server.name] ?? server.tools.map((tool) => tool.id))]])),
     skillSearch: '', mcpSearch: '', expandedMcp: new Set(),
   };
   settingsDialog.innerHTML = `<form method="dialog" id="settings-form" data-lane="${lane.id}">
     <div class="dialog-heading"><h2>Настройки сессии</h2><button type="button" class="icon-button" data-action="close-settings" aria-label="Закрыть">${icon('close', 19)}</button></div>
-    <div class="settings-tabs" role="tablist" aria-label="Раздел настроек">${[...(lane.provider === 'OpenRouter' ? [['system', 'Системный промпт']] : [['agents', 'AGENTS.md']]), ['skills', 'Скиллы'], ['mcp', 'MCP']].map(([key, label]) => `<button class="settings-tab ${key === state.settingsDraft.tab ? 'active' : ''}" type="button" role="tab" data-action="settings-tab" data-tab="${key}" aria-selected="${key === state.settingsDraft.tab}">${label}</button>`).join('')}</div>
+    <div class="settings-tabs" role="tablist" aria-label="Раздел настроек">${[...(lane.provider === 'OpenRouter' ? [['system', 'Системный промпт'], ['parameters', 'Параметры']] : [['agents', 'AGENTS.md']]), ['skills', 'Скиллы'], ['mcp', 'MCP']].map(([key, label]) => `<button class="settings-tab ${key === state.settingsDraft.tab ? 'active' : ''}" type="button" role="tab" data-action="settings-tab" data-tab="${key}" aria-selected="${key === state.settingsDraft.tab}">${label}</button>`).join('')}</div>
     <div id="settings-panel" class="settings-panel" role="tabpanel"></div>
     <div class="dialog-actions"><button type="button" class="secondary-button" data-action="close-settings">Отмена</button><button type="submit" class="primary-button">Сохранить</button></div>
   </form>`;
@@ -402,7 +417,7 @@ function addBoard() {
   boards.push({ id, name: `Доска ${number}`, camera: null, selectedLaneId: laneId, lanes: [{
     id: laneId, rootId: laneId, parentId: null, x: 190, y: 140, width: 476,
     title: 'Новая сессия', provider: 'Codex', model: 'GPT-6 Sol', context: 0,
-    approval: 'Ручное', effort: 'Средний', speed: 'Обычная', temperature: 0.7, messages: [],
+    approval: 'Требует подтверждения', effort: 'Средний', speed: 'Обычная', temperature: 0.7, messages: [],
   }] });
   state.activeBoardId = id;
   render();
@@ -417,7 +432,7 @@ function insertSession(referenceId, before) {
     id, rootId: id, parentId: null, x: 0, y: 0, width: 476,
     title: 'Новая сессия', provider: reference.provider,
     model: reference.model, context: 0,
-    approval: 'Ручное', effort: 'Средний', speed: 'Обычная', temperature: 0.7, messages: [],
+    approval: 'Требует подтверждения', effort: 'Средний', speed: 'Обычная', temperature: 0.7, messages: [],
   });
   board().selectedLaneId = id;
   render();
@@ -541,6 +556,7 @@ app.addEventListener('click', async (event) => {
       zoomAt(action === 'zoom-in' ? 1.12 : 1 / 1.12, rect.left + rect.width / 2, rect.top + rect.height / 2); return;
     }
     if (action === 'toggle-details') { state.expanded.has(button.dataset.message) ? state.expanded.delete(button.dataset.message) : state.expanded.add(button.dataset.message); render(); return; }
+    if (action === 'toggle-request') { state.expandedRequests.has(button.dataset.message) ? state.expandedRequests.delete(button.dataset.message) : state.expandedRequests.add(button.dataset.message); render(); return; }
     if (action === 'settings') { showSettings(lane); return; }
     if (action === 'show-archive') { showArchive(); return; }
     if (action === 'toggle-config') {
@@ -572,6 +588,11 @@ app.addEventListener('click', async (event) => {
     if (action === 'copy-message' && message) {
       try { await navigator.clipboard.writeText(message.text); toast('Текст скопирован.'); }
       catch { toast('Браузер не разрешил копирование. Открой макет через localhost.'); }
+      return;
+    }
+    if (action === 'copy-request' && message) {
+      try { await navigator.clipboard.writeText(formatRequest(message.request || '{ "stream": true }')); toast('Запрос скопирован.'); }
+      catch { toast('Браузер не разрешил копирование.'); }
       return;
     }
   }
@@ -743,6 +764,7 @@ settingsDialog.addEventListener('input', (event) => {
   if (!state.settingsDraft) return;
   if (event.target.name === 'agentsMd') state.settingsDraft.agentsMd = event.target.value;
   if (event.target.name === 'systemPrompt') state.settingsDraft.systemPrompt = event.target.value;
+  if (event.target.name === 'temperature') state.settingsDraft.temperature = event.target.value;
   if (event.target.dataset.search) {
     state.settingsDraft[event.target.dataset.search === 'skills' ? 'skillSearch' : 'mcpSearch'] = event.target.value;
     filterSettingsList(event.target.value);
@@ -774,6 +796,11 @@ settingsDialog.addEventListener('submit', (event) => {
   if ((lane.agentsMd ?? '') !== agentsMd) { lane.agentsMd = agentsMd; changes.push('AGENTS.md'); }
   const systemPrompt = draft.systemPrompt.trim();
   if (lane.provider === 'OpenRouter' && (lane.systemPrompt ?? '') !== systemPrompt) { lane.systemPrompt = systemPrompt; changes.push('системный промпт'); }
+  if (lane.provider === 'OpenRouter') {
+    const temperature = Number(draft.temperature);
+    if (draft.temperature === '' || !Number.isFinite(temperature) || temperature < 0 || temperature > 2) { toast('Температура должна быть от 0 до 2.'); return; }
+    if (lane.temperature !== temperature) { lane.temperature = temperature; changes.push('температура'); }
+  }
   for (const key of ['skills', 'mcp']) {
     const values = draft[key];
     const original = lane[key] ?? (key === 'skills' ? ['Работа с файлами'] : []);
