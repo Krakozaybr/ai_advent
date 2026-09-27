@@ -45,6 +45,13 @@ private fun platformMemoryDatabasePath(): Path {
     return root.resolve("v3/data/memory.sqlite")
 }
 
+private fun platformTaskDatabasePath(): Path {
+    System.getenv("AI_ADVENT_V3_TASKS_DB")?.let { return Path.of(it) }
+    val root = Path.of(System.getenv("AI_ADVENT_V3_CWD") ?: System.getProperty("user.dir")).toAbsolutePath()
+        .let { if (it.resolve("examples/mcp/board-memory-server.mjs").toFile().exists()) it else it.parent.parent }
+    return root.resolve("v3/data/tasks.sqlite")
+}
+
 fun Application.module(
     store: WorkspaceStore = WorkspaceStore(Path.of(System.getenv("AI_ADVENT_V3_DB") ?: "v3/data/board.sqlite")),
     codex: CodexGateway = CodexAppServer(),
@@ -53,6 +60,7 @@ fun Application.module(
     mcpRegistry: McpRegistry = McpRegistry(),
     mcpClient: McpClient = McpClient(),
     memoryStore: MemoryStore = MemoryStore(platformMemoryDatabasePath()),
+    taskStore: TaskStore = TaskStore(platformTaskDatabasePath()),
 ) {
     install(ContentNegotiation) { json(json) }
     install(SSE)
@@ -103,6 +111,51 @@ fun Application.module(
             val boardId = call.parameters["boardId"] ?: ""
             try { store.board(boardId); call.respond(memoryStore.state(boardId)) }
             catch (_: IllegalStateException) { call.respond(HttpStatusCode.NotFound, buildJsonObject { put("error", "Доска не найдена.") }) }
+        }
+
+        get("/api/boards/{boardId}/tasks") {
+            val boardId = call.parameters["boardId"] ?: ""
+            try { store.board(boardId); call.respond(taskStore.list(boardId)) }
+            catch (_: IllegalStateException) { call.respond(HttpStatusCode.NotFound, buildJsonObject { put("error", "Доска не найдена.") }) }
+        }
+
+        post("/api/boards/{boardId}/tasks") {
+            val boardId = call.parameters["boardId"] ?: ""
+            val body = runCatching { call.receive<JsonObject>() }.getOrNull()
+            val title = body?.get("title")?.jsonPrimitive?.contentOrNull
+            val description = body?.get("description")?.jsonPrimitive?.contentOrNull.orEmpty()
+            if (title == null) { call.respond(HttpStatusCode.BadRequest, buildJsonObject { put("error", "Укажи название задачи.") }); return@post }
+            try { store.board(boardId); call.respond(HttpStatusCode.Created, taskStore.create(boardId,title,description)) }
+            catch (error: IllegalArgumentException) { call.respond(HttpStatusCode.BadRequest, buildJsonObject { put("error", error.message ?: "Задача некорректна.") }) }
+            catch (_: IllegalStateException) { call.respond(HttpStatusCode.NotFound, buildJsonObject { put("error", "Доска не найдена.") }) }
+        }
+
+        patch("/api/boards/{boardId}/tasks/{taskId}") {
+            val boardId = call.parameters["boardId"] ?: ""
+            val taskId = call.parameters["taskId"] ?: ""
+            val body = runCatching { call.receive<JsonObject>() }.getOrNull()
+            if (body == null) { call.respond(HttpStatusCode.BadRequest, buildJsonObject { put("error", "Тело запроса должно быть JSON-объектом.") }); return@patch }
+            try { store.board(boardId) } catch (_: IllegalStateException) {
+                call.respond(HttpStatusCode.NotFound, buildJsonObject { put("error", "Доска не найдена.") }); return@patch
+            }
+            try {
+                call.respond(taskStore.update(boardId,taskId,
+                    title=body["title"]?.jsonPrimitive?.contentOrNull,
+                    description=body["description"]?.jsonPrimitive?.contentOrNull,
+                    plan=body["plan"]?.jsonPrimitive?.contentOrNull,
+                    approvePlan=body["approvePlan"]?.jsonPrimitive?.contentOrNull?.toBooleanStrictOrNull(),
+                    stage=body["stage"]?.jsonPrimitive?.contentOrNull,
+                    currentStep=body["currentStep"]?.jsonPrimitive?.contentOrNull,
+                    expectedAction=body["expectedAction"]?.jsonPrimitive?.contentOrNull,
+                    paused=body["paused"]?.jsonPrimitive?.contentOrNull?.toBooleanStrictOrNull(),
+                    status=body["status"]?.jsonPrimitive?.contentOrNull,
+                    comment=body["comment"]?.jsonPrimitive?.contentOrNull))
+            } catch (error: IllegalArgumentException) {
+                call.respond(HttpStatusCode.BadRequest, buildJsonObject { put("error", error.message ?: "Операция некорректна.") })
+            } catch (error: Exception) {
+                val message = error.message ?: "Операция задачи отклонена."
+                call.respond(if (message.contains("не найдена")) HttpStatusCode.NotFound else HttpStatusCode.Conflict, buildJsonObject { put("error", message) })
+            }
         }
 
         post("/api/boards/{boardId}/memories/working") {

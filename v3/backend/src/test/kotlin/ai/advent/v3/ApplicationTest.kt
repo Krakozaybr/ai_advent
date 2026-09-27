@@ -41,6 +41,37 @@ import java.util.concurrent.atomic.AtomicInteger
 
 class ApplicationTest {
     @Test
+    fun `board task API validates workflow and returns the rejection reason`() = testApplication {
+        val directory = Files.createTempDirectory("board-tasks-api")
+        val store = WorkspaceStore(directory.resolve("board.sqlite"))
+        val boardId = store.boards().first().jsonObject["id"]!!.jsonPrimitive.content
+        application { module(store, FakeCodexAppServer(), memoryStore = MemoryStore(directory.resolve("memory.sqlite")), taskStore = TaskStore(directory.resolve("tasks.sqlite"))) }
+
+        val created = client.post("/api/boards/$boardId/tasks") {
+            header(HttpHeaders.ContentType, ContentType.Application.Json.toString()); setBody("""{"title":"Релиз","description":"Подготовить релиз"}""")
+        }
+        assertEquals(HttpStatusCode.Created, created.status, created.bodyAsText())
+        val task = Json.parseToJsonElement(created.bodyAsText()).jsonObject
+        val id = task["id"]!!.jsonPrimitive.content
+        val skipped = client.patch("/api/boards/$boardId/tasks/$id") {
+            header(HttpHeaders.ContentType, ContentType.Application.Json.toString()); setBody("""{"stage":"execution"}""")
+        }
+        assertEquals(HttpStatusCode.Conflict, skipped.status)
+        assertTrue(skipped.bodyAsText().contains("утверди план"))
+        client.patch("/api/boards/$boardId/tasks/$id") {
+            header(HttpHeaders.ContentType, ContentType.Application.Json.toString()); setBody("""{"plan":"Собрать и проверить"}""")
+        }
+        client.patch("/api/boards/$boardId/tasks/$id") {
+            header(HttpHeaders.ContentType, ContentType.Application.Json.toString()); setBody("""{"approvePlan":true}""")
+        }
+        val execution = client.patch("/api/boards/$boardId/tasks/$id") {
+            header(HttpHeaders.ContentType, ContentType.Application.Json.toString()); setBody("""{"stage":"execution","currentStep":"Собрать"}""")
+        }
+        assertEquals(HttpStatusCode.OK, execution.status, execution.bodyAsText())
+        assertEquals("execution", Json.parseToJsonElement(execution.bodyAsText()).jsonObject["stage"]!!.jsonPrimitive.content)
+    }
+
+    @Test
     fun `uncertain MCP approval can be closed through API without retrying it`() = testApplication {
         val directory = Files.createTempDirectory("approval-uncertain-api")
         val database = directory.resolve("board.sqlite")
