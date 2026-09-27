@@ -9,7 +9,7 @@ function openScope() {
   const databasePath = process.env.AI_ADVENT_V3_BOARD_DB;
   const laneId = process.env.AI_ADVENT_V3_LANE_ID;
   if (!databasePath || !laneId) throw new Error("Trusted board and lane scope is required.");
-  const db = new DatabaseSync(databasePath, { readOnly: true });
+  const db = new DatabaseSync(databasePath, { readOnly: true, timeout: 5000 });
   db.exec("PRAGMA busy_timeout = 5000");
   return { db, laneId };
 }

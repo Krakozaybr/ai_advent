@@ -10,11 +10,11 @@ function openScope(readOnly = false) {
   const laneId = process.env.AI_ADVENT_V3_LANE_ID;
   const memoryPath = process.env.AI_ADVENT_V3_MEMORY_DB;
   if (!boardPath || !laneId || !memoryPath) throw new Error("Trusted board, lane and memory scope is required.");
-  const board = new DatabaseSync(boardPath, { readOnly: true });
+  const board = new DatabaseSync(boardPath, { readOnly: true, timeout: 5000 });
   const lane = board.prepare("SELECT board_id FROM lanes WHERE id=?").get(laneId);
   board.close();
   if (!lane) throw new Error("Trusted lane no longer exists.");
-  const db = new DatabaseSync(memoryPath, { readOnly });
+  const db = new DatabaseSync(memoryPath, { readOnly, timeout: 5000 });
   db.exec("PRAGMA busy_timeout = 5000");
   return { db, boardId: lane.board_id };
 }
