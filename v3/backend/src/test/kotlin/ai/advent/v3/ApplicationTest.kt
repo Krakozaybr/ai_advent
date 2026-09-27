@@ -30,6 +30,7 @@ import kotlinx.serialization.json.put
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
+import kotlin.test.assertNotEquals
 import kotlin.test.assertTrue
 import java.nio.file.Files
 import java.sql.DriverManager
@@ -55,6 +56,7 @@ for line in sys.stdin:
     elif method == "model/list":
         result = {"models": [{"slug": "gpt-test", "displayName": "Test"}]}
     elif method in ("thread/start", "thread/resume"):
+        if request["params"].get("ephemeral") is not True: raise RuntimeError("expected ephemeral thread")
         result = {"thread": {"id": "mock-thread"}}
     elif method == "turn/start":
         result = {"turn": {"id": "mock-turn"}}
@@ -63,6 +65,7 @@ for line in sys.stdin:
     print(json.dumps({"jsonrpc": "2.0", "id": request_id, "result": result}), flush=True)
     if method == "turn/start":
         print(json.dumps({"jsonrpc": "2.0", "method": "item/agentMessage/delta", "params": {"threadId": "mock-thread", "delta": request["params"].get("model", "default")}}), flush=True)
+        print(json.dumps({"jsonrpc": "2.0", "method": "thread/tokenUsage/updated", "params": {"threadId": "mock-thread", "turnId": "mock-turn", "tokenUsage": {"total": {"totalTokens": 9}}}}), flush=True)
         print(json.dumps({"jsonrpc": "2.0", "method": "turn/completed", "params": {"threadId": "mock-thread", "turn": {"status": "completed"}}}), flush=True)
 """)
         Files.setPosixFilePermissions(executable, java.nio.file.attribute.PosixFilePermissions.fromString("rwx------"))
@@ -72,7 +75,8 @@ for line in sys.stdin:
             assertEquals("gpt-test", codex.models().single().jsonObject["slug"]!!.jsonPrimitive.content)
             var threadId: String? = null
             var seeded = false
-            val text = StringBuilder()
+        val text = StringBuilder()
+        var usage: kotlinx.serialization.json.JsonObject? = null
             withTimeout(5_000) {
                 codex.stream(
                     threadId = null,
@@ -84,11 +88,14 @@ for line in sys.stdin:
                     onContextSeeded = { seeded = true },
                     onContextSeedFailed = { error("Не удалось подготовить контекст") },
                     onText = { text.append(it) },
+                    ephemeral = true,
+                    onUsage = { usage = it },
                 )
             }
             assertEquals("mock-thread", threadId)
             assertTrue(seeded)
             assertEquals("gpt-test", text.toString())
+            assertEquals("9", usage?.get("total")?.jsonObject?.get("totalTokens")?.jsonPrimitive?.content)
         } finally {
             codex.close()
         }
@@ -182,6 +189,14 @@ for line in sys.stdin:
         assertEquals(0.7, lane["temperature"]!!.jsonPrimitive.content.toDouble())
         assertEquals(2048, lane["maxTokens"]!!.jsonPrimitive.content.toInt())
 
+        client.patch("/api/lanes/$laneId/config") {
+            header(HttpHeaders.ContentType, ContentType.Application.Json.toString())
+            setBody("""{"model":"openai/gpt-4o-mini","temperature":0.7,"maxTokens":2048,"contextStrategy":"sliding_window","contextWindowSize":1,"contextBudgetTokens":10000}""")
+        }
+        val seeded = store.startRun(laneId, "old question")
+        store.appendText(seeded.runId, "old answer")
+        store.completeRun(seeded.runId)
+
         val response = client.post("/api/lanes/$laneId/messages") {
             header(HttpHeaders.ContentType, ContentType.Application.Json.toString())
             setBody("""{"text":"Hello","parameters":{"model":"openai/gpt-test","temperature":0.2,"maxTokens":32,"stop":"END"}}""")
@@ -211,6 +226,8 @@ for line in sys.stdin:
         assertEquals("openai/gpt-test", answer["requestConfig"]!!.jsonObject["model"]!!.jsonPrimitive.content)
         assertEquals(0.2, answer["requestConfig"]!!.jsonObject["temperature"]!!.jsonPrimitive.content.toDouble())
         assertEquals(7, answer["technicalDetails"]!!.jsonObject["usage"]!!.jsonObject["total_tokens"]!!.jsonPrimitive.content.toInt())
+        assertEquals("sliding_window", answer["requestConfig"]!!.jsonObject["contextStrategy"]!!.jsonPrimitive.content)
+        assertEquals(1, answer["technicalDetails"]!!.jsonObject["contextPlan"]!!.jsonObject["messages"]!!.jsonArray.size)
         assertFalse(answer["technicalDetails"].toString().contains("sk-test-secret"))
         assertEquals("https://openrouter.example.test/chat", answer["technicalDetails"]!!.jsonObject["endpoint"]!!.jsonPrimitive.content)
         val sent = Json.parseToJsonElement(receivedRequest).jsonObject
@@ -218,7 +235,10 @@ for line in sys.stdin:
         assertEquals("openai/gpt-test", sent["model"]!!.jsonPrimitive.content)
         assertEquals(0.2, sent["temperature"]!!.jsonPrimitive.content.toDouble())
         assertEquals(32, sent["max_tokens"]!!.jsonPrimitive.content.toInt())
+        assertEquals(true, sent["stream_options"]!!.jsonObject["include_usage"]!!.jsonPrimitive.content.toBoolean())
         assertEquals("END", sent["stop"]!!.jsonArray.single().jsonPrimitive.content)
+        assertEquals(2, sent["messages"]!!.jsonArray.size)
+        assertEquals("old answer", sent["messages"]!!.jsonArray.first().jsonObject["content"]!!.jsonPrimitive.content)
         assertFalse(response.bodyAsText().contains("sk-test-secret"))
         val cloned = client.post("/api/lanes/$laneId/clone").bodyAsText().let(Json::parseToJsonElement).jsonObject
             .getValue("lanes").jsonArray.last().jsonObject
@@ -239,6 +259,165 @@ for line in sys.stdin:
         assertTrue(Files.getPosixFilePermissions(keyFile).contains(java.nio.file.attribute.PosixFilePermission.OWNER_READ))
         assertTrue(Files.getPosixFilePermissions(keyFile).contains(java.nio.file.attribute.PosixFilePermission.OWNER_WRITE))
         assertFalse(Files.getPosixFilePermissions(keyFile).contains(java.nio.file.attribute.PosixFilePermission.GROUP_READ))
+    }
+
+    @Test
+    fun `context plans are persisted for every provider and restricted Codex runs are ephemeral`() = testApplication {
+        val database = Files.createTempDirectory("ai-advent-context-").resolve("board.sqlite")
+        val store = WorkspaceStore(database)
+        val fake = FakeCodexAppServer()
+        application { module(store, fake) }
+        val board = client.get("/api/board").bodyAsText().let(Json::parseToJsonElement).jsonObject
+        val boardId = board["board"]!!.jsonObject["id"]!!.jsonPrimitive.content
+        val laneId = board["lanes"]!!.jsonArray[0].jsonObject["id"]!!.jsonPrimitive.content
+        val configResponse = client.patch("/api/lanes/$laneId/config") {
+            header(HttpHeaders.ContentType, ContentType.Application.Json.toString())
+            setBody("""{"model":"gpt-test","contextStrategy":"sliding_window","contextWindowSize":1,"contextBudgetTokens":10000}""")
+        }
+        assertEquals(HttpStatusCode.OK, configResponse.status)
+        suspend fun send(prompt: String) {
+            val response = client.post("/api/lanes/$laneId/messages") {
+                header(HttpHeaders.ContentType, ContentType.Application.Json.toString())
+                setBody("""{"text":"$prompt"}""")
+            }
+            assertEquals(HttpStatusCode.Accepted, response.status)
+            val runId = response.bodyAsText().let(Json::parseToJsonElement).jsonObject["runId"]!!.jsonPrimitive.content
+            val deadline = System.nanoTime() + 5_000_000_000
+            while (!store.isTerminal(runId) && System.nanoTime() < deadline) delay(10)
+            assertTrue(store.isTerminal(runId))
+        }
+        send("one"); send("two"); send("three")
+        val finalLane = client.get("/api/boards/$boardId").bodyAsText().let(Json::parseToJsonElement).jsonObject["lanes"]!!.jsonArray[0].jsonObject
+        assertEquals(6, finalLane["messages"]!!.jsonArray.size, "full transcript remains stored")
+        val lastAnswer = finalLane["messages"]!!.jsonArray.last().jsonObject
+        assertEquals("sliding_window", lastAnswer["requestConfig"]!!.jsonObject["contextStrategy"]!!.jsonPrimitive.content)
+        val plan = lastAnswer["requestConfig"]!!.jsonObject["contextPlan"]!!.jsonObject
+        assertEquals(1, plan["messages"]!!.jsonArray.size)
+        assertEquals(3, plan["omittedMessages"]!!.jsonPrimitive.content.toInt())
+        assertEquals(true, fake.runs.last().ephemeral)
+        val cloned = client.post("/api/lanes/$laneId/clone").bodyAsText().let(Json::parseToJsonElement).jsonObject["lanes"]!!.jsonArray.last().jsonObject
+        assertEquals("sliding_window", cloned["contextStrategy"]!!.jsonPrimitive.content)
+        assertEquals(1, cloned["contextWindowSize"]!!.jsonPrimitive.content.toInt())
+        assertEquals(10_000, cloned["contextBudgetTokens"]!!.jsonPrimitive.content.toInt())
+    }
+
+    @Test
+    fun `overflow requires explicit force send and accepted text remains in transcript`() = testApplication {
+        val database = Files.createTempDirectory("ai-advent-overflow-").resolve("board.sqlite")
+        val store = WorkspaceStore(database)
+        val fake = FakeCodexAppServer()
+        application { module(store, fake) }
+        val laneId = client.get("/api/board").bodyAsText().let(Json::parseToJsonElement).jsonObject["lanes"]!!
+            .jsonArray[0].jsonObject["id"]!!.jsonPrimitive.content
+        client.patch("/api/lanes/$laneId/config") {
+            header(HttpHeaders.ContentType, ContentType.Application.Json.toString())
+            setBody("""{"model":"gpt-test","contextBudgetTokens":256}""")
+        }
+        val rejected = client.post("/api/lanes/$laneId/messages") {
+            header(HttpHeaders.ContentType, ContentType.Application.Json.toString())
+            setBody("""{"text":"${"x".repeat(1000)}"}""")
+        }
+        assertEquals(HttpStatusCode.BadRequest, rejected.status)
+        var lane = client.get("/api/board").bodyAsText().let(Json::parseToJsonElement).jsonObject["lanes"]!!
+            .jsonArray[0].jsonObject
+        assertTrue(lane["messages"]!!.jsonArray.isEmpty())
+        val accepted = client.post("/api/lanes/$laneId/messages") {
+            header(HttpHeaders.ContentType, ContentType.Application.Json.toString())
+            setBody("""{"text":"${"x".repeat(1000)}","parameters":{"forceSend":true}}""")
+        }
+        assertEquals(HttpStatusCode.Accepted, accepted.status)
+        val runId = accepted.bodyAsText().let(Json::parseToJsonElement).jsonObject["runId"]!!.jsonPrimitive.content
+        fake.finished.await()
+        val deadline = System.nanoTime() + 5_000_000_000
+        while (!store.isTerminal(runId) && System.nanoTime() < deadline) delay(10)
+        lane = client.get("/api/board").bodyAsText().let(Json::parseToJsonElement).jsonObject["lanes"]!!.jsonArray[0].jsonObject
+        assertEquals(2, lane["messages"]!!.jsonArray.size)
+        assertEquals(1000, lane["messages"]!!.jsonArray.first().jsonObject["content"]!!.jsonPrimitive.content.length)
+    }
+
+    @Test
+    fun `summary is explicitly generated separately and stores a transcript watermark`() = testApplication {
+        val database = Files.createTempDirectory("ai-advent-summary-").resolve("board.sqlite")
+        val store = WorkspaceStore(database)
+        val fake = FakeCodexAppServer()
+        application { module(store, fake) }
+        val laneId = client.get("/api/board").bodyAsText().let(Json::parseToJsonElement).jsonObject["lanes"]!!
+            .jsonArray[0].jsonObject["id"]!!.jsonPrimitive.content
+        client.patch("/api/lanes/$laneId/config") {
+            header(HttpHeaders.ContentType, ContentType.Application.Json.toString())
+            setBody("""{"model":"gpt-test","contextStrategy":"summary_window","contextWindowSize":1}""")
+        }
+        val sent = client.post("/api/lanes/$laneId/messages") {
+            header(HttpHeaders.ContentType, ContentType.Application.Json.toString())
+            setBody("""{"text":"first"}""")
+        }
+        val runId = sent.bodyAsText().let(Json::parseToJsonElement).jsonObject["runId"]!!.jsonPrimitive.content
+        fake.finished.await()
+        val deadline = System.nanoTime() + 5_000_000_000
+        while (!store.isTerminal(runId) && System.nanoTime() < deadline) delay(10)
+        val before = client.get("/api/board").bodyAsText().let(Json::parseToJsonElement).jsonObject["lanes"]!!.jsonArray[0].jsonObject
+        val originalMessages = before["messages"]!!.jsonArray
+        val summaryResponse = client.post("/api/lanes/$laneId/context-summary")
+        assertEquals(HttpStatusCode.OK, summaryResponse.status)
+        val summaryResult = summaryResponse.bodyAsText().let(Json::parseToJsonElement).jsonObject
+        assertEquals(originalMessages.last().jsonObject["id"], summaryResult["watermark"])
+        val after = client.get("/api/board").bodyAsText().let(Json::parseToJsonElement).jsonObject["lanes"]!!.jsonArray[0].jsonObject
+        assertEquals(originalMessages.size, after["messages"]!!.jsonArray.size, "summary generation does not append dialogue messages")
+        assertEquals(summaryResult["watermark"], after["contextSummaryWatermark"])
+        assertTrue(after["contextSummary"]!!.jsonPrimitive.content.isNotBlank())
+        assertEquals(false, after["contextSummaryStale"]!!.jsonPrimitive.content.toBoolean())
+        assertEquals(true, fake.runs.last().ephemeral)
+        assertEquals("codex-app-server", summaryResult["usageSource"]!!.jsonPrimitive.content)
+        val finalMessageId = originalMessages.last().jsonObject["id"]!!.jsonPrimitive.content
+        client.patch("/api/messages/$finalMessageId") {
+            header(HttpHeaders.ContentType, ContentType.Application.Json.toString())
+            setBody("""{"content":"edited last answer"}""")
+        }
+        val editedLane = client.get("/api/board").bodyAsText().let(Json::parseToJsonElement).jsonObject["lanes"]!!.jsonArray[0].jsonObject
+        assertEquals(true, editedLane["contextSummaryStale"]!!.jsonPrimitive.content.toBoolean())
+        assertEquals(summaryResult["watermark"], editedLane["contextSummaryWatermark"])
+    }
+
+    @Test
+    fun `returning from a restricted plan rebuilds the persistent Codex thread from the full transcript`() = testApplication {
+        val database = Files.createTempDirectory("ai-advent-codex-reset-").resolve("board.sqlite")
+        val store = WorkspaceStore(database)
+        val fake = FakeCodexAppServer()
+        application { module(store, fake) }
+        val laneId = client.get("/api/board").bodyAsText().let(Json::parseToJsonElement).jsonObject["lanes"]!!
+            .jsonArray[0].jsonObject["id"]!!.jsonPrimitive.content
+
+        suspend fun send(text: String) {
+            val response = client.post("/api/lanes/$laneId/messages") {
+                header(HttpHeaders.ContentType, ContentType.Application.Json.toString())
+                setBody("""{"text":"$text"}""")
+            }
+            assertEquals(HttpStatusCode.Accepted, response.status)
+            val runId = response.bodyAsText().let(Json::parseToJsonElement).jsonObject["runId"]!!.jsonPrimitive.content
+            val deadline = System.nanoTime() + 5_000_000_000
+            while (!store.isTerminal(runId) && System.nanoTime() < deadline) delay(10)
+            assertTrue(store.isTerminal(runId))
+        }
+        suspend fun configure(strategy: String) {
+            client.patch("/api/lanes/$laneId/config") {
+                header(HttpHeaders.ContentType, ContentType.Application.Json.toString())
+                setBody("""{"model":"gpt-test","contextStrategy":"$strategy","contextWindowSize":1,"contextBudgetTokens":10000}""")
+            }
+        }
+
+        send("full one")
+        val originalPersistentThread = fake.runs.last().threadId
+        configure("sliding_window")
+        send("window two")
+        assertTrue(fake.runs.last().ephemeral)
+        configure("full")
+        send("full three")
+        val rebuilt = fake.runs.last()
+        assertTrue(rebuilt.shouldSeedContext)
+        assertEquals(listOf("full one", "Привет, мир", "window two", "Привет, мир"), rebuilt.contextToSeed.map { it.content })
+        assertNotEquals(originalPersistentThread, rebuilt.threadId)
+        val lane = client.get("/api/board").bodyAsText().let(Json::parseToJsonElement).jsonObject["lanes"]!!.jsonArray[0].jsonObject
+        assertEquals(rebuilt.threadId, lane["codexThreadId"]!!.jsonPrimitive.content)
     }
 
     @Test
@@ -708,10 +887,12 @@ private class FakeCodexAppServer(
         onContextSeeded: suspend () -> Unit,
         onContextSeedFailed: suspend () -> Unit,
         onText: suspend (String) -> Unit,
+        ephemeral: Boolean,
+        onUsage: suspend (kotlinx.serialization.json.JsonObject) -> Unit,
     ) {
         val resolvedThreadId = threadId ?: "fake-codex-thread-${nextThreadId.incrementAndGet()}"
         onThreadId(resolvedThreadId)
-        runs += CapturedRun(resolvedThreadId, prompt, contextToSeed, shouldSeedContext, model)
+        runs += CapturedRun(resolvedThreadId, prompt, contextToSeed, shouldSeedContext, model, ephemeral)
         if (shouldSeedContext && failNextSeed) {
             failNextSeed = false
             onContextSeedFailed()
@@ -724,6 +905,7 @@ private class FakeCodexAppServer(
             if (startedCount == expectedStreams) allStarted.complete(Unit)
         }
         try {
+            onUsage(buildJsonObject { put("total", buildJsonObject { put("totalTokens", 9) }) })
             if (blockUntilReleased) release.await()
             if (failTurn) {
                 onText("partial")
@@ -748,5 +930,6 @@ private class FakeCodexAppServer(
         val contextToSeed: List<ContextMessage>,
         val shouldSeedContext: Boolean,
         val model: String,
+        val ephemeral: Boolean,
     )
 }

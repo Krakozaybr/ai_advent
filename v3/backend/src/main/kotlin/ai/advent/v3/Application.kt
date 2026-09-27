@@ -100,6 +100,9 @@ fun Application.module(
             val temperature = body?.get("temperature")?.jsonPrimitive?.doubleOrNull
             val maxTokens = body?.get("maxTokens")?.jsonPrimitive?.intOrNull
             val stop = body?.get("stop")?.jsonPrimitive?.contentOrNull
+            val contextStrategy = body?.get("contextStrategy")?.jsonPrimitive?.contentOrNull ?: "full"
+            val contextWindowSize = body?.get("contextWindowSize")?.jsonPrimitive?.intOrNull ?: 10
+            val contextBudgetTokens = body?.get("contextBudgetTokens")?.jsonPrimitive?.intOrNull ?: 32768
             if (laneId == null || model == null) {
                 call.respond(HttpStatusCode.BadRequest, buildJsonObject { put("error", "Укажи модель и параметры ленты.") })
                 return@patch
@@ -109,11 +112,41 @@ fun Application.module(
                     call.respond(HttpStatusCode.BadRequest, buildJsonObject { put("error", "Codex не принимает эти параметры.") })
                     return@patch
                 }
-                call.respond(store.updateLaneConfig(laneId, model, temperature, maxTokens, stop))
+                call.respond(store.updateLaneConfig(laneId, model, temperature, maxTokens, stop,
+                    contextStrategy, contextWindowSize, contextBudgetTokens))
             } catch (error: IllegalArgumentException) {
                 call.respond(HttpStatusCode.BadRequest, buildJsonObject { put("error", error.message ?: "Параметры некорректны.") })
             } catch (_: IllegalStateException) {
                 call.respond(HttpStatusCode.NotFound, buildJsonObject { put("error", "Лента не найдена.") })
+            }
+        }
+
+        post("/api/lanes/{laneId}/context-summary") {
+            val laneId = call.parameters["laneId"]
+            if (laneId == null) {
+                call.respond(HttpStatusCode.NotFound)
+                return@post
+            }
+            try {
+                when (store.providerForLane(laneId)) {
+                    "codex" -> if (!codex.status().authenticated) {
+                        call.respond(HttpStatusCode.Unauthorized, buildJsonObject { put("error", "Сначала войди в Codex через подписку ChatGPT.") })
+                        return@post
+                    }
+                    "openrouter" -> if (!openRouterKeys.isConfigured()) {
+                        call.respond(HttpStatusCode.Unauthorized, buildJsonObject { put("error", "Сначала сохрани API-ключ OpenRouter в настройках.") })
+                        return@post
+                    }
+                }
+                call.respond(coordinator.generateSummary(laneId))
+            } catch (_: ActiveRunException) {
+                call.respond(HttpStatusCode.Conflict, buildJsonObject { put("error", "Дождись завершения запроса перед созданием сводки.") })
+            } catch (error: IllegalStateException) {
+                call.respond(HttpStatusCode.NotFound, buildJsonObject { put("error", error.message ?: "Лента не найдена.") })
+            } catch (error: Exception) {
+                val message = error.message ?: "Не удалось создать сводку."
+                val safeMessage = openRouterKeys.get().takeIf(String::isNotBlank)?.let { message.replace(it, "[скрытый ключ]") } ?: message
+                call.respond(HttpStatusCode.BadGateway, buildJsonObject { put("error", safeMessage) })
             }
         }
 
@@ -336,6 +369,7 @@ fun Application.module(
                 parameters?.get("temperature")?.jsonPrimitive?.doubleOrNull,
                 parameters?.get("maxTokens")?.jsonPrimitive?.intOrNull,
                 parameters?.get("stop")?.jsonPrimitive?.contentOrNull,
+                parameters?.get("forceSend")?.jsonPrimitive?.contentOrNull == "true",
             )
             if (provider == "codex" && parameters != null &&
                 listOf("temperature", "maxTokens", "stop").any { parameters.containsKey(it) }

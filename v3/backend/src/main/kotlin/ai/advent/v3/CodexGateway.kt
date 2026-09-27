@@ -52,6 +52,8 @@ interface CodexGateway : Closeable {
         onContextSeeded: suspend () -> Unit,
         onContextSeedFailed: suspend () -> Unit,
         onText: suspend (String) -> Unit,
+        ephemeral: Boolean = false,
+        onUsage: suspend (JsonObject) -> Unit = {},
     )
 }
 
@@ -122,6 +124,8 @@ class CodexAppServer(
         onContextSeeded: suspend () -> Unit,
         onContextSeedFailed: suspend () -> Unit,
         onText: suspend (String) -> Unit,
+        ephemeral: Boolean,
+        onUsage: suspend (JsonObject) -> Unit,
     ) {
         ensureStarted()
         val threadMethod = if (threadId == null) "thread/start" else "thread/resume"
@@ -131,6 +135,7 @@ class CodexAppServer(
             put("approvalPolicy", "on-request")
             put("sandbox", "read-only")
             put("serviceName", "ai-advent-v3")
+            if (ephemeral) put("ephemeral", true)
             if (model.isNotBlank()) put("model", model)
         }
         val thread = request(threadMethod, threadParams)
@@ -195,6 +200,9 @@ class CodexAppServer(
 
             for (event in events) {
                 when (event["method"]?.jsonPrimitive?.content) {
+                    "thread/tokenUsage/updated" -> {
+                        event["params"]?.jsonObject?.get("tokenUsage")?.jsonObject?.let { onUsage(it) }
+                    }
                     "item/agentMessage/delta" -> {
                         val delta = event["params"]?.jsonObject?.get("delta")?.jsonPrimitive?.content
                         if (!delta.isNullOrEmpty()) onText(delta)

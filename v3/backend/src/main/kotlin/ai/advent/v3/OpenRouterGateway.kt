@@ -46,6 +46,7 @@ class OpenRouterHttpGateway(
         val requestBody = buildJsonObject {
             put("model", config.model)
             put("stream", true)
+            put("stream_options", buildJsonObject { put("include_usage", true) })
             put("messages", buildJsonArray {
                 (history + ContextMessage("user", prompt)).forEach { item ->
                     add(buildJsonObject { put("role", item.role); put("content", item.content) })
@@ -90,10 +91,12 @@ class OpenRouterHttpGateway(
             put("httpStatus", response.status.value)
             put("durationMs", Duration.ofNanos(System.nanoTime() - started).toMillis())
             finishReason?.let { put("finishReason", it) }
+            put("usageSource", if (usage == null) "unavailable" else "openrouter")
             usage?.let { put("usage", it) }
             put("request", buildJsonObject {
                 put("model", config.model)
                 put("stream", true)
+                put("stream_options", buildJsonObject { put("include_usage", true) })
                 config.temperature?.let { put("temperature", it) }
                 config.maxTokens?.let { put("max_tokens", it) }
                 config.stop?.let { put("stop", it) }

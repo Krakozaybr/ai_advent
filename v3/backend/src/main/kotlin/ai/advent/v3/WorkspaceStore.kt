@@ -46,8 +46,35 @@ class WorkspaceStore(private val originalFile: Path) : Closeable {
         boardStore.board()
     }
 
-    fun updateLaneConfig(laneId: String, model: String, temperature: Double?, maxTokens: Int?, stop: String?): JsonObject = synchronized(lock) {
-        storeForLane(laneId).also { it.updateLaneConfig(laneId, model, temperature, maxTokens, stop) }.board()
+    fun updateLaneConfig(
+        laneId: String, model: String, temperature: Double?, maxTokens: Int?, stop: String?,
+        contextStrategy: String, contextWindowSize: Int, contextBudgetTokens: Int,
+    ): JsonObject = synchronized(lock) {
+        storeForLane(laneId).also {
+            it.updateLaneConfig(laneId, model, temperature, maxTokens, stop, contextStrategy, contextWindowSize, contextBudgetTokens)
+        }.board()
+    }
+
+    fun saveContextSummary(laneId: String, summary: String, watermark: String?, usageSource: String?, usage: kotlinx.serialization.json.JsonObject?) = synchronized(lock) {
+        storeForLane(laneId).saveContextSummary(laneId, summary, watermark, usageSource, usage)
+    }
+
+    fun contextSnapshot(laneId: String): Pair<List<ContextMessage>, String?> = synchronized(lock) {
+        val lane = storeForLane(laneId).board()["lanes"]!!.let { it as kotlinx.serialization.json.JsonArray }
+            .map { it.jsonObject }.first { it["id"]?.jsonPrimitive?.content == laneId }
+        val messages = lane["messages"]!!.let { it as kotlinx.serialization.json.JsonArray }.mapNotNull { item ->
+            val message = item.jsonObject
+            val content = message["content"]?.jsonPrimitive?.content.orEmpty()
+            val role = message["role"]?.jsonPrimitive?.content.orEmpty()
+            if (content.isEmpty() || role !in setOf("user", "assistant")) null else ContextMessage(role, content)
+        }
+        val watermark = lane["messages"]!!.let { it as kotlinx.serialization.json.JsonArray }.lastOrNull()?.jsonObject?.get("id")?.jsonPrimitive?.content
+        messages to watermark
+    }
+
+    fun laneSnapshot(laneId: String): JsonObject = synchronized(lock) {
+        storeForLane(laneId).board()["lanes"]!!.let { it as JsonArray }
+            .map { it.jsonObject }.first { it["id"]?.jsonPrimitive?.content == laneId }
     }
 
     fun providerForLane(laneId: String): String = storeForLane(laneId).providerForLane(laneId)

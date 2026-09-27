@@ -54,6 +54,8 @@ data class StartedRun(
     val runId: String,
     val threadId: String?,
     val contextToSeed: List<ContextMessage>,
+    val contextPlan: ContextPlan,
+    val contextStrategy: ContextStrategy,
     val shouldSeedContext: Boolean,
     val config: LaneConfig,
 ) {
@@ -65,6 +67,7 @@ data class RequestOverrides(
     val temperature: Double? = null,
     val maxTokens: Int? = null,
     val stop: String? = null,
+    val forceSend: Boolean = false,
 )
 
 class ActiveRunException : IllegalStateException("A request is already running in this lane")
@@ -155,6 +158,14 @@ class BoardStore(private val file: Path, private val initialBoardTitle: String =
             ensureColumn(db, "lanes", "temperature", "REAL")
             ensureColumn(db, "lanes", "max_tokens", "INTEGER")
             ensureColumn(db, "lanes", "stop", "TEXT")
+            ensureColumn(db, "lanes", "context_strategy", "TEXT NOT NULL DEFAULT 'full'")
+            ensureColumn(db, "lanes", "context_window_size", "INTEGER NOT NULL DEFAULT 10")
+            ensureColumn(db, "lanes", "context_summary", "TEXT NOT NULL DEFAULT ''")
+            ensureColumn(db, "lanes", "context_summary_watermark", "TEXT")
+            ensureColumn(db, "lanes", "context_summary_usage", "TEXT")
+            ensureColumn(db, "lanes", "context_summary_usage_source", "TEXT")
+            ensureColumn(db, "lanes", "context_summary_stale", "INTEGER NOT NULL DEFAULT 0")
+            ensureColumn(db, "lanes", "context_budget_tokens", "INTEGER NOT NULL DEFAULT 32768")
             ensureColumn(db, "runs", "request_config", "TEXT")
             ensureColumn(db, "runs", "technical_details", "TEXT")
             backfillLaneLayout(db)
@@ -180,7 +191,9 @@ class BoardStore(private val file: Path, private val initialBoardTitle: String =
             db.prepareStatement(
                 "SELECT id, title, codex_thread_id, origin_lane_id, origin_message_id, origin_kind, " +
                     "origin_message_role, origin_message_content, " +
-                    "position_x, position_y, width, provider, model, temperature, max_tokens, stop " +
+                    "position_x, position_y, width, provider, model, temperature, max_tokens, stop, " +
+                    "context_strategy, context_window_size, context_summary, context_summary_watermark, context_budget_tokens, " +
+                    "context_summary_usage, context_summary_usage_source, context_summary_stale " +
                     "FROM lanes WHERE board_id = ? ORDER BY created_at, rowid",
             ).use { query ->
                 query.setString(1, board["id"]!!.jsonPrimitive.content)
@@ -195,6 +208,16 @@ class BoardStore(private val file: Path, private val initialBoardTitle: String =
                             result.getDouble("temperature").takeUnless { result.wasNull() }?.let { put("temperature", it) }
                             result.getInt("max_tokens").takeUnless { result.wasNull() }?.let { put("maxTokens", it) }
                             result.getString("stop")?.let { put("stop", it) }
+                            put("contextStrategy", result.getString("context_strategy"))
+                            put("contextWindowSize", result.getInt("context_window_size"))
+                            put("contextSummary", result.getString("context_summary"))
+                            result.getString("context_summary_watermark")?.let { put("contextSummaryWatermark", it) }
+                            put("contextBudgetTokens", result.getInt("context_budget_tokens"))
+                            result.getString("context_summary_usage")?.let { usage ->
+                                runCatching { kotlinx.serialization.json.Json.parseToJsonElement(usage) }.getOrNull()?.let { put("contextSummaryUsage", it) }
+                            }
+                            result.getString("context_summary_usage_source")?.let { put("contextSummaryUsageSource", it) }
+                            put("contextSummaryStale", result.getInt("context_summary_stale") != 0)
                             put("x", result.getInt("position_x").takeUnless { result.wasNull() } ?: 24)
                             put("y", result.getInt("position_y").takeUnless { result.wasNull() } ?: 24)
                             put("width", result.getInt("width").takeUnless { result.wasNull() } ?: 440)
@@ -284,6 +307,7 @@ class BoardStore(private val file: Path, private val initialBoardTitle: String =
                 check(query.executeUpdate() == 1) { "Unknown message" }
             }
             resetThread(db, laneId)
+            markSummaryStale(db, laneId)
         }
     }
 
@@ -292,6 +316,7 @@ class BoardStore(private val file: Path, private val initialBoardTitle: String =
         mutateHistoryFrom(messageId) { db, laneId, selectedId ->
             deleteMessagesAfter(db, laneId, selectedId, includeSelected = true)
             resetThread(db, laneId)
+            markSummaryStale(db, laneId)
         }
     }
 
@@ -352,20 +377,50 @@ class BoardStore(private val file: Path, private val initialBoardTitle: String =
         }
     }
 
-    fun updateLaneConfig(laneId: String, model: String, temperature: Double?, maxTokens: Int?, stop: String?) = synchronized(lock) {
+    fun updateLaneConfig(
+        laneId: String, model: String, temperature: Double?, maxTokens: Int?, stop: String?,
+        contextStrategy: String = "full", contextWindowSize: Int = 10, contextBudgetTokens: Int = 32768,
+    ) = synchronized(lock) {
         require(model.length <= 200) { "Model is too long" }
         require(temperature == null || temperature in 0.0..2.0) { "Temperature must be between 0 and 2" }
         require(maxTokens == null || maxTokens in 1..200_000) { "Max tokens is out of range" }
         require(stop == null || stop.length <= 500) { "Stop sequence is too long" }
+        ContextStrategy.parse(contextStrategy)
+        require(contextWindowSize in 1..200) { "Размер окна должен быть от 1 до 200 сообщений." }
+        require(contextBudgetTokens in 256..1_000_000) { "Бюджет контекста должен быть от 256 до 1000000 токенов." }
         connect().use { db ->
-            db.prepareStatement("UPDATE lanes SET model = ?, temperature = ?, max_tokens = ?, stop = ? WHERE id = ?").use { query ->
+            db.prepareStatement("UPDATE lanes SET model = ?, temperature = ?, max_tokens = ?, stop = ?, context_strategy = ?, context_window_size = ?, context_budget_tokens = ? WHERE id = ?").use { query ->
                 query.setString(1, model.trim())
                 if (temperature == null) query.setNull(2, java.sql.Types.REAL) else query.setDouble(2, temperature)
                 if (maxTokens == null) query.setNull(3, java.sql.Types.INTEGER) else query.setInt(3, maxTokens)
                 query.setString(4, stop?.takeIf(String::isNotBlank))
+                query.setString(5, contextStrategy)
+                query.setInt(6, contextWindowSize)
+                query.setInt(7, contextBudgetTokens)
+                query.setString(8, laneId)
+                check(query.executeUpdate() == 1) { "Unknown lane" }
+            }
+        }
+    }
+
+    fun saveContextSummary(laneId: String, summary: String, watermark: String?, usageSource: String?, usage: JsonObject?) = synchronized(lock) {
+        require(summary.length <= 50_000) { "Сводка слишком длинная." }
+        connect().use { db ->
+            db.prepareStatement("UPDATE lanes SET context_summary = ?, context_summary_watermark = ?, context_summary_usage = ?, context_summary_usage_source = ?, context_summary_stale = 0 WHERE id = ?").use { query ->
+                query.setString(1, summary)
+                query.setString(2, watermark)
+                query.setString(3, usage?.let { kotlinx.serialization.json.Json.encodeToString(JsonObject.serializer(), it) })
+                query.setString(4, usageSource)
                 query.setString(5, laneId)
                 check(query.executeUpdate() == 1) { "Unknown lane" }
             }
+        }
+    }
+
+    private fun markSummaryStale(db: Connection, laneId: String) {
+        db.prepareStatement("UPDATE lanes SET context_summary_stale = 1 WHERE id = ? AND context_summary <> ''").use { query ->
+            query.setString(1, laneId)
+            query.executeUpdate()
         }
     }
 
@@ -447,13 +502,15 @@ class BoardStore(private val file: Path, private val initialBoardTitle: String =
             db.autoCommit = false
             try {
                 val source = db.prepareStatement(
-                    "SELECT board_id, title, provider, model, temperature, max_tokens, stop FROM lanes WHERE id = ?",
+                    "SELECT board_id, title, provider, model, temperature, max_tokens, stop, context_strategy, " +
+                        "context_window_size, context_budget_tokens FROM lanes WHERE id = ?",
                 ).use { query ->
                     query.setString(1, sourceLaneId)
                     query.executeQuery().use { result ->
                         check(result.next()) { "Unknown lane" }
                         listOf(result.getString("board_id"), result.getString("title"), result.getString("provider"),
-                            result.getString("model"), result.getString("temperature"), result.getString("max_tokens"), result.getString("stop"))
+                            result.getString("model"), result.getString("temperature"), result.getString("max_tokens"), result.getString("stop"),
+                            result.getString("context_strategy"), result.getString("context_window_size"), result.getString("context_budget_tokens"))
                     }
                 }
                 check(!hasActiveRun(db, sourceLaneId)) { "Cannot copy a lane while a request is running" }
@@ -483,8 +540,9 @@ class BoardStore(private val file: Path, private val initialBoardTitle: String =
                 db.prepareStatement(
                     "INSERT INTO lanes(id, board_id, title, created_at, origin_lane_id, origin_message_id, " +
                     "origin_kind, codex_context_seeded, origin_message_role, origin_message_content, " +
-                        "position_x, position_y, width, provider, model, temperature, max_tokens, stop) " +
-                        "VALUES (?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?, 24, 440, ?, ?, ?, ?, ?)",
+                        "position_x, position_y, width, provider, model, temperature, max_tokens, stop, " +
+                        "context_strategy, context_window_size, context_budget_tokens) " +
+                        "VALUES (?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?, 24, 440, ?, ?, ?, ?, ?, ?, ?, ?)",
                 ).use { query ->
                     query.setString(1, laneId)
                     query.setString(2, source[0])
@@ -501,6 +559,9 @@ class BoardStore(private val file: Path, private val initialBoardTitle: String =
                     source[4]?.toDoubleOrNull()?.let { query.setDouble(13, it) } ?: query.setNull(13, java.sql.Types.REAL)
                     source[5]?.toIntOrNull()?.let { query.setInt(14, it) } ?: query.setNull(14, java.sql.Types.INTEGER)
                     query.setString(15, source[6])
+                    query.setString(16, source[7])
+                    query.setInt(17, source[8].toInt())
+                    query.setInt(18, source[9].toInt())
                     query.executeUpdate()
                 }
                 val sourceMessages = db.prepareStatement(
@@ -619,7 +680,8 @@ class BoardStore(private val file: Path, private val initialBoardTitle: String =
             db.autoCommit = false
             try {
                 val lane = db.prepareStatement(
-                    "SELECT board_id, codex_thread_id, codex_context_seeded, provider, model, temperature, max_tokens, stop " +
+                    "SELECT board_id, codex_thread_id, codex_context_seeded, provider, model, temperature, max_tokens, stop, " +
+                        "context_strategy, context_window_size, context_summary, context_summary_watermark, context_budget_tokens " +
                         "FROM lanes WHERE id = ?",
                 ).use { query ->
                     query.setString(1, laneId)
@@ -627,7 +689,9 @@ class BoardStore(private val file: Path, private val initialBoardTitle: String =
                         check(result.next()) { "Unknown lane" }
                         listOf(result.getString("board_id"), result.getString("codex_thread_id"),
                             (result.getInt("codex_context_seeded") == 0).toString(), result.getString("provider"),
-                            result.getString("model"), result.getString("temperature"), result.getString("max_tokens"), result.getString("stop"))
+                            result.getString("model"), result.getString("temperature"), result.getString("max_tokens"), result.getString("stop"),
+                            result.getString("context_strategy"), result.getString("context_window_size"), result.getString("context_summary"),
+                            result.getString("context_summary_watermark"), result.getString("context_budget_tokens"))
                     }
                 }
                 val isActive = db.prepareStatement(
@@ -639,8 +703,7 @@ class BoardStore(private val file: Path, private val initialBoardTitle: String =
                 if (isActive) throw ActiveRunException()
 
                 val needsSeed = lane[2].toBoolean()
-                val contextToSeed = if (lane[1] == null || needsSeed) history(db, laneId) else emptyList()
-                val reusableThreadId = if (needsSeed) null else lane[1]
+                val completeTranscript = history(db, laneId)
                 val provider = lane[3]
                 val config = LaneConfig(
                     provider,
@@ -653,6 +716,24 @@ class BoardStore(private val file: Path, private val initialBoardTitle: String =
                 require(config.temperature == null || config.temperature in 0.0..2.0) { "Temperature must be between 0 and 2" }
                 require(config.maxTokens == null || config.maxTokens in 1..200_000) { "Max tokens is out of range" }
                 require(config.stop == null || config.stop.length <= 500) { "Stop sequence is too long" }
+                val strategy = ContextStrategy.parse(lane[8])
+                val plan = ContextPlanner.plan(
+                    transcript = completeTranscript,
+                    prompt = prompt,
+                    strategy = strategy,
+                    windowSize = lane[9].toInt(),
+                    summary = lane[10],
+                    summaryWatermark = lane[11],
+                    budgetTokens = lane[12].toInt(),
+                    responseTokensEstimate = config.maxTokens ?: 1024,
+                )
+                require(!plan.overflow || overrides.forceSend) {
+                    "Контекст оценивается в ${plan.inputTokensEstimate + plan.responseTokensEstimate} токенов при бюджете ${plan.budgetTokens}; подтверди отправку ещё раз."
+                }
+                if (strategy != ContextStrategy.FULL) resetThread(db, laneId)
+                val reuseFullThread = strategy == ContextStrategy.FULL && !needsSeed && lane[1] != null
+                val contextToSeed = if (reuseFullThread) emptyList() else plan.messages
+                val reusableThreadId = if (reuseFullThread) lane[1] else null
 
                 val now = Instant.now().toString()
                 val userMessageId = UUID.randomUUID().toString()
@@ -686,7 +767,11 @@ class BoardStore(private val file: Path, private val initialBoardTitle: String =
                     query.setString(3, laneId)
                     query.setString(4, answerId)
                     query.setString(5, now)
-                    query.setString(6, config.toJson())
+                    query.setString(6, kotlinx.serialization.json.Json.encodeToString(JsonObject.serializer(), buildJsonObject {
+                        kotlinx.serialization.json.Json.parseToJsonElement(config.toJson()).jsonObject.forEach { (key, value) -> put(key, value) }
+                        put("contextPlan", plan.toJson())
+                        put("contextStrategy", strategy.wireName)
+                    }))
                     query.executeUpdate()
                 }
                 insertEvent(db, lane[0], laneId, runId, "run.started", buildJsonObject {})
@@ -697,6 +782,8 @@ class BoardStore(private val file: Path, private val initialBoardTitle: String =
                     runId,
                     reusableThreadId,
                     contextToSeed,
+                    plan,
+                    strategy,
                     shouldSeedContext = reusableThreadId == null || needsSeed,
                     config = config,
                 )
