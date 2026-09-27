@@ -67,6 +67,20 @@ button { color: inherit; }
 .task-actions { display: flex; flex-wrap: wrap; gap: 5px; }
 .task-comments { margin: 6px 0 0; padding-left: 18px; }
 .task-error { color: #9a493b; }
+.board-schedules { flex: 0 0 auto; max-height: 38vh; overflow: auto; margin: 0 18px 8px; padding: 8px 12px; border: 1px solid #e3e0d7; border-radius: 9px; background: #fbfaf7; color: #77796d; font-size: 10px; }
+.board-schedules > summary { cursor: pointer; font-weight: 650; }
+.board-schedules-content > p { margin: 7px 0; }
+.schedule-create-form { display: flex; flex-wrap: wrap; align-items: end; gap: 6px; margin: 7px 0; }
+.schedule-create-form input, .schedule-create-form select { min-width: 100px; padding: 5px 7px; border: 1px solid #e1ded4; border-radius: 5px; background: #fffefa; color: #45473e; font: inherit; }
+.schedule-create-form input { flex: 1; }
+.schedule-create-form label { display: grid; gap: 3px; }
+.schedule-create-form button, .schedule-card button { padding: 5px 8px; border: 1px solid #e0ded4; border-radius: 5px; background: #f5f4ee; color: #55584d; font-size: 9px; cursor: pointer; }
+.schedule-list, .schedule-runs { display: grid; gap: 4px; }
+.schedule-card, .schedule-run { display: flex; flex-wrap: wrap; align-items: center; gap: 9px; padding: 6px 8px; border: 1px solid #e9e6dd; border-radius: 6px; background: #fffefa; }
+.schedule-card span, .schedule-run span { color: #77796d; }
+.schedule-card button { margin-left: auto; }
+.board-schedules h4 { margin: 8px 0 4px; }
+.schedule-error { color: #9a493b !important; }
 .lanes { position: relative; width: max-content; min-width: 100%; height: max-content; min-height: 100%; }
 .lane { position: absolute; height: 620px; min-height: 260px; display: flex; flex-direction: column; overflow: hidden; border: 1px solid #e3e0d7; border-radius: 13px; background: #fbfaf7; box-shadow: 0 5px 18px #393d2c0a; }
 .lane.selected { border-color: #a3ab92; box-shadow: 0 0 0 2px #87946c22, 0 5px 18px #393d2c0a; }

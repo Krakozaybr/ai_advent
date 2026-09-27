@@ -20,6 +20,10 @@ import io.ktor.server.sse.sse
 import io.ktor.sse.ServerSentEvent
 import io.ktor.serialization.kotlinx.json.json
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.cancel
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.json.Json
@@ -32,6 +36,7 @@ import kotlinx.serialization.json.jsonPrimitive
 import kotlinx.serialization.json.put
 import kotlinx.serialization.json.doubleOrNull
 import kotlinx.serialization.json.intOrNull
+import kotlinx.serialization.json.longOrNull
 import io.ktor.server.netty.Netty
 import io.ktor.server.engine.embeddedServer
 import java.nio.file.Path
@@ -52,6 +57,13 @@ private fun platformTaskDatabasePath(): Path {
     return root.resolve("v3/data/tasks.sqlite")
 }
 
+private fun platformScheduleDatabasePath(): Path {
+    System.getenv("AI_ADVENT_V3_SCHEDULES_DB")?.let { return Path.of(it) }
+    val root = Path.of(System.getenv("AI_ADVENT_V3_CWD") ?: System.getProperty("user.dir")).toAbsolutePath()
+        .let { if (it.resolve("examples/mcp/board-memory-server.mjs").toFile().exists()) it else it.parent.parent }
+    return root.resolve("v3/data/schedules.sqlite")
+}
+
 fun Application.module(
     store: WorkspaceStore = WorkspaceStore(Path.of(System.getenv("AI_ADVENT_V3_DB") ?: "v3/data/board.sqlite")),
     codex: CodexGateway = CodexAppServer(),
@@ -61,11 +73,15 @@ fun Application.module(
     mcpClient: McpClient = McpClient(),
     memoryStore: MemoryStore = MemoryStore(platformMemoryDatabasePath()),
     taskStore: TaskStore = TaskStore(platformTaskDatabasePath()),
+    schedulerStore: SchedulerStore = SchedulerStore(platformScheduleDatabasePath()),
 ) {
     install(ContentNegotiation) { json(json) }
     install(SSE)
     val coordinator = RunCoordinator(store, codex, openRouter, openRouterKeys, mcpRegistry, mcpClient, memoryStore)
-    monitor.subscribe(ApplicationStopped) { coordinator.close() }
+    val schedulerScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+    val schedulerIntervalMs = System.getenv("AI_ADVENT_V3_SCHEDULER_TICK_MS")?.toLongOrNull()?.coerceIn(50, 10_000) ?: 250L
+    schedulerScope.launch { while (true) { runCatching { schedulerStore.tick() }; delay(schedulerIntervalMs) } }
+    monitor.subscribe(ApplicationStopped) { schedulerScope.cancel(); schedulerStore.close(); coordinator.close() }
 
     routing {
         get("/api/health") {
@@ -116,6 +132,38 @@ fun Application.module(
         get("/api/boards/{boardId}/tasks") {
             val boardId = call.parameters["boardId"] ?: ""
             try { store.board(boardId); call.respond(taskStore.list(boardId)) }
+            catch (_: IllegalStateException) { call.respond(HttpStatusCode.NotFound, buildJsonObject { put("error", "Доска не найдена.") }) }
+        }
+
+        get("/api/boards/{boardId}/schedules") {
+            val boardId = call.parameters["boardId"] ?: ""
+            try { store.board(boardId); call.respond(schedulerStore.list(boardId)) }
+            catch (_: IllegalStateException) { call.respond(HttpStatusCode.NotFound, buildJsonObject { put("error", "Доска не найдена.") }) }
+        }
+
+        get("/api/boards/{boardId}/schedule-runs") {
+            val boardId = call.parameters["boardId"] ?: ""
+            try { store.board(boardId); call.respond(schedulerStore.runs(boardId)) }
+            catch (_: IllegalStateException) { call.respond(HttpStatusCode.NotFound, buildJsonObject { put("error", "Доска не найдена.") }) }
+        }
+
+        post("/api/boards/{boardId}/schedules") {
+            val boardId = call.parameters["boardId"] ?: ""
+            val body = runCatching { call.receive<JsonObject>() }.getOrNull()
+            val title = body?.get("title")?.jsonPrimitive?.contentOrNull
+            val delayMs = body?.get("delayMs")?.jsonPrimitive?.longOrNull
+            val repeatEveryMs = body?.get("repeatEveryMs")?.jsonPrimitive?.longOrNull
+            if (title == null || delayMs == null) { call.respond(HttpStatusCode.BadRequest, buildJsonObject { put("error", "Укажи название и задержку до первого запуска.") }); return@post }
+            try { store.board(boardId); call.respond(HttpStatusCode.Created, schedulerStore.create(boardId,title,delayMs,repeatEveryMs)) }
+            catch (error: IllegalArgumentException) { call.respond(HttpStatusCode.BadRequest, buildJsonObject { put("error",error.message ?: "Расписание некорректно.") }) }
+            catch (_: IllegalStateException) { call.respond(HttpStatusCode.NotFound, buildJsonObject { put("error", "Доска не найдена.") }) }
+        }
+
+        patch("/api/boards/{boardId}/schedules/{scheduleId}") {
+            val boardId = call.parameters["boardId"] ?: ""; val scheduleId = call.parameters["scheduleId"] ?: ""
+            val paused = runCatching { call.receive<JsonObject>()["paused"]?.jsonPrimitive?.content?.toBooleanStrict() }.getOrNull()
+            if (paused == null) { call.respond(HttpStatusCode.BadRequest, buildJsonObject { put("error", "Укажи paused: true или false.") }); return@patch }
+            try { store.board(boardId); val item = schedulerStore.pause(boardId,scheduleId,paused); if(item == null) call.respond(HttpStatusCode.NotFound) else call.respond(item) }
             catch (_: IllegalStateException) { call.respond(HttpStatusCode.NotFound, buildJsonObject { put("error", "Доска не найдена.") }) }
         }
 
@@ -577,7 +625,7 @@ fun Application.module(
                     val toolName = approval["toolName"]!!.jsonPrimitive.content
                     val arguments = approval["arguments"]!!.jsonObject
                     val registered = mcpRegistry.server(serverId)
-                    val server = if (serverId in setOf("sticky-facts", "lane-history", "board-memory")) {
+                    val server = if (serverId in setOf("sticky-facts", "lane-history", "board-memory", "board-schedules")) {
                         scopedMcpServer(registered, store.laneDatabasePath(laneId), laneId, memoryStore.databasePath)
                     } else registered
                     val tool = withContext(Dispatchers.IO) { mcpClient.listTools(server).firstOrNull { it.name == toolName } }

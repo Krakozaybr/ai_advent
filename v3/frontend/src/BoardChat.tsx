@@ -424,6 +424,7 @@ export function BoardChat() {
 
       {board && board.board.id === activeBoardId && <BoardMemoryOverview boardId={board.board.id} revision={memoryRevision} />}
       {board && board.board.id === activeBoardId && <BoardTaskOverview key={`tasks-${board.board.id}`} boardId={board.board.id} />}
+      {board && board.board.id === activeBoardId && <BoardScheduleOverview key={`schedules-${board.board.id}`} boardId={board.board.id} />}
 
       <section className="canvas" ref={canvasRef} aria-label="Рабочая область доски">
         {error && <p className="error-banner" role="alert">{error}</p>}
@@ -578,6 +579,69 @@ function BoardTaskOverview({ boardId }: { boardId: string }) {
       {tasks.map((task) => <TaskEditor key={task.id} task={task} onSave={(patch) => mutate(task.id,patch)} />)}
       {tasks.length === 0 && <small>На этой доске пока нет задач.</small>}
       {error && <p className="task-error" role="alert">{error}</p>}
+    </div>
+  </details>;
+}
+
+type Schedule = { id: string; title: string; repeatEveryMs?: number; nextRunAt: number; status: string };
+type ScheduleRun = { id: string; scheduleId: string; title: string; scheduledFor: number; startedAt?: number; status: string; missedCount: number; result?: { sampleCount: number; total: number; average: number; minimum: number; maximum: number }; error?: string };
+
+function BoardScheduleOverview({ boardId }: { boardId: string }) {
+  const [schedules, setSchedules] = useState<Schedule[]>([]);
+  const [runs, setRuns] = useState<ScheduleRun[]>([]);
+  const [title, setTitle] = useState("Сводка метрик");
+  const [firstDelay, setFirstDelay] = useState(2000);
+  const [repeatEvery, setRepeatEvery] = useState<number | null>(2000);
+  const [error, setError] = useState<string | null>(null);
+  const base = `/api/boards/${encodeURIComponent(boardId)}`;
+  const refresh = useCallback(async () => {
+    const [scheduleResult, runResult] = await Promise.all([
+      readJson<{ schedules: Schedule[] }>(`${base}/schedules`),
+      readJson<{ runs: ScheduleRun[] }>(`${base}/schedule-runs`),
+    ]);
+    setSchedules(scheduleResult.schedules);
+    setRuns(runResult.runs);
+  }, [base]);
+  useEffect(() => {
+    void refresh().catch((cause) => setError(cause instanceof Error ? cause.message : "Не удалось загрузить расписания"));
+    const timer = window.setInterval(() => void refresh().catch(() => undefined), 1000);
+    return () => window.clearInterval(timer);
+  }, [refresh]);
+  async function create(event: FormEvent) {
+    event.preventDefault(); setError(null);
+    try {
+      await readJson<Schedule>(`${base}/schedules`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ title, delayMs: firstDelay, repeatEveryMs: repeatEvery }) });
+      await refresh();
+    } catch (cause) { setError(cause instanceof Error ? cause.message : "Не удалось создать расписание"); }
+  }
+  async function pause(schedule: Schedule) {
+    setError(null);
+    try {
+      await readJson<Schedule>(`${base}/schedules/${encodeURIComponent(schedule.id)}`, { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ paused: schedule.status !== "paused" }) });
+      await refresh();
+    } catch (cause) { setError(cause instanceof Error ? cause.message : "Не удалось изменить расписание"); }
+  }
+  const date = (timestamp: number) => new Date(timestamp).toLocaleTimeString();
+  return <details className="board-schedules" open>
+    <summary>Локальные расписания · безопасная сводка демо-метрик</summary>
+    <div className="board-schedules-content">
+      <p>Сервис выполняет расписания, пока работает backend, даже если браузер закрыт. Интервалы 2 и 5 секунд подходят для демонстрации.</p>
+      <form className="schedule-create-form" onSubmit={(event) => void create(event)}>
+        <input aria-label="Название расписания" value={title} onChange={(event) => setTitle(event.target.value)} maxLength={120} required />
+        <label>Старт через<select value={firstDelay} onChange={(event) => setFirstDelay(Number(event.target.value))}><option value={250}>0,25 с</option><option value={1000}>1 с</option><option value={2000}>2 с</option><option value={5000}>5 с</option><option value={60000}>1 мин</option></select></label>
+        <label>Повтор<select value={repeatEvery ?? "once"} onChange={(event) => setRepeatEvery(event.target.value === "once" ? null : Number(event.target.value))}><option value="once">Один раз</option><option value={1000}>Каждую 1 с</option><option value={2000}>Каждые 2 с</option><option value={5000}>Каждые 5 с</option><option value={60000}>Каждую минуту</option></select></label>
+        <button type="submit" disabled={!title.trim()}>Создать</button>
+      </form>
+      {error && <p className="schedule-error" role="alert">{error}</p>}
+      <div className="schedule-list">{schedules.length === 0 && <p>Расписаний пока нет.</p>}{schedules.map((schedule) => <article className="schedule-card" key={schedule.id}>
+        <strong>{schedule.title}</strong><span>{schedule.status === "paused" ? "приостановлено" : schedule.status === "completed" ? "завершено" : `следующий запуск: ${date(schedule.nextRunAt)}`}</span>
+        {schedule.status !== "completed" && <button type="button" onClick={() => void pause(schedule)}>{schedule.status === "paused" ? "Возобновить" : "Пауза"}</button>}
+      </article>)}</div>
+      <h4>История запусков</h4>
+      <div className="schedule-runs">{runs.length === 0 && <p>Результатов пока нет.</p>}{runs.slice(0, 12).map((run) => <article className="schedule-run" key={run.id}>
+        <strong>{run.title}</strong><span>{run.status} · {date(run.startedAt ?? run.scheduledFor)}{run.missedCount > 0 ? ` · пропущено слотов: ${run.missedCount}` : ""}</span>
+        {run.result && <span>n={run.result.sampleCount}, сумма {run.result.total}, среднее {run.result.average.toFixed(1)}, min/max {run.result.minimum}/{run.result.maximum}</span>}{run.error && <span className="schedule-error">{run.error}</span>}
+      </article>)}</div>
     </div>
   </details>;
 }

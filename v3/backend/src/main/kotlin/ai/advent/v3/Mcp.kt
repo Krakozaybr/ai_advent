@@ -43,12 +43,15 @@ class McpRegistry(private val servers: List<McpServerConfig> = defaultServers())
             val memory = root.resolve("examples/mcp/board-memory-server.mjs").toString()
             val tasks = root.resolve("examples/mcp/board-tasks-server.mjs").toString()
             val taskDatabase = System.getenv("AI_ADVENT_V3_TASKS_DB") ?: root.resolve("v3/data/tasks.sqlite").toString()
+            val schedules = root.resolve("examples/mcp/board-schedules-server.mjs").toString()
+            val schedulesDatabase = System.getenv("AI_ADVENT_V3_SCHEDULES_DB") ?: root.resolve("v3/data/schedules.sqlite").toString()
             val builtIns = listOf(
                 McpServerConfig("local-catalog", "Локальный каталог", "Поиск в демонстрационном локальном каталоге.", "node", listOf(example), root.toString()),
                 McpServerConfig("sticky-facts", "Постоянные факты", "Факты пользователя для текущей ленты.", "node", listOf(facts), root.toString()),
                 McpServerConfig("lane-history", "История текущей ленты", "Поиск по сохранённой истории только этой ленты.", "node", listOf(history), root.toString()),
                 McpServerConfig("board-memory", "Память доски", "Рабочие и долговременная память доски в отдельной SQLite.", "node", listOf(memory), root.toString()),
                 McpServerConfig("board-tasks", "Задачи доски", "Задачи, этапы, план и комментарии текущей доски.", "node", listOf(tasks), root.toString(), mapOf("AI_ADVENT_V3_TASKS_DB" to taskDatabase)),
+                McpServerConfig("board-schedules", "Расписания доски", "Локальные расписания запусков и история агрегатов текущей доски.", "node", listOf(schedules), root.toString(), mapOf("AI_ADVENT_V3_SCHEDULES_DB" to schedulesDatabase)),
             )
             if (Files.isRegularFile(config)) return (fromFile(config, root).filterNot { configured -> builtIns.any { it.id == configured.id } } + builtIns)
             return builtIns

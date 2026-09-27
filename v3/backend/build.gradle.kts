@@ -47,4 +47,5 @@ tasks.named<JavaExec>("run") {
     environment("AI_ADVENT_V3_CWD", rootProject.projectDir.resolve("../..").absolutePath)
     environment("AI_ADVENT_V3_MEMORY_DB", System.getenv("AI_ADVENT_V3_MEMORY_DB") ?: rootProject.projectDir.resolve("../data/memory.sqlite").absolutePath)
     environment("AI_ADVENT_V3_TASKS_DB", System.getenv("AI_ADVENT_V3_TASKS_DB") ?: rootProject.projectDir.resolve("../data/tasks.sqlite").absolutePath)
+    environment("AI_ADVENT_V3_SCHEDULES_DB", System.getenv("AI_ADVENT_V3_SCHEDULES_DB") ?: rootProject.projectDir.resolve("../data/schedules.sqlite").absolutePath)
 }
