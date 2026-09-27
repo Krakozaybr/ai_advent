@@ -9,7 +9,9 @@ import io.ktor.server.plugins.contentnegotiation.ContentNegotiation
 import io.ktor.server.request.receive
 import io.ktor.server.response.respond
 import io.ktor.server.routing.get
+import io.ktor.server.routing.patch
 import io.ktor.server.routing.post
+import io.ktor.server.routing.delete
 import io.ktor.server.routing.routing
 import io.ktor.server.sse.SSE
 import io.ktor.server.sse.sse
@@ -116,6 +118,95 @@ fun Application.module(
                 call.respond(status, buildJsonObject {
                     put("error", if (status == HttpStatusCode.Conflict) "Дождись завершения запроса перед копированием ленты." else "Лента не найдена.")
                 })
+            }
+        }
+
+        patch("/api/messages/{messageId}") {
+            val messageId = call.parameters["messageId"]
+            val content = try {
+                call.receive<JsonObject>()["content"]?.jsonPrimitive?.contentOrNull
+            } catch (_: Exception) {
+                null
+            }
+            if (messageId == null || content.isNullOrBlank() || content.length > 50_000) {
+                call.respond(HttpStatusCode.BadRequest, buildJsonObject {
+                    put("error", "Текст сообщения должен содержать до 50000 символов.")
+                })
+                return@patch
+            }
+            try {
+                call.respond(store.editMessage(messageId, content))
+            } catch (error: IllegalStateException) {
+                val conflict = error.message?.contains("running") == true
+                call.respond(if (conflict) HttpStatusCode.Conflict else HttpStatusCode.NotFound, buildJsonObject {
+                    put("error", if (conflict) "Дождись завершения запроса перед изменением истории." else "Сообщение не найдено.")
+                })
+            }
+        }
+
+        delete("/api/messages/{messageId}") {
+            val messageId = call.parameters["messageId"]
+            if (messageId == null) {
+                call.respond(HttpStatusCode.NotFound)
+                return@delete
+            }
+            try {
+                call.respond(store.deleteMessagesFrom(messageId))
+            } catch (error: IllegalStateException) {
+                val conflict = error.message?.contains("running") == true
+                call.respond(if (conflict) HttpStatusCode.Conflict else HttpStatusCode.NotFound, buildJsonObject {
+                    put("error", if (conflict) "Дождись завершения запроса перед изменением истории." else "Сообщение не найдено.")
+                })
+            }
+        }
+
+        post("/api/lanes/{sourceLaneId}/messages/{messageId}/copy") {
+            val sourceLaneId = call.parameters["sourceLaneId"]
+            val messageId = call.parameters["messageId"]
+            val targetLaneId = try {
+                call.receive<JsonObject>()["targetLaneId"]?.jsonPrimitive?.contentOrNull
+            } catch (_: Exception) {
+                null
+            }
+            if (sourceLaneId == null || messageId == null || targetLaneId.isNullOrBlank()) {
+                call.respond(HttpStatusCode.BadRequest, buildJsonObject {
+                    put("error", "Выбери другую ленту на этой доске.")
+                })
+                return@post
+            }
+            try {
+                call.respond(store.copyMessage(sourceLaneId, messageId, targetLaneId))
+            } catch (error: IllegalStateException) {
+                val conflict = error.message?.contains("running") == true
+                val badRequest = error.message?.contains("only be copied") == true ||
+                    error.message?.contains("another target") == true
+                val status = when { conflict -> HttpStatusCode.Conflict; badRequest -> HttpStatusCode.BadRequest; else -> HttpStatusCode.NotFound }
+                call.respond(status, buildJsonObject {
+                    put("error", when {
+                        conflict -> "Дождись завершения запросов в обеих лентах."
+                        badRequest -> "Выбери другую ленту на этой доске."
+                        else -> "Лента или сообщение не найдены."
+                    })
+                })
+            }
+        }
+
+        patch("/api/lanes/{laneId}/layout") {
+            val laneId = call.parameters["laneId"]
+            val layout = try { call.receive<JsonObject>() } catch (_: Exception) { null }
+            val x = layout?.get("x")?.jsonPrimitive?.content?.toIntOrNull()
+            val y = layout?.get("y")?.jsonPrimitive?.content?.toIntOrNull()
+            val width = layout?.get("width")?.jsonPrimitive?.content?.toIntOrNull()
+            if (laneId == null || x == null || y == null || width == null || x !in 0..20_000 || y !in 0..20_000 || width !in 280..900) {
+                call.respond(HttpStatusCode.BadRequest, buildJsonObject {
+                    put("error", "Положение ленты некорректно или ширина вне диапазона 280–900 px.")
+                })
+                return@patch
+            }
+            try {
+                call.respond(store.saveLayout(laneId, x, y, width))
+            } catch (_: IllegalStateException) {
+                call.respond(HttpStatusCode.NotFound, buildJsonObject { put("error", "Лента не найдена.") })
             }
         }
 

@@ -2,7 +2,9 @@ package ai.advent.v3
 
 import io.ktor.client.request.get
 import io.ktor.client.request.header
+import io.ktor.client.request.patch
 import io.ktor.client.request.post
+import io.ktor.client.request.delete
 import io.ktor.client.request.setBody
 import io.ktor.client.statement.bodyAsText
 import io.ktor.http.ContentType
@@ -85,6 +87,11 @@ class ApplicationTest {
         }
         assertEquals(HttpStatusCode.Conflict, branchDuringRun.status)
         assertEquals(HttpStatusCode.Conflict, client.post("/api/lanes/$laneId/clone").status)
+        assertEquals(HttpStatusCode.Conflict, client.patch("/api/messages/$activeMessageId") {
+            header(HttpHeaders.ContentType, ContentType.Application.Json.toString())
+            setBody("""{"content":"Изменение во время запроса"}""")
+        }.status)
+        assertEquals(HttpStatusCode.Conflict, client.delete("/api/messages/$activeMessageId").status)
         val second = client.post("/api/lanes/$laneId/messages") {
             header(HttpHeaders.ContentType, ContentType.Application.Json.toString())
             setBody("""{"text":"Второй запрос"}""")
@@ -263,6 +270,92 @@ class ApplicationTest {
         val resumedParent = fake.runs.single { it.prompt == "Только родитель" }
         assertFalse(resumedParent.shouldSeedContext)
         assertEquals(3, listOf(seededBranch.threadId, seededClone.threadId, resumedParent.threadId).toSet().size)
+    }
+
+    @Test
+    fun `test edit delete and copy reset Codex to the visible target history`() = testApplication {
+        val database = Files.createTempDirectory("ai-advent-v3-history-edit-").resolve("board.sqlite")
+        val store = WorkspaceStore(database)
+        val fake = FakeCodexAppServer()
+        application { module(store, fake) }
+        val initialBoard = client.get("/api/board").bodyAsText().let(Json::parseToJsonElement).jsonObject
+        val boardId = initialBoard["board"]!!.jsonObject["id"]!!.jsonPrimitive.content
+        val sourceId = initialBoard["lanes"]!!.jsonArray[0].jsonObject["id"]!!.jsonPrimitive.content
+
+        suspend fun sendAndWait(laneId: String, prompt: String) {
+            val response = client.post("/api/lanes/$laneId/messages") {
+                header(HttpHeaders.ContentType, ContentType.Application.Json.toString())
+                setBody("""{"text":"$prompt"}""")
+            }
+            assertEquals(HttpStatusCode.Accepted, response.status)
+            val runId = response.bodyAsText().let(Json::parseToJsonElement).jsonObject["runId"]!!.jsonPrimitive.content
+            val deadline = System.nanoTime() + 5_000_000_000
+            while (!store.isTerminal(runId) && System.nanoTime() < deadline) delay(10)
+            assertTrue(store.isTerminal(runId), "run $prompt did not finish")
+        }
+
+        sendAndWait(sourceId, "Старый запрос")
+        sendAndWait(sourceId, "Хвост")
+        val before = client.get("/api/boards/$boardId").bodyAsText().let(Json::parseToJsonElement).jsonObject
+        val originalMessages = before["lanes"]!!.jsonArray[0].jsonObject["messages"]!!.jsonArray
+        val selectedId = originalMessages[0].jsonObject["id"]!!.jsonPrimitive.content
+        val branch = client.post("/api/lanes/$sourceId/branches") {
+            header(HttpHeaders.ContentType, ContentType.Application.Json.toString())
+            setBody("""{"messageId":"$selectedId"}""")
+        }.bodyAsText().let(Json::parseToJsonElement).jsonObject["lanes"]!!.jsonArray[1].jsonObject
+        val clone = client.post("/api/lanes/$sourceId/clone").bodyAsText()
+            .let(Json::parseToJsonElement).jsonObject["lanes"]!!.jsonArray[2].jsonObject
+
+        val edit = client.patch("/api/messages/$selectedId") {
+            header(HttpHeaders.ContentType, ContentType.Application.Json.toString())
+            setBody("""{"content":"Исправленный запрос"}""")
+        }
+        assertEquals(HttpStatusCode.OK, edit.status)
+        val editedLanes = edit.bodyAsText().let(Json::parseToJsonElement).jsonObject["lanes"]!!.jsonArray
+        assertEquals(listOf("Исправленный запрос"), editedLanes[0].jsonObject["messages"]!!.jsonArray
+            .map { it.jsonObject["content"]!!.jsonPrimitive.content })
+        assertEquals(branch["messages"], editedLanes[1].jsonObject["messages"])
+        assertEquals(clone["messages"], editedLanes[2].jsonObject["messages"])
+        assertTrue(editedLanes[0].jsonObject["codexThreadId"] == null)
+
+        sendAndWait(sourceId, "После правки")
+        val afterEdit = fake.runs.single { it.prompt == "После правки" }
+        assertTrue(afterEdit.shouldSeedContext)
+        assertEquals(listOf("Исправленный запрос"), afterEdit.contextToSeed.map { it.content })
+        assertTrue(afterEdit.threadId != fake.runs.first().threadId)
+
+        val newLane = client.post("/api/boards/$boardId/lanes").bodyAsText()
+            .let(Json::parseToJsonElement).jsonObject["lanes"]!!.jsonArray[3].jsonObject
+        val targetId = newLane["id"]!!.jsonPrimitive.content
+        sendAndWait(targetId, "Целевая история")
+        val targetBoardBeforeCopy = client.get("/api/boards/$boardId").bodyAsText()
+            .let(Json::parseToJsonElement).jsonObject
+        val targetBeforeCopy = targetBoardBeforeCopy["lanes"]!!.jsonArray[3].jsonObject
+        val targetOriginalIds = targetBeforeCopy["messages"]!!.jsonArray.map { it.jsonObject["id"] }
+        val sourceAssistant = editedLanes[1].jsonObject["messages"]!!.jsonArray.last().jsonObject
+        val copiedResponse = client.post("/api/lanes/${branch["id"]!!.jsonPrimitive.content}/messages/${sourceAssistant["id"]!!.jsonPrimitive.content}/copy") {
+            header(HttpHeaders.ContentType, ContentType.Application.Json.toString())
+            setBody("""{"targetLaneId":"$targetId"}""")
+        }
+        assertEquals(HttpStatusCode.OK, copiedResponse.status)
+        val copiedLane = copiedResponse.bodyAsText().let(Json::parseToJsonElement).jsonObject["lanes"]!!.jsonArray[3].jsonObject
+        val copied = copiedLane["messages"]!!.jsonArray.last().jsonObject
+        assertEquals(sourceAssistant["content"], copied["content"])
+        assertEquals(sourceAssistant["role"], copied["role"])
+        assertTrue(copied["id"]!!.jsonPrimitive.content !in targetOriginalIds.map { it!!.jsonPrimitive.content })
+        assertTrue(copiedLane["codexThreadId"] == null)
+        sendAndWait(targetId, "После копирования")
+        val afterCopy = fake.runs.single { it.prompt == "После копирования" }
+        assertTrue(afterCopy.shouldSeedContext)
+        assertEquals(listOf("Целевая история", "Привет, мир", sourceAssistant["content"]!!.jsonPrimitive.content),
+            afterCopy.contextToSeed.map { it.content })
+
+        val deletingId = copiedLane["messages"]!!.jsonArray.first().jsonObject["id"]!!.jsonPrimitive.content
+        val delete = client.delete("/api/messages/$deletingId")
+        assertEquals(HttpStatusCode.OK, delete.status)
+        val deletedTarget = delete.bodyAsText().let(Json::parseToJsonElement).jsonObject["lanes"]!!.jsonArray[3].jsonObject
+        assertTrue(deletedTarget["messages"]!!.jsonArray.isEmpty())
+        assertTrue(deletedTarget["codexThreadId"] == null)
     }
 
     @Test

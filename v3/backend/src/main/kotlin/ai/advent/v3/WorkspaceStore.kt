@@ -58,6 +58,26 @@ class WorkspaceStore(private val originalFile: Path) : Closeable {
         boardStore.board()
     }
 
+    fun editMessage(messageId: String, content: String): JsonObject = synchronized(lock) {
+        storeForMessage(messageId).also { it.editMessage(messageId, content) }.board()
+    }
+
+    fun deleteMessagesFrom(messageId: String): JsonObject = synchronized(lock) {
+        storeForMessage(messageId).also { it.deleteMessagesFrom(messageId) }.board()
+    }
+
+    fun copyMessage(sourceLaneId: String, messageId: String, targetLaneId: String): JsonObject = synchronized(lock) {
+        val source = storeForLane(sourceLaneId)
+        val target = storeForLane(targetLaneId)
+        check(source === target) { "Messages can only be copied within one board" }
+        target.copyMessage(sourceLaneId, messageId, targetLaneId)
+        target.board()
+    }
+
+    fun saveLayout(laneId: String, x: Int, y: Int, width: Int): JsonObject = synchronized(lock) {
+        storeForLane(laneId).also { it.saveLayout(laneId, x, y, width) }.board()
+    }
+
     fun startRun(laneId: String, prompt: String): StartedRun = storeForLane(laneId).startRun(laneId, prompt)
     fun saveThread(laneId: String, threadId: String) = storeForLane(laneId).saveThread(laneId, threadId)
     fun markContextSeeded(laneId: String) = storeForLane(laneId).markContextSeeded(laneId)
@@ -84,6 +104,10 @@ class WorkspaceStore(private val originalFile: Path) : Closeable {
     private fun storeForLane(laneId: String): BoardStore = synchronized(lock) { stores.values.firstOrNull { candidate ->
         candidate.hasLane(laneId)
     } ?: throw IllegalStateException("Unknown lane") }
+
+    private fun storeForMessage(messageId: String): BoardStore = synchronized(lock) {
+        stores.values.firstOrNull { it.hasMessage(messageId) } ?: throw IllegalStateException("Unknown message")
+    }
 
     private fun storeForRun(runId: String): BoardStore = synchronized(lock) { stores.values.firstOrNull { it.runExists(runId) }
         ?: throw IllegalStateException("Unknown run")
