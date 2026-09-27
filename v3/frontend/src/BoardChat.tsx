@@ -1,5 +1,6 @@
 import { FormEvent, useCallback, useEffect, useRef, useState } from "react";
 import { applyRunEvent, emptyRunState, RunEvent, RunState } from "./run-state.mjs";
+import { chooseBoardId } from "./workspace-state.mjs";
 
 type Message = {
   id: string;
@@ -12,21 +13,13 @@ type Message = {
 type Lane = {
   id: string;
   title: string;
-  codexThreadId?: string;
   messages: Message[];
   activeRun: { id: string; sequence: number } | null;
 };
 
-type BoardResponse = {
-  board: { id: string; title: string };
-  lanes: Lane[];
-};
-
-type CodexStatus = {
-  authenticated: boolean;
-  planType?: string;
-  error?: string;
-};
+type BoardSummary = { id: string; title: string };
+type BoardResponse = { board: BoardSummary; lanes: Lane[] };
+type CodexStatus = { authenticated: boolean; planType?: string; error?: string };
 
 async function readJson<T>(url: string, init?: RequestInit): Promise<T> {
   const response = await fetch(url, init);
@@ -36,17 +29,15 @@ async function readJson<T>(url: string, init?: RequestInit): Promise<T> {
 }
 
 export function BoardChat() {
+  const [boards, setBoards] = useState<BoardSummary[]>([]);
+  const [activeBoardId, setActiveBoardId] = useState<string | null>(null);
   const [board, setBoard] = useState<BoardResponse | null>(null);
   const [codex, setCodex] = useState<CodexStatus | null>(null);
-  const [message, setMessage] = useState("");
-  const [runState, setRunState] = useState<RunState>(emptyRunState());
-  const [runId, setRunId] = useState<string | null>(null);
   const [authUrl, setAuthUrl] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const sourceRef = useRef<EventSource | null>(null);
 
-  const refreshBoard = useCallback(async () => {
-    const value = await readJson<BoardResponse>("/api/board");
+  const refreshBoard = useCallback(async (boardId: string) => {
+    const value = await readJson<BoardResponse>(`/api/boards/${encodeURIComponent(boardId)}`);
     setBoard(value);
     return value;
   }, []);
@@ -59,46 +50,23 @@ export function BoardChat() {
     }
   }, []);
 
-  useEffect(() => {
-    void Promise.all([refreshBoard(), refreshCodex()]).catch((cause: unknown) => {
-      setError(cause instanceof Error ? cause.message : "Не удалось загрузить доску");
-    });
-    return () => sourceRef.current?.close();
-  }, [refreshBoard, refreshCodex]);
-
-  const listenToRun = useCallback((id: string, after: number) => {
-    sourceRef.current?.close();
-    const source = new EventSource(`/api/runs/${id}/events?after=${after}`);
-    sourceRef.current = source;
-    const onEvent = (event: Event) => {
-      const data = JSON.parse((event as MessageEvent<string>).data) as RunEvent;
-      setRunState((current) => applyRunEvent(current, data));
-      if (data.type === "run.completed" || data.type === "run.failed") {
-        source.close();
-        if (sourceRef.current === source) sourceRef.current = null;
-        setRunId(null);
-        void refreshBoard();
-      }
-    };
-    source.onmessage = onEvent;
-    source.onerror = () => {
-      // EventSource reconnects with Last-Event-ID; the server replays saved events.
-    };
+  const refreshBoards = useCallback(async () => {
+    const result = await readJson<{ boards: BoardSummary[] }>("/api/boards");
+    setBoards(result.boards);
+    const saved = window.localStorage.getItem("workspace.activeBoardId");
+    const selected = chooseBoardId(saved, result.boards);
+    setActiveBoardId(selected);
+    if (selected) {
+      window.localStorage.setItem("workspace.activeBoardId", selected);
+      await refreshBoard(selected);
+    }
   }, [refreshBoard]);
 
   useEffect(() => {
-    const lane = board?.lanes[0];
-    if (lane?.activeRun && !runId) {
-      setRunId(lane.activeRun.id);
-      setRunState({
-        sequence: lane.activeRun.sequence,
-        status: "running",
-        answer: lane.messages.find((item) => item.role === "assistant" && item.runStatus === "running")?.content ?? "",
-        error: null,
-      });
-      listenToRun(lane.activeRun.id, lane.activeRun.sequence);
-    }
-  }, [board, listenToRun, runId]);
+    void Promise.all([refreshBoards(), refreshCodex()]).catch((cause: unknown) => {
+      setError(cause instanceof Error ? cause.message : "Не удалось загрузить доски");
+    });
+  }, [refreshBoards, refreshCodex]);
 
   useEffect(() => {
     if (!authUrl || codex?.authenticated) return;
@@ -106,8 +74,37 @@ export function BoardChat() {
     return () => window.clearInterval(timer);
   }, [authUrl, codex?.authenticated, refreshCodex]);
 
-  const lane = board?.lanes[0];
-  const isRunning = runState.status === "running" || Boolean(lane?.activeRun);
+  async function selectBoard(boardId: string) {
+    setActiveBoardId(boardId);
+    window.localStorage.setItem("workspace.activeBoardId", boardId);
+    setError(null);
+    try {
+      await refreshBoard(boardId);
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : "Не удалось открыть доску");
+    }
+  }
+
+  async function createBoard() {
+    setError(null);
+    try {
+      const created = await readJson<BoardResponse>("/api/boards", { method: "POST" });
+      setBoards((current) => [...current, created.board]);
+      await selectBoard(created.board.id);
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : "Не удалось создать доску");
+    }
+  }
+
+  async function createLane() {
+    if (!activeBoardId) return;
+    setError(null);
+    try {
+      setBoard(await readJson<BoardResponse>(`/api/boards/${encodeURIComponent(activeBoardId)}/lanes`, { method: "POST" }));
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : "Не удалось создать ленту");
+    }
+  }
 
   async function startLogin() {
     setError(null);
@@ -119,12 +116,102 @@ export function BoardChat() {
     }
   }
 
+  return (
+    <main className="shell">
+      <header className="topbar">
+        <nav className="board-tabs" aria-label="Доски">
+          {boards.map((item) => (
+            <button
+              className={`board-tab ${item.id === activeBoardId ? "selected" : ""}`}
+              key={item.id}
+              onClick={() => void selectBoard(item.id)}
+              aria-current={item.id === activeBoardId ? "page" : undefined}
+            >
+              {item.title}
+            </button>
+          ))}
+          <button className="add-board" aria-label="Создать доску" title="Создать доску" onClick={() => void createBoard()}>＋</button>
+        </nav>
+        <div className="connection" title={codex?.error}>
+          <span className={`status-dot ${codex?.authenticated ? "online" : "offline"}`} />
+          <span>{codex?.authenticated ? `Codex · ${codex.planType ?? "ChatGPT"}` : "Codex не подключён"}</span>
+          {!codex?.authenticated && <button className="login-link" onClick={() => void startLogin()}>{authUrl ? "Открыть вход" : "Войти"}</button>}
+          {authUrl && !codex?.authenticated && <a className="auth-link" href={authUrl} target="_blank" rel="noreferrer" aria-label="Открыть вход через ChatGPT">↗</a>}
+        </div>
+      </header>
+
+      {!codex?.authenticated && (
+        <div className="login-banner">
+          <span>Войди через подписку ChatGPT, чтобы отправлять запросы через Codex.</span>
+          <span>Ключ API не нужен.</span>
+        </div>
+      )}
+
+      <section className="canvas" aria-label="Рабочая область доски">
+        {error && <p className="error-banner" role="alert">{error}</p>}
+        {board && board.board.id === activeBoardId ? (
+          <div className="lanes" key={board.board.id}>
+            {board.lanes.map((lane) => (
+              <LaneView key={lane.id} lane={lane} authenticated={Boolean(codex?.authenticated)} onRefresh={() => refreshBoard(board.board.id)} />
+            ))}
+            <button className="new-lane" onClick={() => void createLane()}><span>＋</span> Добавить ленту</button>
+          </div>
+        ) : <div className="loading">Открываю доску…</div>}
+      </section>
+    </main>
+  );
+}
+
+function LaneView({ lane, authenticated, onRefresh }: { lane: Lane; authenticated: boolean; onRefresh: () => Promise<BoardResponse> }) {
+  const [message, setMessage] = useState("");
+  const [runState, setRunState] = useState<RunState>(emptyRunState());
+  const [runId, setRunId] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const sourceRef = useRef<EventSource | null>(null);
+  const textareaRef = useRef<HTMLTextAreaElement>(null);
+
+  const listenToRun = useCallback((id: string, after: number) => {
+    sourceRef.current?.close();
+    const source = new EventSource(`/api/runs/${id}/events?after=${after}`);
+    sourceRef.current = source;
+    source.onmessage = (event: MessageEvent<string>) => {
+      const data = JSON.parse(event.data) as RunEvent;
+      setRunState((current) => applyRunEvent(current, data));
+      if (data.type === "run.completed" || data.type === "run.failed") {
+        source.close();
+        if (sourceRef.current === source) sourceRef.current = null;
+        setRunId(null);
+        void onRefresh();
+      }
+    };
+  }, [onRefresh]);
+
+  useEffect(() => {
+    if (!lane.activeRun || runId === lane.activeRun.id) return;
+    setRunId(lane.activeRun.id);
+    setRunState({
+      sequence: lane.activeRun.sequence,
+      status: "running",
+      answer: lane.messages.find((item) => item.role === "assistant" && item.runStatus === "running")?.content ?? "",
+      error: null,
+    });
+    listenToRun(lane.activeRun.id, lane.activeRun.sequence);
+  }, [lane.activeRun?.id, lane.activeRun?.sequence, lane.messages, listenToRun, runId]);
+
+  useEffect(() => () => sourceRef.current?.close(), []);
+
+  function resizeTextarea(element: HTMLTextAreaElement) {
+    element.style.height = "auto";
+    element.style.height = `${Math.min(element.scrollHeight, 240)}px`;
+  }
+
   async function sendMessage(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
-    if (!lane || !message.trim() || isRunning) return;
+    if (!message.trim() || lane.activeRun || runState.status === "running") return;
     setError(null);
     const text = message.trim();
     setMessage("");
+    if (textareaRef.current) resizeTextarea(textareaRef.current);
     setRunState(emptyRunState());
     try {
       const result = await readJson<{ runId: string }>(`/api/lanes/${lane.id}/messages`, {
@@ -133,109 +220,66 @@ export function BoardChat() {
         body: JSON.stringify({ text }),
       });
       setRunId(result.runId);
-      const updated = await refreshBoard();
-      const active = updated.lanes[0]?.activeRun;
-      const savedAnswer = updated.lanes[0]?.messages.find(
-        (item) => item.role === "assistant" && item.runStatus === "running",
-      )?.content ?? "";
+      const updated = await onRefresh();
+      const latestLane = updated.lanes.find((item) => item.id === lane.id);
+      const active = latestLane?.activeRun;
+      const savedAnswer = latestLane?.messages.find((item) => item.role === "assistant" && item.runStatus === "running")?.content ?? "";
       const sequence = active?.sequence ?? 0;
       setRunState({ sequence, status: "running", answer: savedAnswer, error: null });
       listenToRun(result.runId, sequence);
     } catch (cause) {
       setMessage(text);
       setRunState({ ...emptyRunState(), status: "failed", error: cause instanceof Error ? cause.message : "Ошибка запроса" });
-      await refreshBoard();
+      setError(cause instanceof Error ? cause.message : "Ошибка запроса");
     }
   }
 
+  const running = Boolean(lane.activeRun) || runState.status === "running";
+
   return (
-    <main className="shell">
-      <header className="topbar">
-        <a className="wordmark" href="#top" aria-label="AI Advent v3">
-          <span className="mark">A</span>
-          <span>AI Advent <small>v3</small></span>
-        </a>
-        <div className="connection">
-          <span className={`status-dot ${codex?.authenticated ? "online" : "offline"}`} />
-          <span>{codex?.authenticated ? `Codex · ${codex.planType ?? "ChatGPT"}` : "Codex не подключён"}</span>
-        </div>
-      </header>
-
-      <section className="conversation" id="top">
-        <div className="intro">
-          <p className="eyebrow">ОДНА ДОСКА · ОДНА ЛЕНТА</p>
-          <h1>{board?.board.title ?? "AI Advent"}</h1>
-          <p className="subheading">Начни диалог с Codex. История хранится локально на этом устройстве.</p>
-        </div>
-
-        {!codex?.authenticated && (
-          <div className="connect-card">
-            <div>
-              <strong>Войди через подписку ChatGPT</strong>
-              <p>Подключение использует локальный Codex. Ключ OpenAI API не нужен.</p>
-            </div>
-            {authUrl ? (
-              <a className="button secondary" href={authUrl} target="_blank" rel="noreferrer">Открыть вход</a>
-            ) : (
-              <button className="button secondary" onClick={() => void startLogin()}>Войти в ChatGPT</button>
-            )}
-          </div>
+    <article className="lane">
+      <div className="lane-heading"><span className="lane-dot" /><h2>{lane.title}</h2><span className="lane-provider">CODEX</span></div>
+      <div className="lane-messages" aria-live="polite">
+        {lane.messages.filter((item) => !(item.role === "assistant" && item.runStatus === "running")).map((item) => (
+          <article className={`message ${item.role}`} key={item.id}>
+            <div className="message-label">{item.role === "user" ? "ТЫ" : "CODEX"}</div>
+            <div className="message-content">{item.content}</div>
+            {item.runStatus === "failed" && <p className="message-error">{item.runError ?? "Ответ не завершён."}</p>}
+          </article>
+        ))}
+        {runId && runState.status === "running" && runState.answer && (
+          <article className="message assistant streaming" aria-label="Ответ Codex поступает">
+            <div className="message-label">CODEX · ОТВЕТ</div>
+            <div className="message-content">{runState.answer}<span className="cursor" /></div>
+          </article>
         )}
-
-        <div className="messages" aria-live="polite">
-          {lane?.messages.filter((item) => !(item.role === "assistant" && item.runStatus === "running")).map((item) => (
-            <article className={`message ${item.role}`} key={item.id}>
-              <div className="message-label">{item.role === "user" ? "ТЫ" : "CODEX"}</div>
-              <div className="message-content">{item.content || (item.runStatus === "running" ? "Пишет…" : "")}</div>
-              {item.runStatus === "failed" && <p className="message-error">{item.runError ?? "Ответ не завершён."}</p>}
-            </article>
-          ))}
-          {runId && runState.status === "running" && runState.answer && (
-            <article className="message assistant streaming" aria-label="Ответ Codex поступает">
-              <div className="message-label">CODEX · ОТВЕТ</div>
-              <div className="message-content">{runState.answer}<span className="cursor" /></div>
-            </article>
-          )}
-          {lane?.messages.length === 0 && !isRunning && (
-            <div className="empty-state">
-              <span className="empty-symbol">✳</span>
-              <p>Напиши первый вопрос</p>
-              <span>Ответ появится здесь по мере поступления.</span>
-            </div>
-          )}
+        {lane.messages.length === 0 && !running && <div className="empty-state"><span className="empty-symbol">✳</span><p>Новый диалог</p><span>Напиши запрос внизу ленты.</span></div>}
+      </div>
+      {error && <p className="lane-error" role="alert">{error}</p>}
+      {runState.status === "failed" && runState.error && !error && <p className="lane-error" role="alert">{runState.error}</p>}
+      <form className="composer" onSubmit={(event) => void sendMessage(event)}>
+        <textarea
+          ref={textareaRef}
+          aria-label={`Сообщение для ${lane.title}`}
+          placeholder={authenticated ? "Напиши сообщение…" : "Войди в Codex, чтобы отправить запрос"}
+          value={message}
+          onChange={(event) => { setMessage(event.target.value); resizeTextarea(event.currentTarget); }}
+          onKeyDown={(event) => {
+            if (event.key === "Enter" && !event.shiftKey) {
+              event.preventDefault();
+              event.currentTarget.form?.requestSubmit();
+            }
+          }}
+          rows={1}
+          disabled={!authenticated || running}
+        />
+        <div className="composer-footer">
+          <span>{running ? "Запрос выполняется" : "Enter — отправить · Shift+Enter — новая строка"}</span>
+          <button className="button primary" type="submit" disabled={!authenticated || running || !message.trim()} aria-label="Отправить сообщение">
+            ↗
+          </button>
         </div>
-
-        {error && <p className="error-banner" role="alert">{error}</p>}
-        {runState.status === "failed" && runState.error && (
-          <p className="error-banner" role="alert">{runState.error}</p>
-        )}
-
-        <form className="composer" onSubmit={(event) => void sendMessage(event)}>
-          <textarea
-            aria-label="Сообщение для Codex"
-            placeholder={codex?.authenticated ? "Напиши сообщение…" : "Сначала войди через ChatGPT"}
-            value={message}
-            onChange={(event) => setMessage(event.target.value)}
-            onKeyDown={(event) => {
-              if (event.key === "Enter" && !event.shiftKey) {
-                event.preventDefault();
-                event.currentTarget.form?.requestSubmit();
-              }
-            }}
-            rows={3}
-            disabled={!codex?.authenticated || isRunning}
-          />
-          <div className="composer-footer">
-            <span>{isRunning ? "Запрос выполняется · в ленте только один активный запрос" : "Enter — отправить · Shift+Enter — новая строка"}</span>
-            <button className="button primary" type="submit" disabled={!codex?.authenticated || isRunning || !message.trim()}>
-              {isRunning ? "Отвечает…" : "Отправить"}
-              {!isRunning && <span aria-hidden="true">↗</span>}
-            </button>
-          </div>
-        </form>
-      </section>
-
-      <footer className="footer">История остаётся в локальном файле SQLite · Codex через подписку ChatGPT</footer>
-    </main>
+      </form>
+    </article>
   );
 }
