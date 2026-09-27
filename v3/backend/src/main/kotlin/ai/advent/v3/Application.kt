@@ -83,6 +83,22 @@ fun Application.module(
             call.respond(HttpStatusCode.Created, store.createBoard())
         }
 
+        patch("/api/boards/{boardId}/instructions") {
+            val boardId = call.parameters["boardId"]
+            val instructions = runCatching { call.receive<JsonObject>()["instructions"]?.jsonPrimitive?.content }.getOrNull()
+            if (boardId == null || instructions == null) {
+                call.respond(HttpStatusCode.BadRequest, buildJsonObject { put("error", "Укажи текст инструкций доски.") })
+                return@patch
+            }
+            try {
+                call.respond(store.updateBoardInstructions(boardId, instructions))
+            } catch (error: IllegalArgumentException) {
+                call.respond(HttpStatusCode.BadRequest, buildJsonObject { put("error", error.message ?: "Инструкции некорректны.") })
+            } catch (_: IllegalStateException) {
+                call.respond(HttpStatusCode.NotFound, buildJsonObject { put("error", "Доска не найдена.") })
+            }
+        }
+
         get("/api/boards/{boardId}/memories") {
             val boardId = call.parameters["boardId"] ?: ""
             try { store.board(boardId); call.respond(memoryStore.state(boardId)) }
@@ -202,6 +218,25 @@ fun Application.module(
                 call.respond(HttpStatusCode.BadRequest, buildJsonObject { put("error", error.message ?: "Параметры некорректны.") })
             } catch (_: IllegalStateException) {
                 call.respond(HttpStatusCode.NotFound, buildJsonObject { put("error", "Лента не найдена.") })
+            }
+        }
+
+        patch("/api/lanes/{laneId}/instructions") {
+            val laneId = call.parameters["laneId"]
+            val body = runCatching { call.receive<JsonObject>() }.getOrNull()
+            val instructions = body?.get("instructions")?.jsonPrimitive?.content
+            val mode = body?.get("mode")?.jsonPrimitive?.content
+            if (laneId == null || instructions == null || mode == null) {
+                call.respond(HttpStatusCode.BadRequest, buildJsonObject { put("error", "Укажи текст и режим инструкций ленты.") })
+                return@patch
+            }
+            try {
+                call.respond(store.updateLaneInstructions(laneId, instructions, mode))
+            } catch (error: IllegalArgumentException) {
+                call.respond(HttpStatusCode.BadRequest, buildJsonObject { put("error", error.message ?: "Инструкции некорректны.") })
+            } catch (error: IllegalStateException) {
+                val status = if (error.message.orEmpty().contains("во время запроса")) HttpStatusCode.Conflict else HttpStatusCode.NotFound
+                call.respond(status, buildJsonObject { put("error", error.message ?: "Лента не найдена.") })
             }
         }
 

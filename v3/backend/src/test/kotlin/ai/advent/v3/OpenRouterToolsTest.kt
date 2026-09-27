@@ -46,7 +46,7 @@ class OpenRouterToolsTest {
                 })
             }
             val result = gateway.toolRound("server-secret", LaneConfig("openrouter", "test/model", 0.1, 300, null),
-                listOf(buildJsonObject { put("role", "user"); put("content", "find") }), listOf(tool)) {}
+                listOf(buildJsonObject { put("role", "user"); put("content", "find") }), listOf(tool), onText = {})
             val call = result.message["tool_calls"]!!.jsonArray.single().jsonObject
             assertEquals("local__search", call["function"]!!.jsonObject["name"]!!.jsonPrimitive.content)
             assertEquals("{\"query\":\"safety\"}", call["function"]!!.jsonObject["arguments"]!!.jsonPrimitive.content)

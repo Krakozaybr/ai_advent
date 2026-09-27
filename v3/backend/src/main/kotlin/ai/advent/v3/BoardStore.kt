@@ -22,11 +22,18 @@ import java.security.MessageDigest
 
 data class ContextMessage(val role: String, val content: String)
 
+private fun effectiveInstructions(board: String, lane: String, mode: String): String = when (mode) {
+    "override" -> lane
+    "append" -> listOf(board, lane).filter(String::isNotBlank).joinToString("\n\n")
+    else -> board
+}
+
 data class TranscriptSnapshot(val messages: List<ContextMessage>, val watermark: String?, val fingerprint: String)
 
 data class ImportedBoard(
     val externalId: String,
     val title: String,
+    val instructions: String,
     val lanes: List<ImportedLane>,
     val agents: List<ImportedAgent>,
 )
@@ -53,6 +60,8 @@ data class ImportedLane(
     val originMessageExternalId: String?,
     val originKind: String?,
     val agentExternalId: String?,
+    val instructions: String,
+    val instructionMode: String,
 )
 
 data class ImportedMessage(val externalId: String, val role: String, val content: String, val provenance: String?)
@@ -100,6 +109,7 @@ data class StartedRun(
     val config: LaneConfig,
     val mcpTools: List<McpSelection>,
     val mcpAutoApprove: Boolean,
+    val effectiveInstructions: String,
 ) {
     override fun toString(): String = super.toString()
 }
@@ -133,7 +143,8 @@ class BoardStore(
                         id TEXT PRIMARY KEY,
                         title TEXT NOT NULL,
                         created_at TEXT NOT NULL,
-                        external_id TEXT UNIQUE
+                        external_id TEXT UNIQUE,
+                        instructions TEXT NOT NULL DEFAULT ''
                     )
                     """.trimIndent(),
                 )
@@ -254,6 +265,9 @@ class BoardStore(
             ensureColumn(db, "lanes", "agent_id", "TEXT")
             ensureColumn(db, "lanes", "mcp_auto_approve", "INTEGER NOT NULL DEFAULT 0")
             ensureColumn(db, "boards", "external_id", "TEXT")
+            ensureColumn(db, "boards", "instructions", "TEXT NOT NULL DEFAULT ''")
+            ensureColumn(db, "lanes", "instructions", "TEXT NOT NULL DEFAULT ''")
+            ensureColumn(db, "lanes", "instruction_mode", "TEXT NOT NULL DEFAULT 'inherit'")
             ensureColumn(db, "messages", "provenance", "TEXT")
             db.createStatement().use { it.execute("CREATE UNIQUE INDEX IF NOT EXISTS boards_external_id ON boards(external_id) WHERE external_id IS NOT NULL") }
             ensureColumn(db, "runs", "request_config", "TEXT")
@@ -267,13 +281,14 @@ class BoardStore(
     fun board(): JsonObject = synchronized(lock) {
         connect().use { db ->
             val board = db.prepareStatement(
-                "SELECT id, title FROM boards ORDER BY created_at LIMIT 1",
+                "SELECT id, title, instructions FROM boards ORDER BY created_at LIMIT 1",
             ).use { query ->
                 query.executeQuery().use { result ->
                     check(result.next()) { "Board has not been initialized" }
                     buildJsonObject {
                         put("id", result.getString("id"))
                         put("title", result.getString("title"))
+                        put("instructions", result.getString("instructions"))
                     }
                 }
             }
@@ -292,7 +307,8 @@ class BoardStore(
                     "origin_message_role, origin_message_content, " +
                     "position_x, position_y, width, provider, model, temperature, max_tokens, stop, " +
                     "context_strategy, context_window_size, context_summary, context_summary_watermark, context_budget_tokens, " +
-                    "context_summary_usage, context_summary_usage_source, context_summary_stale, agent_id, mcp_auto_approve " +
+                    "context_summary_usage, context_summary_usage_source, context_summary_stale, agent_id, mcp_auto_approve, " +
+                    "instructions, instruction_mode, (SELECT instructions FROM boards WHERE id = lanes.board_id) AS board_instructions " +
                     "FROM lanes WHERE board_id = ? ORDER BY created_at, rowid",
             ).use { query ->
                 query.setString(1, board["id"]!!.jsonPrimitive.content)
@@ -302,6 +318,9 @@ class BoardStore(
                         lanes += buildJsonObject {
                             put("id", laneId)
                             put("title", result.getString("title"))
+                            put("instructions", result.getString("instructions"))
+                            put("instructionMode", result.getString("instruction_mode"))
+                            put("effectiveInstructions", effectiveInstructions(result.getString("board_instructions"), result.getString("instructions"), result.getString("instruction_mode")))
                             result.getString("agent_id")?.let { put("agentId", it) }
                             put("mcpAutoApprove", result.getInt("mcp_auto_approve") != 0)
                             put("stickyFacts", JsonArray(stickyFacts(db, laneId)))
@@ -395,13 +414,39 @@ class BoardStore(
         }
     }
 
-    fun importPreparedBoard(externalId: String, title: String, lanes: List<ImportedLane>, agents: List<ImportedAgent>): String = synchronized(lock) {
+    fun updateBoardInstructions(instructions: String): JsonObject = synchronized(lock) {
+        require(instructions.length <= 20_000) { "Инструкции доски не должны превышать 20 000 символов." }
+        connect().use { db ->
+            db.prepareStatement("UPDATE boards SET instructions = ? WHERE id = (SELECT id FROM boards LIMIT 1)").use { query ->
+                query.setString(1, instructions)
+                check(query.executeUpdate() == 1) { "Board has not been initialized" }
+            }
+        }
+        board()
+    }
+
+    fun updateLaneInstructions(laneId: String, instructions: String, mode: String): JsonObject = synchronized(lock) {
+        require(instructions.length <= 20_000) { "Инструкции ленты не должны превышать 20 000 символов." }
+        require(mode in setOf("inherit", "override", "append")) { "Режим инструкций должен быть inherit, override или append." }
+        connect().use { db ->
+            db.prepareStatement("UPDATE lanes SET instructions = ?, instruction_mode = ? WHERE id = ?").use { query ->
+                query.setString(1, instructions)
+                query.setString(2, mode)
+                query.setString(3, laneId)
+                check(query.executeUpdate() == 1) { "Unknown lane" }
+            }
+        }
+        board()
+    }
+
+    fun importPreparedBoard(externalId: String, title: String, instructions: String, lanes: List<ImportedLane>, agents: List<ImportedAgent>): String = synchronized(lock) {
         connect().use { db ->
             db.autoCommit = false
             try {
-                db.prepareStatement("UPDATE boards SET title = ?, external_id = ? WHERE id = (SELECT id FROM boards LIMIT 1)").use { query ->
+                db.prepareStatement("UPDATE boards SET title = ?, external_id = ?, instructions = ? WHERE id = (SELECT id FROM boards LIMIT 1)").use { query ->
                     query.setString(1, title)
                     query.setString(2, externalId)
+                    query.setString(3, instructions)
                     check(query.executeUpdate() == 1) { "Board has not been initialized" }
                 }
                 val boardId = db.createStatement().use { statement ->
@@ -422,7 +467,7 @@ class BoardStore(
                     db.prepareStatement(
                         """INSERT INTO lanes(id, board_id, title, created_at, codex_context_seeded, position_x, position_y, width,
                            provider, model, temperature, max_tokens, stop, context_strategy, context_window_size, context_summary,
-                           context_budget_tokens, agent_id) VALUES (?, ?, ?, ?, 0, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                           context_budget_tokens, agent_id, instructions, instruction_mode) VALUES (?, ?, ?, ?, 0, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                     ).use { query ->
                         query.setString(1, laneId); query.setString(2, boardId); query.setString(3, lane.title)
                         query.setString(4, Instant.now().plusNanos(index.toLong()).toString())
@@ -433,6 +478,8 @@ class BoardStore(
                         query.setString(12, lane.stop); query.setString(13, lane.contextStrategy)
                         query.setInt(14, lane.contextWindowSize); query.setString(15, lane.summary); query.setInt(16, lane.contextBudgetTokens)
                         query.setString(17, lane.agentExternalId?.let(agentIds::get))
+                        query.setString(18, lane.instructions)
+                        query.setString(19, lane.instructionMode)
                         query.executeUpdate()
                     }
                     lane.messages.forEachIndexed { messageIndex, message ->
@@ -807,14 +854,15 @@ class BoardStore(
             try {
                 val source = db.prepareStatement(
                     "SELECT board_id, title, provider, model, temperature, max_tokens, stop, context_strategy, " +
-                        "context_window_size, context_budget_tokens FROM lanes WHERE id = ?",
+                        "context_window_size, context_budget_tokens, instructions, instruction_mode FROM lanes WHERE id = ?",
                 ).use { query ->
                     query.setString(1, sourceLaneId)
                     query.executeQuery().use { result ->
                         check(result.next()) { "Unknown lane" }
                         listOf(result.getString("board_id"), result.getString("title"), result.getString("provider"),
                             result.getString("model"), result.getString("temperature"), result.getString("max_tokens"), result.getString("stop"),
-                            result.getString("context_strategy"), result.getString("context_window_size"), result.getString("context_budget_tokens"))
+                            result.getString("context_strategy"), result.getString("context_window_size"), result.getString("context_budget_tokens"),
+                            result.getString("instructions"), result.getString("instruction_mode"))
                     }
                 }
                 check(!hasActiveRun(db, sourceLaneId)) { "Cannot copy a lane while a request is running" }
@@ -845,8 +893,8 @@ class BoardStore(
                     "INSERT INTO lanes(id, board_id, title, created_at, origin_lane_id, origin_message_id, " +
                     "origin_kind, codex_context_seeded, origin_message_role, origin_message_content, " +
                         "position_x, position_y, width, provider, model, temperature, max_tokens, stop, " +
-                        "context_strategy, context_window_size, context_budget_tokens) " +
-                        "VALUES (?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?, 24, 440, ?, ?, ?, ?, ?, ?, ?, ?)",
+                        "context_strategy, context_window_size, context_budget_tokens, instructions, instruction_mode) " +
+                        "VALUES (?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?, 24, 440, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 ).use { query ->
                     query.setString(1, laneId)
                     query.setString(2, source[0])
@@ -866,6 +914,8 @@ class BoardStore(
                     query.setString(16, source[7])
                     query.setInt(17, source[8].toInt())
                     query.setInt(18, source[9].toInt())
+                    query.setString(19, source[10])
+                    query.setString(20, source[11])
                     query.executeUpdate()
                 }
                 db.prepareStatement("INSERT INTO lane_mcp_tools(lane_id, server_id, tool_name) SELECT ?, server_id, tool_name FROM lane_mcp_tools WHERE lane_id = ?").use { query ->
@@ -983,9 +1033,10 @@ class BoardStore(
             db.autoCommit = false
             try {
                 val lane = db.prepareStatement(
-                    "SELECT board_id, codex_thread_id, codex_context_seeded, provider, model, temperature, max_tokens, stop, " +
-                        "context_strategy, context_window_size, context_summary, context_summary_watermark, context_budget_tokens, mcp_auto_approve " +
-                        "FROM lanes WHERE id = ?",
+                "SELECT l.board_id, l.codex_thread_id, l.codex_context_seeded, l.provider, l.model, l.temperature, l.max_tokens, l.stop, " +
+                        "l.context_strategy, l.context_window_size, l.context_summary, l.context_summary_watermark, l.context_budget_tokens, l.mcp_auto_approve, " +
+                        "l.instructions, l.instruction_mode, b.instructions AS board_instructions " +
+                        "FROM lanes l JOIN boards b ON b.id = l.board_id WHERE l.id = ?",
                 ).use { query ->
                     query.setString(1, laneId)
                     query.executeQuery().use { result ->
@@ -994,7 +1045,8 @@ class BoardStore(
                             (result.getInt("codex_context_seeded") == 0).toString(), result.getString("provider"),
                             result.getString("model"), result.getString("temperature"), result.getString("max_tokens"), result.getString("stop"),
                             result.getString("context_strategy"), result.getString("context_window_size"), result.getString("context_summary"),
-                            result.getString("context_summary_watermark"), result.getString("context_budget_tokens"), result.getString("mcp_auto_approve"))
+                            result.getString("context_summary_watermark"), result.getString("context_budget_tokens"), result.getString("mcp_auto_approve"),
+                            result.getString("instructions"), result.getString("instruction_mode"), result.getString("board_instructions"))
                     }
                 }
                 val isActive = db.prepareStatement(
@@ -1074,6 +1126,12 @@ class BoardStore(
                         kotlinx.serialization.json.Json.parseToJsonElement(config.toJson()).jsonObject.forEach { (key, value) -> put(key, value) }
                         put("contextPlan", plan.toJson())
                         put("contextStrategy", strategy.wireName)
+                        put("effectiveInstructions", effectiveInstructions(lane[16], lane[14], lane[15]))
+                        put("instructionSource", when (lane[15]) {
+                            "override" -> "lane-override"
+                            "append" -> "board-and-lane"
+                            else -> "board-default"
+                        })
                     }))
                     query.executeUpdate()
                 }
@@ -1091,6 +1149,7 @@ class BoardStore(
                     config = config,
                     mcpTools = mcpTools(db, laneId),
                     mcpAutoApprove = lane[13].toInt() != 0,
+                    effectiveInstructions = effectiveInstructions(lane[16], lane[14], lane[15]),
                 )
             } catch (error: SQLException) {
                 db.rollback()

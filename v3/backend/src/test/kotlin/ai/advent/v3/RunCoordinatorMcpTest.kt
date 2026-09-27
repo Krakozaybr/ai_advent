@@ -294,9 +294,9 @@ private class ScriptedFactsOpenRouter : OpenRouterGateway {
     ))
     val continuations = java.util.Collections.synchronizedList(mutableListOf<List<JsonObject>>())
 
-    override suspend fun stream(apiKey: String, config: LaneConfig, history: List<ContextMessage>, prompt: String, onText: suspend (String) -> Unit): JsonObject = buildJsonObject { put("provider", "openrouter") }
+    override suspend fun stream(apiKey: String, config: LaneConfig, history: List<ContextMessage>, prompt: String, onText: suspend (String) -> Unit, instructions: String): JsonObject = buildJsonObject { put("provider", "openrouter") }
 
-    override suspend fun toolRound(apiKey: String, config: LaneConfig, messages: List<JsonObject>, tools: List<JsonObject>, onText: suspend (String) -> Unit): OpenRouterToolRound {
+    override suspend fun toolRound(apiKey: String, config: LaneConfig, messages: List<JsonObject>, tools: List<JsonObject>, onText: suspend (String) -> Unit, instructions: String): OpenRouterToolRound {
         if (messages.any { it["role"]?.jsonPrimitive?.content == "tool" }) {
             continuations += messages
             onText("Проверил сохранённые факты.")
@@ -321,8 +321,8 @@ private class ScriptedFactsOpenRouter : OpenRouterGateway {
 }
 
 private class ParallelFactsOpenRouter : OpenRouterGateway {
-    override suspend fun stream(apiKey: String, config: LaneConfig, history: List<ContextMessage>, prompt: String, onText: suspend (String) -> Unit) = buildJsonObject { put("provider", "openrouter") }
-    override suspend fun toolRound(apiKey: String, config: LaneConfig, messages: List<JsonObject>, tools: List<JsonObject>, onText: suspend (String) -> Unit): OpenRouterToolRound {
+    override suspend fun stream(apiKey: String, config: LaneConfig, history: List<ContextMessage>, prompt: String, onText: suspend (String) -> Unit, instructions: String) = buildJsonObject { put("provider", "openrouter") }
+    override suspend fun toolRound(apiKey: String, config: LaneConfig, messages: List<JsonObject>, tools: List<JsonObject>, onText: suspend (String) -> Unit, instructions: String): OpenRouterToolRound {
         if (messages.any { it["role"]?.jsonPrimitive?.content == "tool" }) {
             onText("Ожидает подтверждения пользователя.")
             return OpenRouterToolRound(buildJsonObject { put("role", "assistant"); put("content", "Ожидает подтверждения.") }, buildJsonObject { put("provider", "openrouter") })
@@ -347,13 +347,13 @@ private class RecordingOpenRouter(
     @Volatile var standardStreamCalls = 0
     val messagesSeenByContinuation = java.util.Collections.synchronizedList(mutableListOf<List<JsonObject>>())
 
-    override suspend fun stream(apiKey: String, config: LaneConfig, history: List<ContextMessage>, prompt: String, onText: suspend (String) -> Unit): JsonObject {
+    override suspend fun stream(apiKey: String, config: LaneConfig, history: List<ContextMessage>, prompt: String, onText: suspend (String) -> Unit, instructions: String): JsonObject {
         standardStreamCalls++
         onText("Обычный ответ")
         return buildJsonObject { put("provider", "openrouter"); put("model", config.model) }
     }
 
-    override suspend fun toolRound(apiKey: String, config: LaneConfig, messages: List<JsonObject>, tools: List<JsonObject>, onText: suspend (String) -> Unit): OpenRouterToolRound {
+    override suspend fun toolRound(apiKey: String, config: LaneConfig, messages: List<JsonObject>, tools: List<JsonObject>, onText: suspend (String) -> Unit, instructions: String): OpenRouterToolRound {
         toolRoundCalls++
         if (messages.any { it["role"]?.jsonPrimitive?.content == "tool" }) {
             messagesSeenByContinuation += messages
@@ -385,7 +385,7 @@ private class NoopCodex : CodexGateway {
     override suspend fun beginLogin() = CodexLogin("https://example.invalid")
     override suspend fun stream(threadId: String?, prompt: String, contextToSeed: List<ContextMessage>, shouldSeedContext: Boolean, model: String,
         onThreadId: suspend (String) -> Unit, onContextSeeded: suspend () -> Unit, onContextSeedFailed: suspend () -> Unit,
-        onText: suspend (String) -> Unit, ephemeral: Boolean, onUsage: suspend (JsonObject) -> Unit) {
+        onText: suspend (String) -> Unit, ephemeral: Boolean, onUsage: suspend (JsonObject) -> Unit, developerInstructions: String) {
         error("Codex is not part of this test")
     }
     override fun close() = Unit

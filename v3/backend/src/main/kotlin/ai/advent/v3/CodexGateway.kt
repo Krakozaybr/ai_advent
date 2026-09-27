@@ -54,6 +54,7 @@ interface CodexGateway : Closeable {
         onText: suspend (String) -> Unit,
         ephemeral: Boolean = false,
         onUsage: suspend (JsonObject) -> Unit = {},
+        developerInstructions: String = "",
     )
 }
 
@@ -126,6 +127,7 @@ class CodexAppServer(
         onText: suspend (String) -> Unit,
         ephemeral: Boolean,
         onUsage: suspend (JsonObject) -> Unit,
+        developerInstructions: String,
     ) {
         ensureStarted()
         val threadMethod = if (threadId == null) "thread/start" else "thread/resume"
@@ -137,6 +139,7 @@ class CodexAppServer(
             put("serviceName", "ai-advent-v3")
             if (ephemeral) put("ephemeral", true)
             if (model.isNotBlank()) put("model", model)
+            put("developerInstructions", developerInstructions)
         }
         val thread = request(threadMethod, threadParams)
             .getValue("thread").jsonObject.getValue("id").jsonPrimitive.content

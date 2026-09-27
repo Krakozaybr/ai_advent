@@ -47,7 +47,7 @@ class WorkspaceStore(private val originalFile: Path) : Closeable {
         val finalPath = boardsDirectory.resolve("${UUID.randomUUID()}.sqlite")
         try {
             val staged = BoardStore(temp, imported.title, createDefaultLane = false)
-            staged.importPreparedBoard(imported.externalId, imported.title, imported.lanes, imported.agents)
+            staged.importPreparedBoard(imported.externalId, imported.title, imported.instructions, imported.lanes, imported.agents)
             staged.checkpointForMove()
             staged.close()
             Files.move(temp, finalPath, StandardCopyOption.ATOMIC_MOVE)
@@ -77,6 +77,14 @@ class WorkspaceStore(private val originalFile: Path) : Closeable {
         storeForLane(laneId).also {
             it.updateLaneConfig(laneId, model, temperature, maxTokens, stop, contextStrategy, contextWindowSize, contextBudgetTokens)
         }.board()
+    }
+
+    fun updateBoardInstructions(boardId: String, instructions: String): JsonObject = synchronized(lock) {
+        store(boardId).updateBoardInstructions(instructions)
+    }
+
+    fun updateLaneInstructions(laneId: String, instructions: String, mode: String): JsonObject = synchronized(lock) {
+        storeForLane(laneId).updateLaneInstructions(laneId, instructions, mode)
     }
 
     fun saveContextSummary(

@@ -45,13 +45,16 @@ type Lane = {
   contextSummaryUsageSource?: string;
   contextSummaryStale: boolean;
   contextBudgetTokens: number;
+  instructions: string;
+  instructionMode: "inherit" | "override" | "append";
+  effectiveInstructions: string;
   mcpTools: Array<{ serverId: string; toolName: string }>;
   mcpAutoApprove: boolean;
   stickyFacts: Array<{ key: string; value: string; updatedAt: string }>;
   mcpApprovals: Array<{ id: string; serverId: string; toolName: string; arguments: Record<string, unknown>; reason: string; status: string; approvalSource?: string; createdAt: string }>;
 };
 
-type BoardSummary = { id: string; title: string };
+type BoardSummary = { id: string; title: string; instructions: string };
 type Agent = { id: string; name: string; description: string; instructions: string };
 type BoardResponse = { board: BoardSummary; lanes: Lane[]; agents?: Agent[] };
 type MemoryItem = { key: string; value: string; updatedAt: string };
@@ -184,6 +187,22 @@ export function BoardChat() {
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : "Не удалось сохранить параметры ленты");
     }
+  }
+
+  async function saveBoardInstructions(boardId: string, instructions: string) {
+    try {
+      setBoard(await readJson<BoardResponse>(`/api/boards/${encodeURIComponent(boardId)}/instructions`, {
+        method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ instructions }),
+      }));
+    } catch (cause) { setError(cause instanceof Error ? cause.message : "Не удалось сохранить инструкции доски"); }
+  }
+
+  async function saveLaneInstructions(laneId: string, instructions: string, mode: Lane["instructionMode"]) {
+    try {
+      setBoard(await readJson<BoardResponse>(`/api/lanes/${encodeURIComponent(laneId)}/instructions`, {
+        method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ instructions, mode }),
+      }));
+    } catch (cause) { setError(cause instanceof Error ? cause.message : "Не удалось сохранить инструкции ленты"); }
   }
 
   async function saveMcpTools(laneId: string, tools: Lane["mcpTools"]) {
@@ -400,6 +419,7 @@ export function BoardChat() {
           <pre>{agent.instructions}</pre>
         </details>)}
       </section>}
+      {board && <BoardInstructionEditor boardId={board.board.id} value={board.board.instructions} onSave={(value) => void saveBoardInstructions(board.board.id, value)} />}
 
       {board && board.board.id === activeBoardId && <BoardMemoryOverview boardId={board.board.id} revision={memoryRevision} />}
 
@@ -418,6 +438,7 @@ export function BoardChat() {
               <LaneView
                 key={lane.id}
                 lane={lane}
+                boardInstructions={board.board.instructions}
                 agentName={board.agents?.find((agent) => agent.id === lane.agentId)?.name}
                 lanes={board.lanes}
                 authenticated={Boolean(codex?.authenticated)}
@@ -432,6 +453,7 @@ export function BoardChat() {
                 onCopy={(messageId, targetLaneId) => void copyMessage(lane.id, messageId, targetLaneId)}
                 onMutate={mutateMessage}
                 onSaveConfig={(config) => void saveLaneConfig(lane.id, config)}
+                onSaveInstructions={(instructions, mode) => void saveLaneInstructions(lane.id, instructions, mode)}
                 onSaveMcpTools={(tools) => void saveMcpTools(lane.id, tools)}
                 onAutoApprove={(enabled) => void setMcpAutoApprove(lane.id, enabled)}
                 onApproval={(approvalId, decision) => void decideMcpApproval(lane.id, approvalId, decision)}
@@ -455,6 +477,17 @@ export function BoardChat() {
       </section>
     </main>
   );
+}
+
+function BoardInstructionEditor({ boardId, value, onSave }: { boardId: string; value: string; onSave: (value: string) => void }) {
+  const [draft, setDraft] = useState(value);
+  useEffect(() => setDraft(value), [boardId, value]);
+  return <details className="board-instructions">
+    <summary>Инструкции доски · по умолчанию</summary>
+    <label>AGENTS-текст для всех лент<textarea value={draft} onChange={(event) => setDraft(event.target.value)} maxLength={20_000} /></label>
+    <p>Это prompt-level правило модели. Оно передаётся в запросе, но сервер сам его не обеспечивает.</p>
+    <button type="button" disabled={draft === value} onClick={() => onSave(draft)}>Сохранить инструкции доски</button>
+  </details>;
 }
 
 function BoardMemoryOverview({ boardId, revision }: { boardId: string; revision: number }) {
@@ -534,8 +567,9 @@ function MemoryLayerEditor({ title, items, onSave, onDelete, onClear, onRemove }
   </section>;
 }
 
-function LaneView({ lane, agentName, lanes, authenticated, openRouterConfigured, codexModels, mcpServers, onRefresh, onBranch, onClone, onSelect, onSaveLayout, onCopy, onMutate, onSaveConfig, onSaveMcpTools, onAutoApprove, onApproval, onEditFact, onClearFacts, onCancelRun, selected }: {
+function LaneView({ lane, boardInstructions, agentName, lanes, authenticated, openRouterConfigured, codexModels, mcpServers, onRefresh, onBranch, onClone, onSelect, onSaveLayout, onCopy, onMutate, onSaveConfig, onSaveInstructions, onSaveMcpTools, onAutoApprove, onApproval, onEditFact, onClearFacts, onCancelRun, selected }: {
   lane: Lane;
+  boardInstructions: string;
   agentName?: string;
   lanes: Lane[];
   authenticated: boolean;
@@ -550,6 +584,7 @@ function LaneView({ lane, agentName, lanes, authenticated, openRouterConfigured,
   onCopy: (messageId: string, targetLaneId: string) => void;
   onMutate: (messageId: string, content: string | null) => Promise<void>;
   onSaveConfig: (config: Pick<Lane, "model" | "temperature" | "maxTokens" | "stop" | "contextStrategy" | "contextWindowSize" | "contextBudgetTokens">) => void;
+  onSaveInstructions: (instructions: string, mode: Lane["instructionMode"]) => void;
   onSaveMcpTools: (tools: Lane["mcpTools"]) => void;
   onAutoApprove: (enabled: boolean) => void;
   onApproval: (approvalId: string, decision: "approve" | "deny") => void;
@@ -569,6 +604,8 @@ function LaneView({ lane, agentName, lanes, authenticated, openRouterConfigured,
   const [editedContent, setEditedContent] = useState("");
   const [copyTarget, setCopyTarget] = useState("");
   const [config, setConfig] = useState({ model: lane.model, temperature: lane.temperature ?? 0.7, maxTokens: lane.maxTokens ?? 2048, stop: lane.stop ?? "", contextStrategy: lane.contextStrategy, contextWindowSize: lane.contextWindowSize, contextBudgetTokens: lane.contextBudgetTokens });
+  const [instructionDraft, setInstructionDraft] = useState(lane.instructions);
+  const [instructionMode, setInstructionMode] = useState<Lane["instructionMode"]>(lane.instructionMode);
   const [forceSend, setForceSend] = useState(false);
   const [summaryBusy, setSummaryBusy] = useState(false);
   const [toolEvents, setToolEvents] = useState<Array<Record<string, unknown>>>([]);
@@ -586,6 +623,7 @@ function LaneView({ lane, agentName, lanes, authenticated, openRouterConfigured,
   }
 
   useEffect(() => setLayout({ x: lane.x, y: lane.y, width: lane.width }), [lane.x, lane.y, lane.width]);
+  useEffect(() => { setInstructionDraft(lane.instructions); setInstructionMode(lane.instructionMode); }, [lane.instructions, lane.instructionMode]);
   useEffect(() => setConfig({ model: lane.model, temperature: lane.temperature ?? 0.7, maxTokens: lane.maxTokens ?? 2048, stop: lane.stop ?? "", contextStrategy: lane.contextStrategy, contextWindowSize: lane.contextWindowSize, contextBudgetTokens: lane.contextBudgetTokens }), [lane.model, lane.temperature, lane.maxTokens, lane.stop, lane.contextStrategy, lane.contextWindowSize, lane.contextBudgetTokens]);
 
   const contextPlan = planContext(
@@ -778,6 +816,21 @@ function LaneView({ lane, agentName, lanes, authenticated, openRouterConfigured,
             </select>
           ) : <input value={config.model} onChange={(event) => setConfig({ ...config, model: event.target.value })} onBlur={() => persistConfig()} aria-label="Модель" />}
         </label>
+        <section className="lane-instructions">
+          <strong>AGENTS-инструкции ленты</strong>
+          <label>Режим
+            <select value={instructionMode} onChange={(event) => setInstructionMode(event.target.value as Lane["instructionMode"])}>
+              <option value="inherit">Наследовать доску</option>
+              <option value="override">Заменить инструкции доски</option>
+              <option value="append">Дополнить инструкции доски</option>
+            </select>
+          </label>
+          <label>Текст ленты<textarea value={instructionDraft} maxLength={20_000} onChange={(event) => setInstructionDraft(event.target.value)} disabled={instructionMode === "inherit"} /></label>
+          <button type="button" disabled={instructionMode === lane.instructionMode && instructionDraft === lane.instructions} onClick={() => onSaveInstructions(instructionDraft, instructionMode)}>Сохранить инструкции ленты</button>
+          <p>Перед следующим запросом модели отправится этот эффективный текст (prompt-level правило):</p>
+          <pre>{instructionMode === "override" ? instructionDraft : instructionMode === "append" ? [boardInstructions, instructionDraft].filter(Boolean).join("\n\n") : boardInstructions || "Нет инструкций"}</pre>
+          <small>Сервер передаёт текст модели, но не обеспечивает его выполнение. Для hard constraint нужна отдельная серверная проверка.</small>
+        </section>
         {lane.provider === "openrouter" && <>
           <label>Temperature<input type="number" min="0" max="2" step="0.1" value={config.temperature} onChange={(event) => setConfig({ ...config, temperature: Number(event.target.value) })} onBlur={() => persistConfig()} /></label>
           <label>Максимум токенов<input type="number" min="1" max="200000" step="1" value={config.maxTokens} onChange={(event) => setConfig({ ...config, maxTokens: Number(event.target.value) })} onBlur={() => persistConfig()} /></label>
@@ -877,7 +930,7 @@ function LaneView({ lane, agentName, lanes, authenticated, openRouterConfigured,
             ) : <MarkdownContent content={item.content} />}
             {item.provenance && <small className="message-provenance">{item.provenance}</small>}
             {item.runStatus === "failed" && <p className="message-error">{item.runError ?? "Ответ не завершён."}</p>}
-            {item.requestConfig && <details className="request-details"><summary>Параметры запроса</summary><pre>{JSON.stringify({ config: item.requestConfig, result: item.technicalDetails }, null, 2)}</pre></details>}
+            {item.requestConfig && <details className="request-details"><summary>Параметры и снимок инструкций запроса</summary><pre>{JSON.stringify({ config: item.requestConfig, result: item.technicalDetails }, null, 2)}</pre></details>}
             <div className="message-actions">
               {item.hasBranches && <span className="branch-existing">Есть ветка</span>}
               <button type="button" onClick={() => onBranch(item.id)} disabled={running}>Ответвиться здесь</button>

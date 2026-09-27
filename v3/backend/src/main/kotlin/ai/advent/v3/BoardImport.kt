@@ -15,9 +15,10 @@ object BoardImport {
     private val safeText = Regex("(?i)(sk-or-v1-[a-z0-9]{12,}|bearer\\s+[a-z0-9._-]{12,}|api[_ -]?key\\s*[:=]|thread_[a-z0-9_-]{8,})")
 
     fun parse(root: JsonObject): ImportedBoard {
-        require(root.keys.all { it in setOf("externalId", "title", "lanes", "agents") }) { "В пакете есть неизвестные поля." }
+        require(root.keys.all { it in setOf("externalId", "title", "instructions", "lanes", "agents") }) { "В пакете есть неизвестные поля." }
         val externalId = root.string("externalId", 120).also { require(it.matches(Regex("[A-Za-z0-9][A-Za-z0-9._:-]*"))) { "Некорректный externalId." } }
         val title = root.string("title", 160)
+        val instructions = root.optionalText("instructions", 20_000) ?: ""
         val rawLanes = root.array("lanes")
         require(rawLanes.size in 1..16) { "В доске должно быть от 1 до 16 лент." }
         val agents = (root["agents"] as? JsonArray ?: JsonArray(emptyList())).map { element ->
@@ -28,7 +29,7 @@ object BoardImport {
         require(agents.map { it.externalId }.toSet().size == agents.size && agents.size <= 16) { "externalId агентов должны быть уникальными; допустимо до 16 агентов." }
         val lanes = rawLanes.map { element ->
             val obj = element as? JsonObject ?: error("Лента должна быть объектом.")
-            val allowed = setOf("externalId", "title", "provider", "model", "temperature", "maxTokens", "stop", "contextStrategy", "contextWindowSize", "contextBudgetTokens", "summary", "layout", "messages", "origin", "agentExternalId")
+            val allowed = setOf("externalId", "title", "provider", "model", "temperature", "maxTokens", "stop", "contextStrategy", "contextWindowSize", "contextBudgetTokens", "summary", "layout", "messages", "origin", "agentExternalId", "instructions", "instructionMode")
             require(obj.keys.all { it in allowed } && allowed.containsAll(obj.keys)) { "В ленте есть неизвестные поля." }
             val layout = obj.obj("layout")
             require(layout.keys == setOf("x", "y", "width")) { "Некорректная геометрия ленты." }
@@ -65,10 +66,13 @@ object BoardImport {
                 messages = messages, originLaneExternalId = origin?.string("laneExternalId", 120),
                 originMessageExternalId = origin?.string("messageExternalId", 120), originKind = origin?.string("kind", 16),
                 agentExternalId = obj.optionalString("agentExternalId", 120),
+                instructions = obj.optionalText("instructions", 20_000) ?: "",
+                instructionMode = obj.optionalString("instructionMode", 16) ?: "inherit",
             ).also {
                 require(it.contextWindowSize in 1..200 && it.contextBudgetTokens in 256..1_000_000) { "Настройки контекста вне допустимого диапазона." }
                 require(it.x in 0..20_000 && it.y in 0..20_000 && it.width in 280..900) { "Геометрия ленты вне допустимого диапазона." }
                 require(it.originKind == null || it.originKind in setOf("branch", "clone")) { "Неизвестный тип связи лент." }
+                require(it.instructionMode in setOf("inherit", "override", "append")) { "Неизвестный режим инструкций ленты." }
                 require(it.messages.map { message -> message.externalId }.toSet().size == it.messages.size) { "externalId сообщений должны быть уникальными в ленте." }
             }
         }
@@ -94,7 +98,7 @@ object BoardImport {
             visited.add(id)
         }
         lanes.forEach { visit(it.externalId) }
-        return ImportedBoard(externalId, title, lanes, agents)
+        return ImportedBoard(externalId, title, instructions, lanes, agents)
     }
 
     private fun JsonObject.string(key: String, limit: Int): String {
@@ -106,6 +110,15 @@ object BoardImport {
     private fun JsonObject.optionalString(key: String, limit: Int): String? = when (val value = this[key]) {
         null, JsonNull -> null
         else -> string(key, limit)
+    }
+
+    private fun JsonObject.optionalText(key: String, limit: Int): String? = when (val value = this[key]) {
+        null, JsonNull -> null
+        else -> {
+            val text = (value as? JsonPrimitive)?.takeIf { it.isString }?.content ?: error("Поле $key должно быть строкой.")
+            require(text.length <= limit && !safeText.containsMatchIn(text)) { "Поле $key слишком длинное или содержит запрещённое значение." }
+            text
+        }
     }
 
     private fun JsonObject.array(key: String): JsonArray = this[key] as? JsonArray ?: error("Поле $key должно быть массивом.")

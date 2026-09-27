@@ -54,11 +54,12 @@ class RunCoordinator(
         require(lane["activeRun"] == kotlinx.serialization.json.JsonNull) { "Дождись завершения ответа перед созданием сводки." }
         val provider = lane["provider"]?.jsonPrimitive?.content ?: "codex"
         val model = lane["model"]?.jsonPrimitive?.content.orEmpty()
+        val instructions = lane["effectiveInstructions"]?.jsonPrimitive?.content.orEmpty()
         val requestPrompt = "Составь краткую фактическую сводку диалога для продолжения разговора. Сохрани цели, решения, факты и открытые вопросы; не добавляй предположений. Верни только сводку."
         val summary = StringBuilder()
         val usage: JsonObject?
         if (provider == "openrouter") {
-            val details = openRouter.stream(openRouterKeys.get(), LaneConfig("openrouter", model, 0.2, 2048, null), snapshot.messages, requestPrompt) { summary.append(it) }
+            val details = openRouter.stream(openRouterKeys.get(), LaneConfig("openrouter", model, 0.2, 2048, null), snapshot.messages, requestPrompt, { summary.append(it) }, instructions)
             usage = details["usage"] as? JsonObject
         } else {
             var actualUsage: JsonObject? = null
@@ -74,6 +75,7 @@ class RunCoordinator(
                 onText = { summary.append(it) },
                 ephemeral = true,
                 onUsage = { actualUsage = it },
+                developerInstructions = instructions,
             )
             usage = actualUsage
         }
@@ -104,7 +106,7 @@ class RunCoordinator(
                 try {
                     val details = if (run.config.provider == "openrouter") {
                         val details = if (run.mcpTools.isEmpty()) {
-                            openRouter.stream(apiKey, run.config, run.contextPlan.messages, prompt) { store.appendText(run.runId, it) }
+                            openRouter.stream(apiKey, run.config, run.contextPlan.messages, prompt, { store.appendText(run.runId, it) }, run.effectiveInstructions)
                         } else {
                             runOpenRouterWithTools(run, apiKey, prompt)
                         }
@@ -129,6 +131,7 @@ class RunCoordinator(
                             onContextSeedFailed = { store.markContextSeedFailed(laneId) },
                             onText = { store.appendText(run.runId, it) },
                             onUsage = { actualUsage = it },
+                            developerInstructions = run.effectiveInstructions,
                         )
                         kotlinx.serialization.json.buildJsonObject {
                             put("provider", "codex")
@@ -180,7 +183,7 @@ class RunCoordinator(
         }
         require(definitions.size <= MAX_TOOL_CALLS) { "В ленте выбрано слишком много инструментов." }
         val byWireName = definitions.mapIndexed { index, definition -> "mcp_tool_$index" to definition }.toMap()
-        val messages = (run.contextPlan.messages + ContextMessage("user", prompt)).map { item ->
+        val messages = (listOfNotNull(run.effectiveInstructions.takeIf(String::isNotBlank)?.let { ContextMessage("system", it) }) + run.contextPlan.messages + ContextMessage("user", prompt)).map { item ->
             buildJsonObject { put("role", item.role); put("content", item.content) }
         }.toMutableList()
         val wireTools = definitions.map { it.third }
@@ -191,7 +194,7 @@ class RunCoordinator(
         var pendingApprovalCreated = false
         var activeTools = wireTools
         repeat(MAX_TOOL_ROUNDS) {
-            val turn = openRouter.toolRound(apiKey, run.config, messages, activeTools) { store.appendText(run.runId, it) }
+            val turn = openRouter.toolRound(apiKey, run.config, messages, activeTools, { store.appendText(run.runId, it) }, run.effectiveInstructions)
             rounds += turn.details
             lastDetails = buildJsonObject {
                 turn.details.forEach { (key, value) -> put(key, value) }

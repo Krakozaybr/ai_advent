@@ -27,8 +27,8 @@ import java.io.Closeable
 import java.time.Duration
 
 interface OpenRouterGateway : Closeable {
-    suspend fun stream(apiKey: String, config: LaneConfig, history: List<ContextMessage>, prompt: String, onText: suspend (String) -> Unit): JsonObject
-    suspend fun toolRound(apiKey: String, config: LaneConfig, messages: List<JsonObject>, tools: List<JsonObject>, onText: suspend (String) -> Unit): OpenRouterToolRound
+    suspend fun stream(apiKey: String, config: LaneConfig, history: List<ContextMessage>, prompt: String, onText: suspend (String) -> Unit, instructions: String = ""): JsonObject
+    suspend fun toolRound(apiKey: String, config: LaneConfig, messages: List<JsonObject>, tools: List<JsonObject>, onText: suspend (String) -> Unit, instructions: String = ""): OpenRouterToolRound
 }
 
 data class OpenRouterToolRound(val message: JsonObject, val details: JsonObject)
@@ -45,6 +45,7 @@ class OpenRouterHttpGateway(
         history: List<ContextMessage>,
         prompt: String,
         onText: suspend (String) -> Unit,
+        instructions: String,
     ): JsonObject {
         val started = System.nanoTime()
         val requestBody = buildJsonObject {
@@ -52,6 +53,7 @@ class OpenRouterHttpGateway(
             put("stream", true)
             put("stream_options", buildJsonObject { put("include_usage", true) })
             put("messages", buildJsonArray {
+                if (instructions.isNotBlank()) add(buildJsonObject { put("role", "system"); put("content", instructions) })
                 (history + ContextMessage("user", prompt)).forEach { item ->
                     add(buildJsonObject { put("role", item.role); put("content", item.content) })
                 }
@@ -101,6 +103,7 @@ class OpenRouterHttpGateway(
                 put("model", config.model)
                 put("stream", true)
                 put("stream_options", buildJsonObject { put("include_usage", true) })
+                put("effectiveInstructions", instructions)
                 config.temperature?.let { put("temperature", it) }
                 config.maxTokens?.let { put("max_tokens", it) }
                 config.stop?.let { put("stop", it) }
@@ -114,6 +117,7 @@ class OpenRouterHttpGateway(
         messages: List<JsonObject>,
         tools: List<JsonObject>,
         onText: suspend (String) -> Unit,
+        instructions: String,
     ): OpenRouterToolRound {
         val started = System.nanoTime()
         val requestBody = buildJsonObject {
@@ -187,6 +191,7 @@ class OpenRouterHttpGateway(
             usage?.let { put("usage", it) }
             put("request", buildJsonObject {
                 put("model", config.model); put("stream", true); put("toolChoice", "auto"); put("parallelToolCalls", false)
+                put("effectiveInstructions", instructions)
                 put("tools", buildJsonArray { tools.forEach { add(it) } })
             })
         }

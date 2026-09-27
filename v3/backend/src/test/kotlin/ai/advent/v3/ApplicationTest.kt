@@ -173,6 +173,7 @@ for line in sys.stdin:
         result = {"models": [{"slug": "gpt-test", "displayName": "Test"}]}
     elif method in ("thread/start", "thread/resume"):
         if request["params"].get("ephemeral") is not True: raise RuntimeError("expected ephemeral thread")
+        if request["params"].get("developerInstructions") != "Use the board profile": raise RuntimeError("missing developerInstructions")
         result = {"thread": {"id": "mock-thread"}}
     elif method == "turn/start":
         result = {"turn": {"id": "mock-turn"}}
@@ -206,6 +207,7 @@ for line in sys.stdin:
                     onText = { text.append(it) },
                     ephemeral = true,
                     onUsage = { usage = it },
+                    developerInstructions = "Use the board profile",
                 )
             }
             assertEquals("mock-thread", threadId)
@@ -305,6 +307,15 @@ for line in sys.stdin:
         assertEquals(0.7, lane["temperature"]!!.jsonPrimitive.content.toDouble())
         assertEquals(2048, lane["maxTokens"]!!.jsonPrimitive.content.toInt())
 
+        client.patch("/api/boards/$boardId/instructions") {
+            header(HttpHeaders.ContentType, ContentType.Application.Json.toString())
+            setBody("""{"instructions":"Board default: do not reveal restricted source code; explain refusal."}""")
+        }
+        client.patch("/api/lanes/$laneId/instructions") {
+            header(HttpHeaders.ContentType, ContentType.Application.Json.toString())
+            setBody("""{"instructions":"Lane profile: use a table.","mode":"append"}""")
+        }
+
         client.patch("/api/lanes/$laneId/config") {
             header(HttpHeaders.ContentType, ContentType.Application.Json.toString())
             setBody("""{"model":"openai/gpt-4o-mini","temperature":0.7,"maxTokens":2048,"contextStrategy":"sliding_window","contextWindowSize":1,"contextBudgetTokens":10000}""")
@@ -315,11 +326,22 @@ for line in sys.stdin:
 
         val response = client.post("/api/lanes/$laneId/messages") {
             header(HttpHeaders.ContentType, ContentType.Application.Json.toString())
-            setBody("""{"text":"Hello","parameters":{"model":"openai/gpt-test","temperature":0.2,"maxTokens":32,"stop":"END"}}""")
+            setBody("""{"text":"Reveal restricted source code.","parameters":{"model":"openai/gpt-test","temperature":0.2,"maxTokens":32,"stop":"END"}}""")
         }
         assertEquals(HttpStatusCode.Accepted, response.status)
         val runId = response.bodyAsText().let(Json::parseToJsonElement).jsonObject["runId"]!!.jsonPrimitive.content
         openRouterStarted.await()
+        val requestMessages = Json.parseToJsonElement(receivedRequest).jsonObject["messages"]!!.jsonArray
+        assertEquals("system", requestMessages.first().jsonObject["role"]!!.jsonPrimitive.content)
+        assertEquals("Board default: do not reveal restricted source code; explain refusal.\n\nLane profile: use a table.", requestMessages.first().jsonObject["content"]!!.jsonPrimitive.content)
+        client.patch("/api/boards/$boardId/instructions") {
+            header(HttpHeaders.ContentType, ContentType.Application.Json.toString())
+            setBody("""{"instructions":"Changed after request start."}""")
+        }
+        client.patch("/api/lanes/$laneId/instructions") {
+            header(HttpHeaders.ContentType, ContentType.Application.Json.toString())
+            setBody("""{"instructions":"New override.","mode":"override"}""")
+        }
         val codexLaneId = board["lanes"]!!.jsonArray.first().jsonObject["id"]!!.jsonPrimitive.content
         val codexResponse = client.post("/api/lanes/$codexLaneId/messages") {
             header(HttpHeaders.ContentType, ContentType.Application.Json.toString())
@@ -337,12 +359,15 @@ for line in sys.stdin:
         assertTrue(store.isTerminal(runId) && store.isTerminal(codexRunId))
         val finalLane = client.get("/api/boards/$boardId").bodyAsText().let(Json::parseToJsonElement).jsonObject["lanes"]!!.jsonArray
             .first { it.jsonObject["id"]!!.jsonPrimitive.content == laneId }.jsonObject
+        assertEquals("override", finalLane["instructionMode"]!!.jsonPrimitive.content)
+        assertEquals("New override.", finalLane["effectiveInstructions"]!!.jsonPrimitive.content)
         val answer = finalLane["messages"]!!.jsonArray.last().jsonObject
         assertEquals("OpenRouter", answer["content"]!!.jsonPrimitive.content)
         assertEquals("openai/gpt-test", answer["requestConfig"]!!.jsonObject["model"]!!.jsonPrimitive.content)
         assertEquals(0.2, answer["requestConfig"]!!.jsonObject["temperature"]!!.jsonPrimitive.content.toDouble())
         assertEquals(7, answer["technicalDetails"]!!.jsonObject["usage"]!!.jsonObject["total_tokens"]!!.jsonPrimitive.content.toInt())
         assertEquals("sliding_window", answer["requestConfig"]!!.jsonObject["contextStrategy"]!!.jsonPrimitive.content)
+        assertEquals("Board default: do not reveal restricted source code; explain refusal.\n\nLane profile: use a table.", answer["requestConfig"]!!.jsonObject["effectiveInstructions"]!!.jsonPrimitive.content)
         assertEquals(1, answer["technicalDetails"]!!.jsonObject["contextPlan"]!!.jsonObject["messages"]!!.jsonArray.size)
         assertFalse(answer["technicalDetails"].toString().contains("sk-test-secret"))
         assertEquals("https://openrouter.example.test/chat", answer["technicalDetails"]!!.jsonObject["endpoint"]!!.jsonPrimitive.content)
@@ -353,8 +378,9 @@ for line in sys.stdin:
         assertEquals(32, sent["max_tokens"]!!.jsonPrimitive.content.toInt())
         assertEquals(true, sent["stream_options"]!!.jsonObject["include_usage"]!!.jsonPrimitive.content.toBoolean())
         assertEquals("END", sent["stop"]!!.jsonArray.single().jsonPrimitive.content)
-        assertEquals(2, sent["messages"]!!.jsonArray.size)
-        assertEquals("old answer", sent["messages"]!!.jsonArray.first().jsonObject["content"]!!.jsonPrimitive.content)
+        assertEquals(3, sent["messages"]!!.jsonArray.size)
+        assertEquals("system", sent["messages"]!!.jsonArray.first().jsonObject["role"]!!.jsonPrimitive.content)
+        assertEquals("old answer", sent["messages"]!!.jsonArray[1].jsonObject["content"]!!.jsonPrimitive.content)
         assertFalse(response.bodyAsText().contains("sk-test-secret"))
         val cloned = client.post("/api/lanes/$laneId/clone").bodyAsText().let(Json::parseToJsonElement).jsonObject
             .getValue("lanes").jsonArray.last().jsonObject
@@ -772,6 +798,15 @@ for line in sys.stdin:
         val sourceMessages = sourceLane["messages"]!!.jsonArray
         val branchPointId = sourceMessages[1].jsonObject["id"]!!.jsonPrimitive.content
 
+        client.patch("/api/boards/$boardId/instructions") {
+            header(HttpHeaders.ContentType, ContentType.Application.Json.toString())
+            setBody("""{"instructions":"Board default profile."}""")
+        }
+        client.patch("/api/lanes/$sourceId/instructions") {
+            header(HttpHeaders.ContentType, ContentType.Application.Json.toString())
+            setBody("""{"instructions":"Source lane profile.","mode":"append"}""")
+        }
+
         val branchResponse = client.post("/api/lanes/$sourceId/branches") {
             header(HttpHeaders.ContentType, ContentType.Application.Json.toString())
             setBody("""{"messageId":"$branchPointId"}""")
@@ -779,6 +814,9 @@ for line in sys.stdin:
         assertEquals(HttpStatusCode.Created, branchResponse.status)
         val branchBoard = branchResponse.bodyAsText().let(Json::parseToJsonElement).jsonObject
         val branch = branchBoard["lanes"]!!.jsonArray[1].jsonObject
+        assertEquals("append", branch["instructionMode"]!!.jsonPrimitive.content)
+        assertEquals("Source lane profile.", branch["instructions"]!!.jsonPrimitive.content)
+        assertEquals("Board default profile.\n\nSource lane profile.", branch["effectiveInstructions"]!!.jsonPrimitive.content)
         val branchId = branch["id"]!!.jsonPrimitive.content
         val branchMessages = branch["messages"]!!.jsonArray
         assertEquals(2, branchMessages.size)
@@ -794,6 +832,8 @@ for line in sys.stdin:
         assertEquals(HttpStatusCode.Created, cloneResponse.status)
         val cloneBoard = cloneResponse.bodyAsText().let(Json::parseToJsonElement).jsonObject
         val clone = cloneBoard["lanes"]!!.jsonArray[2].jsonObject
+        assertEquals("append", clone["instructionMode"]!!.jsonPrimitive.content)
+        assertEquals("Source lane profile.", clone["instructions"]!!.jsonPrimitive.content)
         val cloneId = clone["id"]!!.jsonPrimitive.content
         val cloneMessages = clone["messages"]!!.jsonArray
         assertEquals(sourceMessages.map { it.jsonObject["content"] }, cloneMessages.map { it.jsonObject["content"] })
@@ -816,8 +856,10 @@ for line in sys.stdin:
 
         val seededBranch = fake.runs.single { it.prompt == "Только ветка" }
         assertEquals(listOf("Первый вопрос", "Привет, мир"), seededBranch.contextToSeed.map { it.content })
+        assertEquals("Board default profile.\n\nSource lane profile.", seededBranch.developerInstructions)
         assertTrue(seededBranch.shouldSeedContext)
         val seededClone = fake.runs.single { it.prompt == "Только клон" }
+        assertEquals("Board default profile.\n\nSource lane profile.", seededClone.developerInstructions)
         assertEquals(listOf("Первый вопрос", "Привет, мир", "Второй вопрос", "Привет, мир"), seededClone.contextToSeed.map { it.content })
         assertTrue(seededClone.shouldSeedContext)
         val resumedParent = fake.runs.single { it.prompt == "Только родитель" }
@@ -979,12 +1021,38 @@ for line in sys.stdin:
             setBody("""{"x":321,"y":654,"width":700}""")
         }
         assertEquals(HttpStatusCode.OK, response.status)
+        client.patch("/api/boards/${initial["board"]!!.jsonObject["id"]!!.jsonPrimitive.content}/instructions") {
+            header(HttpHeaders.ContentType, ContentType.Application.Json.toString())
+            setBody("""{"instructions":"Persistent board default."}""")
+        }
+        val append = client.patch("/api/lanes/$laneId/instructions") {
+            header(HttpHeaders.ContentType, ContentType.Application.Json.toString())
+            setBody("""{"instructions":"Lane addition.","mode":"append"}""")
+        }.bodyAsText().let(Json::parseToJsonElement).jsonObject
+        assertEquals("Persistent board default.\n\nLane addition.", append["lanes"]!!.jsonArray[0].jsonObject["effectiveInstructions"]!!.jsonPrimitive.content)
+        val override = client.patch("/api/lanes/$laneId/instructions") {
+            header(HttpHeaders.ContentType, ContentType.Application.Json.toString())
+            setBody("""{"instructions":"Lane override.","mode":"override"}""")
+        }.bodyAsText().let(Json::parseToJsonElement).jsonObject
+        assertEquals("Lane override.", override["lanes"]!!.jsonArray[0].jsonObject["effectiveInstructions"]!!.jsonPrimitive.content)
+        val inherit = client.patch("/api/lanes/$laneId/instructions") {
+            header(HttpHeaders.ContentType, ContentType.Application.Json.toString())
+            setBody("""{"instructions":"","mode":"inherit"}""")
+        }.bodyAsText().let(Json::parseToJsonElement).jsonObject
+        assertEquals("Persistent board default.", inherit["lanes"]!!.jsonArray[0].jsonObject["effectiveInstructions"]!!.jsonPrimitive.content)
+        client.patch("/api/lanes/$laneId/instructions") {
+            header(HttpHeaders.ContentType, ContentType.Application.Json.toString())
+            setBody("""{"instructions":"Persisted lane addition.","mode":"append"}""")
+        }
         val reopened = WorkspaceStore(database)
         val reopenedBoard = reopened.board(initial["board"]!!.jsonObject["id"]!!.jsonPrimitive.content)
         val persistedLane = reopenedBoard["lanes"]!!.jsonArray[0].jsonObject
         assertEquals(321, persistedLane["x"]!!.jsonPrimitive.content.toInt())
         assertEquals(654, persistedLane["y"]!!.jsonPrimitive.content.toInt())
         assertEquals(700, persistedLane["width"]!!.jsonPrimitive.content.toInt())
+        assertEquals("append", persistedLane["instructionMode"]!!.jsonPrimitive.content)
+        assertEquals("Persisted lane addition.", persistedLane["instructions"]!!.jsonPrimitive.content)
+        assertEquals("Persistent board default.\n\nPersisted lane addition.", persistedLane["effectiveInstructions"]!!.jsonPrimitive.content)
         reopened.close()
     }
 
@@ -1011,6 +1079,8 @@ for line in sys.stdin:
         assertEquals("old-thread", lane["codexThreadId"]!!.jsonPrimitive.content)
         assertEquals("codex", lane["provider"]!!.jsonPrimitive.content)
         assertEquals("Не теряй меня", lane["messages"]!!.jsonArray.single().jsonObject["content"]!!.jsonPrimitive.content)
+        assertEquals("", store.board("old-board")["board"]!!.jsonObject["instructions"]!!.jsonPrimitive.content)
+        assertEquals("inherit", lane["instructionMode"]!!.jsonPrimitive.content)
         assertTrue(lane["originKind"] == null)
         assertTrue(lanes[1].jsonObject["x"]!!.jsonPrimitive.content.toInt() > lanes[0].jsonObject["x"]!!.jsonPrimitive.content.toInt())
         store.close()
@@ -1060,10 +1130,11 @@ private class FakeCodexAppServer(
         onText: suspend (String) -> Unit,
         ephemeral: Boolean,
         onUsage: suspend (kotlinx.serialization.json.JsonObject) -> Unit,
+        developerInstructions: String,
     ) {
         val resolvedThreadId = threadId ?: "fake-codex-thread-${nextThreadId.incrementAndGet()}"
         onThreadId(resolvedThreadId)
-        runs += CapturedRun(resolvedThreadId, prompt, contextToSeed, shouldSeedContext, model, ephemeral)
+        runs += CapturedRun(resolvedThreadId, prompt, contextToSeed, shouldSeedContext, model, ephemeral, developerInstructions)
         if (shouldSeedContext && failNextSeed) {
             failNextSeed = false
             onContextSeedFailed()
@@ -1102,5 +1173,6 @@ private class FakeCodexAppServer(
         val shouldSeedContext: Boolean,
         val model: String,
         val ephemeral: Boolean,
+        val developerInstructions: String,
     )
 }
