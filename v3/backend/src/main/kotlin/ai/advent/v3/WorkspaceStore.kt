@@ -79,22 +79,13 @@ class WorkspaceStore(private val originalFile: Path) : Closeable {
         }.board()
     }
 
-    fun saveContextSummary(laneId: String, summary: String, watermark: String?, usageSource: String?, usage: kotlinx.serialization.json.JsonObject?) = synchronized(lock) {
-        storeForLane(laneId).saveContextSummary(laneId, summary, watermark, usageSource, usage)
+    fun saveContextSummary(
+        laneId: String, summary: String, watermark: String?, usageSource: String?, usage: kotlinx.serialization.json.JsonObject?, expectedFingerprint: String,
+    ): Boolean = synchronized(lock) {
+        storeForLane(laneId).saveContextSummary(laneId, summary, watermark, usageSource, usage, expectedFingerprint)
     }
 
-    fun contextSnapshot(laneId: String): Pair<List<ContextMessage>, String?> = synchronized(lock) {
-        val lane = storeForLane(laneId).board()["lanes"]!!.let { it as kotlinx.serialization.json.JsonArray }
-            .map { it.jsonObject }.first { it["id"]?.jsonPrimitive?.content == laneId }
-        val messages = lane["messages"]!!.let { it as kotlinx.serialization.json.JsonArray }.mapNotNull { item ->
-            val message = item.jsonObject
-            val content = message["content"]?.jsonPrimitive?.content.orEmpty()
-            val role = message["role"]?.jsonPrimitive?.content.orEmpty()
-            if (content.isEmpty() || role !in setOf("user", "assistant")) null else ContextMessage(role, content)
-        }
-        val watermark = lane["messages"]!!.let { it as kotlinx.serialization.json.JsonArray }.lastOrNull()?.jsonObject?.get("id")?.jsonPrimitive?.content
-        messages to watermark
-    }
+    fun contextSnapshot(laneId: String): TranscriptSnapshot = synchronized(lock) { storeForLane(laneId).transcriptSnapshot(laneId) }
 
     fun laneSnapshot(laneId: String): JsonObject = synchronized(lock) {
         storeForLane(laneId).board()["lanes"]!!.let { it as JsonArray }

@@ -17,6 +17,8 @@ import io.ktor.http.headersOf
 import io.ktor.utils.io.ByteReadChannel
 import io.ktor.server.testing.testApplication
 import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.async
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeout
@@ -490,6 +492,61 @@ for line in sys.stdin:
         val editedLane = client.get("/api/board").bodyAsText().let(Json::parseToJsonElement).jsonObject["lanes"]!!.jsonArray[0].jsonObject
         assertEquals(true, editedLane["contextSummaryStale"]!!.jsonPrimitive.content.toBoolean())
         assertEquals(summaryResult["watermark"], editedLane["contextSummaryWatermark"])
+    }
+
+    @Test
+    fun `summary result is discarded if transcript changes under the same message ID`() = testApplication {
+        val database = Files.createTempDirectory("ai-advent-summary-race-").resolve("board.sqlite")
+        val store = WorkspaceStore(database)
+        val fake = FakeCodexAppServer(blockUntilReleased = true)
+        application { module(store, fake) }
+        val initial = client.get("/api/board").bodyAsText().let(Json::parseToJsonElement).jsonObject
+        val boardId = initial["board"]!!.jsonObject["id"]!!.jsonPrimitive.content
+        val laneId = initial["lanes"]!!.jsonArray[0].jsonObject["id"]!!.jsonPrimitive.content
+        val seedRun = store.startRun(laneId, "question before edit")
+        store.appendText(seedRun.runId, "answer before edit")
+        store.completeRun(seedRun.runId)
+        val before = store.contextSnapshot(laneId)
+        assertTrue(store.saveContextSummary(laneId, "previous summary", before.watermark, "unavailable", null, before.fingerprint))
+        val beforeLane = client.get("/api/board").bodyAsText().let(Json::parseToJsonElement).jsonObject["lanes"]!!.jsonArray[0].jsonObject
+        val editedMessageId = beforeLane["messages"]!!.jsonArray.last().jsonObject["id"]!!.jsonPrimitive.content
+
+        coroutineScope {
+            val summaryRequest = async { client.post("/api/lanes/$laneId/context-summary") }
+            withTimeout(5_000) { fake.started.await() }
+            val neighbor = client.post("/api/boards/$boardId/lanes") {
+                header(HttpHeaders.ContentType, ContentType.Application.Json.toString())
+                setBody("""{"provider":"codex"}""")
+            }.bodyAsText().let(Json::parseToJsonElement).jsonObject["lanes"]!!.jsonArray.last().jsonObject
+            val neighborId = neighbor["id"]!!.jsonPrimitive.content
+            val neighborRun = client.post("/api/lanes/$neighborId/messages") {
+                header(HttpHeaders.ContentType, ContentType.Application.Json.toString())
+                setBody("""{"text":"other lane"}""")
+            }
+            assertEquals(HttpStatusCode.Accepted, neighborRun.status, "another lane can start while summary generation is waiting")
+            val neighborRunId = neighborRun.bodyAsText().let(Json::parseToJsonElement).jsonObject["runId"]!!.jsonPrimitive.content
+
+            val edit = client.patch("/api/messages/$editedMessageId") {
+                header(HttpHeaders.ContentType, ContentType.Application.Json.toString())
+                setBody("""{"content":"answer edited without changing its ID"}""")
+            }
+            assertEquals(HttpStatusCode.OK, edit.status)
+            fake.release.complete(Unit)
+            val summaryResponse = withTimeout(5_000) { summaryRequest.await() }
+            assertEquals(HttpStatusCode.Conflict, summaryResponse.status)
+            val neighborDeadline = System.nanoTime() + 5_000_000_000
+            while (!store.isTerminal(neighborRunId) && System.nanoTime() < neighborDeadline) delay(10)
+            assertTrue(store.isTerminal(neighborRunId))
+
+            val reloaded = WorkspaceStore(database)
+            val reloadedBoardId = reloaded.boards().first().jsonObject["id"]!!.jsonPrimitive.content
+            val lane = reloaded.board(reloadedBoardId)["lanes"]!!.jsonArray.first { it.jsonObject["id"]!!.jsonPrimitive.content == laneId }.jsonObject
+            assertEquals("previous summary", lane["contextSummary"]!!.jsonPrimitive.content)
+            assertEquals(true, lane["contextSummaryStale"]!!.jsonPrimitive.content.toBoolean())
+            assertEquals(before.watermark, lane["contextSummaryWatermark"]!!.jsonPrimitive.content)
+            assertEquals("answer edited without changing its ID", lane["messages"]!!.jsonArray.last().jsonObject["content"]!!.jsonPrimitive.content)
+            reloaded.close()
+        }
     }
 
     @Test

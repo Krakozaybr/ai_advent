@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { planContext } from "../src/context-plan.mjs";
+import { isContextSummaryStale, planContext } from "../src/context-plan.mjs";
 
 const transcript = [
   { role: "user", content: "first" },
@@ -25,4 +25,9 @@ test("overflow is surfaced as a flag instead of deleting messages", () => {
   const plan = planContext(transcript, "next", { strategy: "full", windowSize: 1, summary: "", budgetTokens: 5, responseTokensEstimate: 10 });
   assert.equal(plan.overflow, true);
   assert.equal(plan.messages.length, transcript.length);
+});
+
+test("explicit stale status survives edits that keep the same message ID", () => {
+  assert.equal(isContextSummaryStale("summary", "message-1", "message-1", true), true);
+  assert.equal(isContextSummaryStale("summary", "message-1", "message-1", false), false);
 });

@@ -14,8 +14,13 @@ import java.sql.DriverManager
 import java.sql.SQLException
 import java.time.Instant
 import java.util.UUID
+import java.nio.ByteBuffer
+import java.nio.charset.StandardCharsets
+import java.security.MessageDigest
 
 data class ContextMessage(val role: String, val content: String)
+
+data class TranscriptSnapshot(val messages: List<ContextMessage>, val watermark: String?, val fingerprint: String)
 
 data class ImportedBoard(
     val externalId: String,
@@ -561,18 +566,63 @@ class BoardStore(
         }
     }
 
-    fun saveContextSummary(laneId: String, summary: String, watermark: String?, usageSource: String?, usage: JsonObject?) = synchronized(lock) {
+    fun transcriptSnapshot(laneId: String): TranscriptSnapshot = synchronized(lock) {
+        connect().use { db -> transcriptSnapshot(db, laneId) }
+    }
+
+    fun saveContextSummary(
+        laneId: String, summary: String, watermark: String?, usageSource: String?, usage: JsonObject?, expectedFingerprint: String,
+    ): Boolean = synchronized(lock) {
         require(summary.length <= 50_000) { "Сводка слишком длинная." }
         connect().use { db ->
-            db.prepareStatement("UPDATE lanes SET context_summary = ?, context_summary_watermark = ?, context_summary_usage = ?, context_summary_usage_source = ?, context_summary_stale = 0 WHERE id = ?").use { query ->
-                query.setString(1, summary)
-                query.setString(2, watermark)
-                query.setString(3, usage?.let { kotlinx.serialization.json.Json.encodeToString(JsonObject.serializer(), it) })
-                query.setString(4, usageSource)
-                query.setString(5, laneId)
-                check(query.executeUpdate() == 1) { "Unknown lane" }
+            db.autoCommit = false
+            try {
+                if (transcriptSnapshot(db, laneId).fingerprint != expectedFingerprint) {
+                    db.rollback()
+                    return@synchronized false
+                }
+                db.prepareStatement("UPDATE lanes SET context_summary = ?, context_summary_watermark = ?, context_summary_usage = ?, context_summary_usage_source = ?, context_summary_stale = 0 WHERE id = ?").use { query ->
+                    query.setString(1, summary)
+                    query.setString(2, watermark)
+                    query.setString(3, usage?.let { kotlinx.serialization.json.Json.encodeToString(JsonObject.serializer(), it) })
+                    query.setString(4, usageSource)
+                    query.setString(5, laneId)
+                    check(query.executeUpdate() == 1) { "Unknown lane" }
+                }
+                db.commit()
+                true
+            } catch (error: Exception) {
+                db.rollback()
+                throw error
+            } finally {
+                db.autoCommit = true
             }
         }
+    }
+
+    private fun transcriptSnapshot(db: Connection, laneId: String): TranscriptSnapshot {
+        val rows = db.prepareStatement(
+            "SELECT id, role, content FROM messages WHERE lane_id = ? ORDER BY created_at, rowid",
+        ).use { query ->
+            query.setString(1, laneId)
+            query.executeQuery().use { result ->
+                buildList {
+                    while (result.next()) add(Triple(result.getString("id"), result.getString("role"), result.getString("content")))
+                }
+            }
+        }
+        val digest = MessageDigest.getInstance("SHA-256")
+        rows.forEach { (id, role, content) ->
+            listOf(id, role, content).forEach { value ->
+                val bytes = value.toByteArray(StandardCharsets.UTF_8)
+                digest.update(ByteBuffer.allocate(Int.SIZE_BYTES).putInt(bytes.size).array())
+                digest.update(bytes)
+            }
+        }
+        val messages = rows.mapNotNull { (_, role, content) ->
+            if (content.isEmpty() || role !in setOf("user", "assistant")) null else ContextMessage(role, content)
+        }
+        return TranscriptSnapshot(messages, rows.lastOrNull()?.first, digest.digest().joinToString("") { "%02x".format(it) })
     }
 
     private fun markSummaryStale(db: Connection, laneId: String) {

@@ -4,7 +4,7 @@ import { chooseBoardId } from "./workspace-state.mjs";
 import { describeLaneOrigin } from "./lane-lineage.mjs";
 import { MarkdownContent } from "./MarkdownContent";
 import { getCanvasExtent, getCenteredScrollTarget } from "./canvas-layout.mjs";
-import { planContext } from "./context-plan.mjs";
+import { isContextSummaryStale, planContext } from "./context-plan.mjs";
 import type { ContextStrategy } from "./context-plan.mjs";
 
 type Message = {
@@ -449,7 +449,7 @@ function LaneView({ lane, agentName, lanes, authenticated, openRouterConfigured,
     message.trim(),
     { strategy: "full", windowSize: config.contextWindowSize, summary: "", budgetTokens: config.contextBudgetTokens, responseTokensEstimate: lane.provider === "codex" ? 1024 : config.maxTokens || 1024 },
   );
-  const summaryStale = Boolean(lane.contextSummary && (lane.contextSummaryStale || lane.contextSummaryWatermark !== lane.messages.at(-1)?.id));
+  const summaryStale = isContextSummaryStale(lane.contextSummary, lane.contextSummaryWatermark, lane.messages.at(-1)?.id, lane.contextSummaryStale);
 
   async function generateSummary() {
     setSummaryBusy(true);

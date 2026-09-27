@@ -166,6 +166,8 @@ fun Application.module(
                 call.respond(coordinator.generateSummary(laneId))
             } catch (_: ActiveRunException) {
                 call.respond(HttpStatusCode.Conflict, buildJsonObject { put("error", "Дождись завершения запроса перед созданием сводки.") })
+            } catch (error: StaleSummarySnapshotException) {
+                call.respond(HttpStatusCode.Conflict, buildJsonObject { put("error", error.message ?: "История изменилась; создай сводку заново.") })
             } catch (error: IllegalStateException) {
                 call.respond(HttpStatusCode.NotFound, buildJsonObject { put("error", error.message ?: "Лента не найдена.") })
             } catch (error: Exception) {

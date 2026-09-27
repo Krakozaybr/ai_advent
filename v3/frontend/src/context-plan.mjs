@@ -2,6 +2,10 @@ export function estimateTokens(text) {
   return text.length === 0 ? 0 : Math.max(1, Math.ceil(text.length / 4));
 }
 
+export function isContextSummaryStale(summary, watermark, latestMessageId, explicitlyStale = false) {
+  return Boolean(summary && (explicitlyStale || watermark !== latestMessageId));
+}
+
 export function planContext(transcript, prompt, options) {
   const { strategy, windowSize, summary, summaryWatermark, budgetTokens, responseTokensEstimate } = options;
   const history = transcript.filter((message) => message.content.length > 0);

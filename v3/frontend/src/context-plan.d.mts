@@ -13,6 +13,7 @@ export type ContextPlan = {
   estimateKind: string;
 };
 export function estimateTokens(text: string): number;
+export function isContextSummaryStale(summary: string, watermark: string | undefined, latestMessageId: string | undefined, explicitlyStale?: boolean): boolean;
 export function planContext(transcript: ContextMessage[], prompt: string, options: {
   strategy: ContextStrategy;
   windowSize: number;

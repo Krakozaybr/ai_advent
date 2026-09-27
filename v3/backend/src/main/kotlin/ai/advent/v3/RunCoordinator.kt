@@ -16,6 +16,8 @@ import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 import java.util.concurrent.ConcurrentHashMap
 
+class StaleSummarySnapshotException : IllegalStateException("История изменилась во время создания сводки. Результат не сохранён; создай сводку заново.")
+
 class RunCoordinator(
     private val store: WorkspaceStore,
     private val codex: CodexGateway,
@@ -48,14 +50,14 @@ class RunCoordinator(
         val summary = StringBuilder()
         val usage: JsonObject?
         if (provider == "openrouter") {
-            val details = openRouter.stream(openRouterKeys.get(), LaneConfig("openrouter", model, 0.2, 2048, null), snapshot.first, requestPrompt) { summary.append(it) }
+            val details = openRouter.stream(openRouterKeys.get(), LaneConfig("openrouter", model, 0.2, 2048, null), snapshot.messages, requestPrompt) { summary.append(it) }
             usage = details["usage"] as? JsonObject
         } else {
             var actualUsage: JsonObject? = null
             codex.stream(
                 threadId = null,
                 prompt = requestPrompt,
-                contextToSeed = snapshot.first,
+                contextToSeed = snapshot.messages,
                 shouldSeedContext = true,
                 model = model,
                 onThreadId = {},
@@ -69,10 +71,11 @@ class RunCoordinator(
         }
         require(summary.isNotBlank()) { "Провайдер вернул пустую сводку." }
         val usageSource = if (usage == null) "unavailable" else if (provider == "codex") "codex-app-server" else "openrouter"
-        store.saveContextSummary(laneId, summary.toString().trim(), snapshot.second, usageSource, usage)
+        val saved = store.saveContextSummary(laneId, summary.toString().trim(), snapshot.watermark, usageSource, usage, snapshot.fingerprint)
+        if (!saved) throw StaleSummarySnapshotException()
         return buildJsonObject {
             put("summary", summary.toString().trim())
-            snapshot.second?.let { put("watermark", it) }
+            snapshot.watermark?.let { put("watermark", it) }
             put("provider", provider)
             put("usageSource", usageSource)
             usage?.let { put("usage", it) }
