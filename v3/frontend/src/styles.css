@@ -154,3 +154,14 @@ button { color: inherit; }
 .board-agents p { margin: 8px 0; }
 .board-agents pre { white-space: pre-wrap; }
 .message-provenance { display: block; margin-top: 8px; color: #777; font-size: 0.75rem; }
+.mcp-tools { grid-column: 1 / -1; border-top: 1px solid #ebe8e0; padding: 7px 0; }
+.mcp-tools summary { cursor: pointer; font: 500 9px ui-monospace, SFMono-Regular, Menlo, monospace; }
+.mcp-tools section { display: grid; gap: 5px; padding: 8px 0; }
+.mcp-tools section > small, .mcp-tool-option small { color: #77796d; font-size: 9px; }
+.mcp-tool-option { display: flex !important; grid-template-columns: auto 1fr !important; align-items: start; gap: 7px; padding: 6px; border: 1px solid #e9e6dd; border-radius: 6px; background: #fffefa; }
+.mcp-tool-option > input { width: auto; margin-top: 2px; }
+.mcp-tool-option span { display: grid; gap: 3px; min-width: 0; }
+.mcp-tool-option code { max-height: 90px; overflow: auto; white-space: pre-wrap; color: #77796d; }
+.capability-gate { grid-column: 1 / -1; color: #8a563a; font-size: 10px; }
+.tool-run-event { flex: 0 0 auto; margin-bottom: 5px; padding: 8px 10px; border: 1px solid #e8e5dc; border-radius: 8px; background: #f5f4ee; font-size: 10px; }
+.tool-run-event pre { max-height: 180px; overflow: auto; white-space: pre-wrap; }

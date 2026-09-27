@@ -126,11 +126,18 @@ class WorkspaceStore(private val originalFile: Path) : Closeable {
         storeForLane(laneId).also { it.saveLayout(laneId, x, y, width) }.board()
     }
 
+    fun saveMcpTools(laneId: String, tools: List<McpSelection>): JsonObject = synchronized(lock) {
+        storeForLane(laneId).also { it.saveMcpTools(laneId, tools) }.board()
+    }
+
+    fun mcpTools(laneId: String): List<McpSelection> = storeForLane(laneId).mcpTools(laneId)
+
     fun startRun(laneId: String, prompt: String, overrides: RequestOverrides = RequestOverrides()): StartedRun = storeForLane(laneId).startRun(laneId, prompt, overrides)
     fun saveThread(laneId: String, threadId: String) = storeForLane(laneId).saveThread(laneId, threadId)
     fun markContextSeeded(laneId: String) = storeForLane(laneId).markContextSeeded(laneId)
     fun markContextSeedFailed(laneId: String) = storeForLane(laneId).markContextSeedFailed(laneId)
     fun appendText(runId: String, delta: String) = storeForRun(runId).appendText(runId, delta)
+    fun appendRunEvent(runId: String, type: String, data: JsonObject) = storeForRun(runId).appendRunEvent(runId, type, data)
     fun completeRun(runId: String) = storeForRun(runId).completeRun(runId)
     fun failRun(runId: String, reason: String) = storeForRun(runId).failRun(runId, reason)
     fun cancelRun(runId: String) = storeForRun(runId).cancelRun(runId)

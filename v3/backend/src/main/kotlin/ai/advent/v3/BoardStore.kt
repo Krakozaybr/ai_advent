@@ -96,6 +96,7 @@ data class StartedRun(
     val contextStrategy: ContextStrategy,
     val shouldSeedContext: Boolean,
     val config: LaneConfig,
+    val mcpTools: List<McpSelection>,
 ) {
     override fun toString(): String = super.toString()
 }
@@ -121,7 +122,7 @@ class BoardStore(
         Files.createDirectories(file.toAbsolutePath().parent)
         Class.forName("org.sqlite.JDBC")
         connect().use { db ->
-            db.createStatement().use { statement ->
+                db.createStatement().use { statement ->
                 statement.execute("PRAGMA journal_mode=WAL")
                 statement.execute(
                     """
@@ -199,6 +200,12 @@ class BoardStore(
                     "CREATE UNIQUE INDEX IF NOT EXISTS one_running_run_per_lane " +
                         "ON runs(lane_id) WHERE status = 'running'",
                 )
+                statement.execute("""CREATE TABLE IF NOT EXISTS lane_mcp_tools (
+                    lane_id TEXT NOT NULL REFERENCES lanes(id) ON DELETE CASCADE,
+                    server_id TEXT NOT NULL,
+                    tool_name TEXT NOT NULL,
+                    PRIMARY KEY(lane_id, server_id, tool_name)
+                )""")
             }
             ensureColumn(db, "lanes", "origin_lane_id", "TEXT")
             ensureColumn(db, "lanes", "origin_message_id", "TEXT")
@@ -313,6 +320,9 @@ class BoardStore(
                                 }
                             }
                             put("messages", messages(db, laneId))
+                            put("mcpTools", kotlinx.serialization.json.JsonArray(mcpTools(db, laneId).map { selection ->
+                                buildJsonObject { put("serverId", selection.serverId); put("toolName", selection.toolName) }
+                            }))
                             put("activeRun", activeRun(db, laneId) ?: JsonNull)
                         }
                     }
@@ -772,6 +782,11 @@ class BoardStore(
                     query.setInt(18, source[9].toInt())
                     query.executeUpdate()
                 }
+                db.prepareStatement("INSERT INTO lane_mcp_tools(lane_id, server_id, tool_name) SELECT ?, server_id, tool_name FROM lane_mcp_tools WHERE lane_id = ?").use { query ->
+                    query.setString(1, laneId)
+                    query.setString(2, sourceLaneId)
+                    query.executeUpdate()
+                }
                 val sourceMessages = db.prepareStatement(
                     """SELECT m.id, m.role, m.content, r.status, r.started_at, r.completed_at, r.error,
                               r.request_config, r.technical_details
@@ -988,6 +1003,7 @@ class BoardStore(
                     strategy,
                     shouldSeedContext = reusableThreadId == null || needsSeed,
                     config = config,
+                    mcpTools = mcpTools(db, laneId),
                 )
             } catch (error: SQLException) {
                 db.rollback()
@@ -1039,6 +1055,39 @@ class BoardStore(
                 query.executeUpdate()
             }
             insertEvent(db, run.boardId, run.laneId, runId, "text.delta", buildJsonObject { put("text", delta) })
+        }
+    }
+
+    fun saveMcpTools(laneId: String, tools: List<McpSelection>) = synchronized(lock) {
+        connect().use { db ->
+            db.autoCommit = false
+            try {
+                check(db.prepareStatement("SELECT 1 FROM lanes WHERE id = ?").use { q -> q.setString(1, laneId); q.executeQuery().use { it.next() } }) { "Unknown lane" }
+                if (hasActiveRun(db, laneId)) throw ActiveRunException()
+                db.prepareStatement("DELETE FROM lane_mcp_tools WHERE lane_id = ?").use { q -> q.setString(1, laneId); q.executeUpdate() }
+                tools.distinct().forEach { selection ->
+                    db.prepareStatement("INSERT INTO lane_mcp_tools(lane_id, server_id, tool_name) VALUES (?, ?, ?)").use { q ->
+                        q.setString(1, laneId); q.setString(2, selection.serverId); q.setString(3, selection.toolName); q.executeUpdate()
+                    }
+                }
+                db.commit()
+            } catch (error: Exception) { db.rollback(); throw error } finally { db.autoCommit = true }
+        }
+    }
+
+    fun mcpTools(laneId: String): List<McpSelection> = synchronized(lock) { connect().use { mcpTools(it, laneId) } }
+
+    private fun mcpTools(db: Connection, laneId: String): List<McpSelection> = db.prepareStatement(
+        "SELECT server_id, tool_name FROM lane_mcp_tools WHERE lane_id = ? ORDER BY server_id, tool_name",
+    ).use { query ->
+        query.setString(1, laneId)
+        query.executeQuery().use { result -> buildList { while (result.next()) add(McpSelection(result.getString(1), result.getString(2))) } }
+    }
+
+    fun appendRunEvent(runId: String, type: String, data: JsonObject) = synchronized(lock) {
+        connect().use { db ->
+            val (boardId, laneId) = runDetails(db, runId).let { it.boardId to it.laneId }
+            insertEvent(db, boardId, laneId, runId, type, data)
         }
     }
 

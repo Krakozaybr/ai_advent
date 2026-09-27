@@ -27,6 +27,7 @@ import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.contentOrNull
 import kotlinx.serialization.json.jsonObject
+import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.jsonPrimitive
 import kotlinx.serialization.json.put
 import kotlinx.serialization.json.doubleOrNull
@@ -42,10 +43,12 @@ fun Application.module(
     codex: CodexGateway = CodexAppServer(),
     openRouter: OpenRouterGateway = OpenRouterHttpGateway(),
     openRouterKeys: OpenRouterKeyStore = OpenRouterKeyStore(Path.of(System.getenv("AI_ADVENT_V3_SETTINGS") ?: "../data/openrouter.key")),
+    mcpRegistry: McpRegistry = McpRegistry(),
+    mcpClient: McpClient = McpClient(),
 ) {
     install(ContentNegotiation) { json(json) }
     install(SSE)
-    val coordinator = RunCoordinator(store, codex, openRouter, openRouterKeys)
+    val coordinator = RunCoordinator(store, codex, openRouter, openRouterKeys, mcpRegistry, mcpClient)
     monitor.subscribe(ApplicationStopped) { coordinator.close() }
 
     routing {
@@ -331,6 +334,64 @@ fun Application.module(
 
         get("/api/openrouter/status") {
             call.respond(buildJsonObject { put("configured", openRouterKeys.isConfigured()) })
+        }
+
+        get("/api/mcp/catalog") {
+            val servers = withContext(Dispatchers.IO) { mcpRegistry.servers().map { server ->
+                runCatching { mcpClient.listTools(server) }.fold(
+                    onSuccess = { tools -> buildJsonObject {
+                        put("id", server.id); put("name", server.name); put("description", server.description); put("status", "connected")
+                        put("tools", kotlinx.serialization.json.buildJsonArray { tools.forEach { tool -> add(buildJsonObject {
+                            put("name", tool.name); put("description", tool.description); put("inputSchema", tool.inputSchema)
+                        }) } })
+                    } },
+                    onFailure = { error -> buildJsonObject {
+                        put("id", server.id); put("name", server.name); put("description", server.description); put("status", "error")
+                        put("error", error.message ?: "Не удалось подключиться к MCP-серверу.")
+                        put("tools", kotlinx.serialization.json.JsonArray(emptyList()))
+                    } },
+                )
+            } }
+            call.respond(buildJsonObject { put("servers", kotlinx.serialization.json.JsonArray(servers)) })
+        }
+
+        patch("/api/lanes/{laneId}/mcp-tools") {
+            val laneId = call.parameters["laneId"]
+            val tools = runCatching { call.receive<JsonObject>()["tools"]?.jsonArray }.getOrNull()
+            if (laneId == null || tools == null || tools.size > 12) {
+                call.respond(HttpStatusCode.BadRequest, buildJsonObject { put("error", "Укажи не более 12 разрешённых инструментов.") })
+                return@patch
+            }
+            val provider = runCatching { store.providerForLane(laneId) }.getOrNull()
+            if (provider == null) {
+                call.respond(HttpStatusCode.NotFound, buildJsonObject { put("error", "Лента не найдена.") })
+                return@patch
+            }
+            try {
+                val selections = tools.map { entry ->
+                    val value = entry.jsonObject
+                    McpSelection(value["serverId"]?.jsonPrimitive?.contentOrNull ?: error("Не указан MCP-сервер."),
+                        value["toolName"]?.jsonPrimitive?.contentOrNull ?: error("Не указан инструмент."))
+                }.distinct()
+                require(selections.isEmpty() || provider == "openrouter") {
+                    "MCP-инструменты пока доступны только для OpenRouter."
+                }
+                withContext(Dispatchers.IO) {
+                    selections.forEach { selection ->
+                        val registered = mcpRegistry.server(selection.serverId)
+                        require(mcpClient.listTools(registered).any { it.name == selection.toolName }) { "Инструмент не найден в реестре." }
+                    }
+                }
+                call.respond(store.saveMcpTools(laneId, selections))
+            } catch (_: ActiveRunException) {
+                call.respond(HttpStatusCode.Conflict, buildJsonObject { put("error", "Нельзя менять разрешённые инструменты во время запроса.") })
+            } catch (error: IllegalArgumentException) {
+                call.respond(HttpStatusCode.BadRequest, buildJsonObject { put("error", error.message ?: "Выбор MCP-инструментов некорректен.") })
+            } catch (_: IllegalStateException) {
+                call.respond(HttpStatusCode.BadGateway, buildJsonObject { put("error", "Не удалось проверить MCP-сервер или выбранный инструмент.") })
+            } catch (error: Exception) {
+                call.respond(HttpStatusCode.BadGateway, buildJsonObject { put("error", error.message ?: "Не удалось подключиться к MCP-серверу.") })
+            }
         }
 
         post("/api/openrouter/key") {

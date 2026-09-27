@@ -45,6 +45,7 @@ type Lane = {
   contextSummaryUsageSource?: string;
   contextSummaryStale: boolean;
   contextBudgetTokens: number;
+  mcpTools: Array<{ serverId: string; toolName: string }>;
 };
 
 type BoardSummary = { id: string; title: string };
@@ -52,6 +53,7 @@ type Agent = { id: string; name: string; description: string; instructions: stri
 type BoardResponse = { board: BoardSummary; lanes: Lane[]; agents?: Agent[] };
 type CodexStatus = { authenticated: boolean; planType?: string; error?: string };
 type CodexModel = { slug?: string; displayName?: string; isDefault?: boolean };
+type McpCatalogServer = { id: string; name: string; description: string; status: "connected" | "error"; error?: string; tools: Array<{ name: string; description: string; inputSchema: Record<string, unknown> }> };
 
 async function readJson<T>(url: string, init?: RequestInit): Promise<T> {
   const response = await fetch(url, init);
@@ -69,6 +71,7 @@ export function BoardChat() {
   const [codexModels, setCodexModels] = useState<CodexModel[]>([]);
   const [openRouterConfigured, setOpenRouterConfigured] = useState(false);
   const [openRouterKey, setOpenRouterKey] = useState("");
+  const [mcpServers, setMcpServers] = useState<McpCatalogServer[]>([]);
   const [newLaneProvider, setNewLaneProvider] = useState<"codex" | "openrouter">("codex");
   const [error, setError] = useState<string | null>(null);
   const [focusMode, setFocusMode] = useState(() => window.localStorage.getItem("workspace.focusMode") === "true");
@@ -96,6 +99,11 @@ export function BoardChat() {
     setOpenRouterConfigured(status.configured);
   }, []);
 
+  const refreshMcpCatalog = useCallback(async () => {
+    const result = await readJson<{ servers: McpCatalogServer[] }>("/api/mcp/catalog");
+    setMcpServers(result.servers);
+  }, []);
+
   const refreshBoards = useCallback(async () => {
     const result = await readJson<{ boards: BoardSummary[] }>("/api/boards");
     setBoards(result.boards);
@@ -112,10 +120,10 @@ export function BoardChat() {
   }, [refreshBoard]);
 
   useEffect(() => {
-    void Promise.all([refreshBoards(), refreshCodex(), refreshOpenRouter()]).catch((cause: unknown) => {
+    void Promise.all([refreshBoards(), refreshCodex(), refreshOpenRouter(), refreshMcpCatalog()]).catch((cause: unknown) => {
       setError(cause instanceof Error ? cause.message : "Не удалось загрузить доски");
     });
-  }, [refreshBoards, refreshCodex, refreshOpenRouter]);
+  }, [refreshBoards, refreshCodex, refreshOpenRouter, refreshMcpCatalog]);
 
   useEffect(() => {
     if (!authUrl || codex?.authenticated) return;
@@ -168,6 +176,16 @@ export function BoardChat() {
       }));
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : "Не удалось сохранить параметры ленты");
+    }
+  }
+
+  async function saveMcpTools(laneId: string, tools: Lane["mcpTools"]) {
+    try {
+      setBoard(await readJson<BoardResponse>(`/api/lanes/${encodeURIComponent(laneId)}/mcp-tools`, {
+        method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ tools }),
+      }));
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : "Не удалось сохранить выбор инструментов");
     }
   }
 
@@ -366,6 +384,7 @@ export function BoardChat() {
                 authenticated={Boolean(codex?.authenticated)}
                 openRouterConfigured={openRouterConfigured}
                 codexModels={codexModels}
+                mcpServers={mcpServers}
                 onRefresh={() => refreshBoard(board.board.id)}
                 onBranch={(messageId) => void createBranch(lane.id, messageId)}
                 onClone={() => void cloneLane(lane.id)}
@@ -374,6 +393,7 @@ export function BoardChat() {
                 onCopy={(messageId, targetLaneId) => void copyMessage(lane.id, messageId, targetLaneId)}
                 onMutate={mutateMessage}
                 onSaveConfig={(config) => void saveLaneConfig(lane.id, config)}
+                onSaveMcpTools={(tools) => void saveMcpTools(lane.id, tools)}
                 onCancelRun={cancelRun}
                 selected={selectedLaneId === lane.id}
               />
@@ -394,13 +414,14 @@ export function BoardChat() {
   );
 }
 
-function LaneView({ lane, agentName, lanes, authenticated, openRouterConfigured, codexModels, onRefresh, onBranch, onClone, onSelect, onSaveLayout, onCopy, onMutate, onSaveConfig, onCancelRun, selected }: {
+function LaneView({ lane, agentName, lanes, authenticated, openRouterConfigured, codexModels, mcpServers, onRefresh, onBranch, onClone, onSelect, onSaveLayout, onCopy, onMutate, onSaveConfig, onSaveMcpTools, onCancelRun, selected }: {
   lane: Lane;
   agentName?: string;
   lanes: Lane[];
   authenticated: boolean;
   openRouterConfigured: boolean;
   codexModels: CodexModel[];
+  mcpServers: McpCatalogServer[];
   onRefresh: () => Promise<BoardResponse>;
   onBranch: (messageId: string) => void;
   onClone: () => void;
@@ -409,6 +430,7 @@ function LaneView({ lane, agentName, lanes, authenticated, openRouterConfigured,
   onCopy: (messageId: string, targetLaneId: string) => void;
   onMutate: (messageId: string, content: string | null) => Promise<void>;
   onSaveConfig: (config: Pick<Lane, "model" | "temperature" | "maxTokens" | "stop" | "contextStrategy" | "contextWindowSize" | "contextBudgetTokens">) => void;
+  onSaveMcpTools: (tools: Lane["mcpTools"]) => void;
   onCancelRun: (runId: string) => void;
   selected: boolean;
 }) {
@@ -425,6 +447,7 @@ function LaneView({ lane, agentName, lanes, authenticated, openRouterConfigured,
   const [config, setConfig] = useState({ model: lane.model, temperature: lane.temperature ?? 0.7, maxTokens: lane.maxTokens ?? 2048, stop: lane.stop ?? "", contextStrategy: lane.contextStrategy, contextWindowSize: lane.contextWindowSize, contextBudgetTokens: lane.contextBudgetTokens });
   const [forceSend, setForceSend] = useState(false);
   const [summaryBusy, setSummaryBusy] = useState(false);
+  const [toolEvents, setToolEvents] = useState<Array<Record<string, unknown>>>([]);
   const providerReady = lane.provider === "codex" ? authenticated : openRouterConfigured;
 
   function persistConfig(next = config) {
@@ -471,6 +494,13 @@ function LaneView({ lane, agentName, lanes, authenticated, openRouterConfigured,
     source.onmessage = (event: MessageEvent<string>) => {
       const data = JSON.parse(event.data) as RunEvent;
       setRunState((current) => applyRunEvent(current, data));
+      if (data.type === "tool.started") setToolEvents((current) => [...current, { ...data.data, status: "Выполняется" }]);
+      if (data.type === "tool.completed") setToolEvents((current) => {
+        const next = [...current];
+        const index = next.findIndex((item) => item.toolName === data.data.toolName && item.status === "Выполняется");
+        if (index >= 0) next[index] = { ...data.data, status: data.data.ok ? "Готово" : "Ошибка" };
+        return next;
+      });
       if (data.type === "run.completed" || data.type === "run.failed" || data.type === "run.cancelled") {
         source.close();
         if (sourceRef.current === source) sourceRef.current = null;
@@ -576,6 +606,7 @@ function LaneView({ lane, agentName, lanes, authenticated, openRouterConfigured,
     setMessage("");
     if (textareaRef.current) resizeTextarea(textareaRef.current);
     setRunState(emptyRunState());
+    setToolEvents([]);
     try {
       const parameters = lane.provider === "codex" ? { model: config.model } : {
         model: config.model,
@@ -626,6 +657,27 @@ function LaneView({ lane, agentName, lanes, authenticated, openRouterConfigured,
           <label>Максимум токенов<input type="number" min="1" max="200000" step="1" value={config.maxTokens} onChange={(event) => setConfig({ ...config, maxTokens: Number(event.target.value) })} onBlur={() => persistConfig()} /></label>
           <label>Stop<input value={config.stop} onChange={(event) => setConfig({ ...config, stop: event.target.value })} onBlur={() => persistConfig()} /></label>
         </>}
+        <details className="mcp-tools">
+          <summary>MCP-инструменты · {lane.mcpTools.length} разрешено</summary>
+          {lane.provider === "codex" && <p className="capability-gate">Codex app-server не подтверждает доступ ленты к этим MCP-инструментам. Реальное выполнение сейчас поддержано только через OpenRouter.</p>}
+          {mcpServers.map((server) => <section key={server.id}>
+            <strong>{server.name}</strong>
+            <small>{server.description} · {server.status === "connected" ? "подключён" : `ошибка: ${server.error ?? "недоступен"}`}</small>
+            {server.tools.map((tool) => {
+              const checked = lane.mcpTools.some((item) => item.serverId === server.id && item.toolName === tool.name);
+              return <label className="mcp-tool-option" key={`${server.id}/${tool.name}`}>
+                <input type="checkbox" checked={checked} disabled={lane.provider !== "openrouter" || server.status !== "connected" || running}
+                  onChange={(event) => {
+                    const key = { serverId: server.id, toolName: tool.name };
+                    const next = event.target.checked ? [...lane.mcpTools, key] : lane.mcpTools.filter((item) => item.serverId !== key.serverId || item.toolName !== key.toolName);
+                    onSaveMcpTools(next);
+                  }} />
+                <span><b>{tool.name}</b><small>{tool.description}</small><code>{JSON.stringify(tool.inputSchema, null, 2)}</code></span>
+              </label>;
+            })}
+          </section>)}
+          <small>Команда запуска задана сервером приложения; доска и модель выбирают только зарегистрированные инструменты.</small>
+        </details>
         <label>История
           <select value={config.contextStrategy} onChange={(event) => { const next = { ...config, contextStrategy: event.target.value as ContextStrategy }; setConfig(next); persistConfig(next); setForceSend(false); }}>
             <option value="full">Полная история</option>
@@ -658,6 +710,10 @@ function LaneView({ lane, agentName, lanes, authenticated, openRouterConfigured,
         </div>
       )}
       <div className="lane-messages" aria-live="polite">
+        {toolEvents.map((item, index) => <details className="tool-run-event" key={`${String(item.toolName)}-${index}`} open>
+          <summary>Инструмент · {String(item.toolName)} · {String(item.status)}</summary>
+          <pre>{JSON.stringify(item, null, 2)}</pre>
+        </details>)}
         {lane.messages.filter((item) => !(item.role === "assistant" && item.runStatus === "running")).map((item) => (
           <article className={`message ${item.role}`} key={item.id}>
             <div className="message-label">{item.role === "user" ? "ТЫ" : lane.provider.toUpperCase()}</div>

@@ -1,0 +1,12 @@
+{
+  "servers": [
+    {
+      "id": "local-catalog",
+      "name": "Локальный каталог",
+      "description": "Поиск в демонстрационном локальном каталоге.",
+      "command": "node",
+      "args": ["${PROJECT_ROOT}/examples/mcp/catalog-server.mjs"],
+      "cwd": "${PROJECT_ROOT}"
+    }
+  ]
+}
