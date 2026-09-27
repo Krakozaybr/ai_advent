@@ -162,6 +162,11 @@ button { color: inherit; }
 .mcp-tool-option > input { width: auto; margin-top: 2px; }
 .mcp-tool-option span { display: grid; gap: 3px; min-width: 0; }
 .mcp-tool-option code { max-height: 90px; overflow: auto; white-space: pre-wrap; color: #77796d; }
+.sticky-facts, .mcp-approval { grid-column: 1 / -1; padding: 9px; border: 1px solid #e9e6dd; border-radius: 7px; background: #fffefa; }
+.sticky-facts p, .mcp-approval p { margin: 5px 0; color: #77796d; font-size: 10px; }
+.sticky-facts label, .sticky-fact-add { display: flex; align-items: center; gap: 6px; margin-top: 6px; font-size: 10px; }
+.sticky-facts input, .sticky-fact-add input { min-width: 0; }
+.mcp-approval pre { max-height: 140px; overflow: auto; white-space: pre-wrap; }
 .capability-gate { grid-column: 1 / -1; color: #8a563a; font-size: 10px; }
 .tool-run-event { flex: 0 0 auto; margin-bottom: 5px; padding: 8px 10px; border: 1px solid #e8e5dc; border-radius: 8px; background: #f5f4ee; font-size: 10px; }
 .tool-run-event pre { max-height: 180px; overflow: auto; white-space: pre-wrap; }

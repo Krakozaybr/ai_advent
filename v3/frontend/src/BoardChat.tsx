@@ -46,6 +46,9 @@ type Lane = {
   contextSummaryStale: boolean;
   contextBudgetTokens: number;
   mcpTools: Array<{ serverId: string; toolName: string }>;
+  mcpAutoApprove: boolean;
+  stickyFacts: Array<{ key: string; value: string; updatedAt: string }>;
+  mcpApprovals: Array<{ id: string; serverId: string; toolName: string; arguments: Record<string, unknown>; reason: string; status: string; approvalSource?: string; createdAt: string }>;
 };
 
 type BoardSummary = { id: string; title: string };
@@ -187,6 +190,36 @@ export function BoardChat() {
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : "Не удалось сохранить выбор инструментов");
     }
+  }
+
+  async function setMcpAutoApprove(laneId: string, autoApprove: boolean) {
+    try {
+      setBoard(await readJson<BoardResponse>(`/api/lanes/${encodeURIComponent(laneId)}/mcp-approval-settings`, {
+        method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ autoApprove }),
+      }));
+    } catch (cause) { setError(cause instanceof Error ? cause.message : "Не удалось сохранить настройку подтверждений"); }
+  }
+
+  async function decideMcpApproval(laneId: string, approvalId: string, decision: "approve" | "deny") {
+    try {
+      setBoard(await readJson<BoardResponse>(`/api/lanes/${encodeURIComponent(laneId)}/mcp-approvals/${encodeURIComponent(approvalId)}`, {
+        method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ decision }),
+      }));
+    } catch (cause) { setError(cause instanceof Error ? cause.message : "Не удалось обработать предложение"); }
+  }
+
+  async function editFact(laneId: string, key: string, value: string | null) {
+    try {
+      setBoard(await readJson<BoardResponse>(`/api/lanes/${encodeURIComponent(laneId)}/facts${value === null ? `/${encodeURIComponent(key)}` : ""}`, {
+        method: value === null ? "DELETE" : "PATCH",
+        ...(value === null ? {} : { headers: { "Content-Type": "application/json" }, body: JSON.stringify({ key, value }) }),
+      }));
+    } catch (cause) { setError(cause instanceof Error ? cause.message : "Не удалось изменить факты"); }
+  }
+
+  async function clearFacts(laneId: string) {
+    try { setBoard(await readJson<BoardResponse>(`/api/lanes/${encodeURIComponent(laneId)}/facts`, { method: "DELETE" })); }
+    catch (cause) { setError(cause instanceof Error ? cause.message : "Не удалось очистить факты"); }
   }
 
   async function saveOpenRouterKey() {
@@ -394,6 +427,10 @@ export function BoardChat() {
                 onMutate={mutateMessage}
                 onSaveConfig={(config) => void saveLaneConfig(lane.id, config)}
                 onSaveMcpTools={(tools) => void saveMcpTools(lane.id, tools)}
+                onAutoApprove={(enabled) => void setMcpAutoApprove(lane.id, enabled)}
+                onApproval={(approvalId, decision) => void decideMcpApproval(lane.id, approvalId, decision)}
+                onEditFact={(key, value) => void editFact(lane.id, key, value)}
+                onClearFacts={() => void clearFacts(lane.id)}
                 onCancelRun={cancelRun}
                 selected={selectedLaneId === lane.id}
               />
@@ -414,7 +451,7 @@ export function BoardChat() {
   );
 }
 
-function LaneView({ lane, agentName, lanes, authenticated, openRouterConfigured, codexModels, mcpServers, onRefresh, onBranch, onClone, onSelect, onSaveLayout, onCopy, onMutate, onSaveConfig, onSaveMcpTools, onCancelRun, selected }: {
+function LaneView({ lane, agentName, lanes, authenticated, openRouterConfigured, codexModels, mcpServers, onRefresh, onBranch, onClone, onSelect, onSaveLayout, onCopy, onMutate, onSaveConfig, onSaveMcpTools, onAutoApprove, onApproval, onEditFact, onClearFacts, onCancelRun, selected }: {
   lane: Lane;
   agentName?: string;
   lanes: Lane[];
@@ -431,6 +468,10 @@ function LaneView({ lane, agentName, lanes, authenticated, openRouterConfigured,
   onMutate: (messageId: string, content: string | null) => Promise<void>;
   onSaveConfig: (config: Pick<Lane, "model" | "temperature" | "maxTokens" | "stop" | "contextStrategy" | "contextWindowSize" | "contextBudgetTokens">) => void;
   onSaveMcpTools: (tools: Lane["mcpTools"]) => void;
+  onAutoApprove: (enabled: boolean) => void;
+  onApproval: (approvalId: string, decision: "approve" | "deny") => void;
+  onEditFact: (key: string, value: string | null) => void;
+  onClearFacts: () => void;
   onCancelRun: (runId: string) => void;
   selected: boolean;
 }) {
@@ -448,6 +489,8 @@ function LaneView({ lane, agentName, lanes, authenticated, openRouterConfigured,
   const [forceSend, setForceSend] = useState(false);
   const [summaryBusy, setSummaryBusy] = useState(false);
   const [toolEvents, setToolEvents] = useState<Array<Record<string, unknown>>>([]);
+  const [newFactKey, setNewFactKey] = useState("");
+  const [newFactValue, setNewFactValue] = useState("");
   const providerReady = lane.provider === "codex" ? authenticated : openRouterConfigured;
 
   function persistConfig(next = config) {
@@ -677,6 +720,30 @@ function LaneView({ lane, agentName, lanes, authenticated, openRouterConfigured,
             })}
           </section>)}
           <small>Команда запуска задана сервером приложения; доска и модель выбирают только зарегистрированные инструменты.</small>
+          <label className="mcp-tool-option"><input type="checkbox" checked={lane.mcpAutoApprove} onChange={(event) => onAutoApprove(event.target.checked)} />
+            <span><b>Автоматически подтверждать изменяющие вызовы</b><small>Выключено по умолчанию. Включение разрешает выбранным инструментам выполнять изменения; источник согласия сохраняется с каждым вызовом.</small></span>
+          </label>
+          <section className="sticky-facts">
+            <strong>Постоянные факты этой ленты</strong>
+            <p>Модель может читать факты и предложить обновление. Предложение не меняет данные до подтверждения.</p>
+            {lane.stickyFacts.map((fact) => <label key={fact.key}>Ключ · {fact.key}
+              <input key={`${fact.key}-${fact.value}`} defaultValue={fact.value} aria-label={`Факт ${fact.key}`} onBlur={(event) => { if (event.currentTarget.value !== fact.value) onEditFact(fact.key, event.currentTarget.value); }} />
+              <button type="button" onClick={() => onEditFact(fact.key, null)}>Удалить</button>
+            </label>)}
+            <div className="sticky-fact-add"><input aria-label="Ключ нового факта" placeholder="Ключ" value={newFactKey} onChange={(event) => setNewFactKey(event.target.value)} />
+              <input aria-label="Значение нового факта" placeholder="Значение" value={newFactValue} onChange={(event) => setNewFactValue(event.target.value)} />
+              <button type="button" disabled={!newFactKey.trim() || !newFactValue.trim()} onClick={() => { onEditFact(newFactKey, newFactValue); setNewFactKey(""); setNewFactValue(""); }}>Сохранить вручную</button>
+            </div>
+            {lane.stickyFacts.length > 0 && <button type="button" onClick={onClearFacts}>Очистить факты</button>}
+          </section>
+          {lane.mcpApprovals.slice(0, 20).map((approval) => <section className="mcp-approval" key={approval.id}>
+            <strong>{approval.serverId}/{approval.toolName} · {({ pending: "ожидает подтверждения", applying: "выполняется", approved: "подтверждено", denied: "отклонено", failed: "ошибка выполнения" } as Record<string, string>)[approval.status] ?? approval.status}</strong>
+            <pre>{JSON.stringify(approval.arguments, null, 2)}</pre><p>Причина: {approval.reason}</p>
+            {approval.approvalSource && <small>Источник согласия: {approval.approvalSource === "user" ? "подтверждение пользователя" : "настройка autoapprove ленты"}</small>}
+            {approval.status === "pending" && <><p>Действие ещё не выполнено; факт не сохранён.</p>
+              <button type="button" onClick={() => onApproval(approval.id, "approve")}>Подтвердить</button>
+              <button type="button" onClick={() => onApproval(approval.id, "deny")}>Отклонить</button></>}
+          </section>)}
         </details>
         <label>История
           <select value={config.contextStrategy} onChange={(event) => { const next = { ...config, contextStrategy: event.target.value as ContextStrategy }; setConfig(next); persistConfig(next); setForceSend(false); }}>
