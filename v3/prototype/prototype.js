@@ -8,6 +8,7 @@ const MODEL_CHOICES = {
   Codex: ['GPT-6 Astra', 'GPT-6 Sol', 'GPT-6 Luna', 'GPT-5.6 Sol', 'GPT-5.6 Terra', 'GPT-5.6 Luna', 'GPT-5.5'],
   OpenRouter: ['Qwen 3', 'GPT-4o mini', 'DeepSeek V3'],
 };
+const MIN_LANE_WIDTH = 560;
 const SKILLS = ['Работа с файлами', 'Планирование', 'Поиск в сети'];
 const MCP_SERVERS = [
   { name: 'Память доски', tools: [{ id: 'read_messages', description: 'Читать сообщения' }, { id: 'search_messages', description: 'Искать в истории' }, { id: 'save_fact', description: 'Сохранять факт' }] },
@@ -20,7 +21,7 @@ const boards = [
     id: 'main', name: 'Рабочая доска', camera: null, selectedLaneId: 'planning',
     lanes: [
       {
-        id: 'planning', rootId: 'planning', parentId: null, x: 160, y: 110, width: 476,
+        id: 'planning', rootId: 'planning', parentId: null, x: 160, y: 110, width: 560,
         title: 'Планирование', provider: 'Codex', model: 'GPT-6 Sol', context: 42,
         approval: 'Требует подтверждения', effort: 'Высокий', speed: 'Обычная', temperature: 0.7,
         messages: [
@@ -31,7 +32,7 @@ const boards = [
       {
         id: 'branch', rootId: 'planning', parentId: 'planning', sourceMessageId: 'p2',
         sourceText: 'На первом экране я бы оставил сами сессии и вкладки досок.',
-        x: 706, y: 260, width: 458, title: 'Вариант с деталями', provider: 'Codex', model: 'GPT-6 Sol', context: 17,
+        x: 706, y: 260, width: 560, title: 'Вариант с деталями', provider: 'Codex', model: 'GPT-6 Sol', context: 17,
         approval: 'Требует подтверждения', effort: 'Средний', speed: 'Обычная', temperature: 0.7,
         messages: [
           { id: 'b1', role: 'user', text: 'А если детали выполнения раскрывать отдельно у каждого ответа?' },
@@ -39,7 +40,7 @@ const boards = [
         ],
       },
       {
-        id: 'notes', rootId: 'notes', parentId: null, x: 1286, y: 142, width: 450,
+        id: 'notes', rootId: 'notes', parentId: null, x: 1286, y: 142, width: 560,
         title: 'Отдельная гипотеза', provider: 'OpenRouter', model: 'Qwen 3', context: 23,
         approval: 'Требует подтверждения', effort: '—', speed: '—', temperature: 0.7,
         messages: [
@@ -52,8 +53,8 @@ const boards = [
   {
     id: 'blank', name: 'Чистая доска', camera: null, selectedLaneId: 'first',
     lanes: [{
-      id: 'first', rootId: 'first', parentId: null, x: 190, y: 140, width: 476,
-      title: 'Новая сессия', provider: 'Codex', model: 'GPT-6 Sol', context: 0,
+      id: 'first', rootId: 'first', parentId: null, x: 190, y: 140, width: 560,
+      title: 'Новая сессия', provider: null, model: null, context: 0,
       approval: 'Требует подтверждения', effort: 'Средний', speed: 'Обычная', temperature: 0.7, messages: [],
     }],
   },
@@ -61,7 +62,7 @@ const boards = [
     id: 'subagents', name: 'Сабагенты', camera: null, selectedLaneId: 'team-lead', expandedSubagents: { 'team-lead': false },
     lanes: [
       {
-        id: 'team-lead', rootId: 'team-lead', parentId: null, x: 160, y: 0, width: 476,
+        id: 'team-lead', rootId: 'team-lead', parentId: null, x: 160, y: 0, width: 560,
         title: 'Подготовка релиза', provider: 'Codex', model: 'GPT-6 Sol', context: 58,
         approval: 'Требует подтверждения', effort: 'Высокий', speed: 'Обычная', temperature: 0.7,
         messages: [
@@ -71,19 +72,19 @@ const boards = [
       },
       {
         id: 'agent-tests', rootId: 'team-lead', parentId: null, subagentOf: 'team-lead', active: true, pinned: false,
-        x: 0, y: 0, width: 410, title: 'Тесты', provider: 'Codex', model: 'GPT-6 Luna', context: 35,
+        x: 0, y: 0, width: 560, title: 'Тесты', provider: 'Codex', model: 'GPT-6 Luna', context: 35,
         approval: 'Требует подтверждения', effort: 'Средний', speed: 'Быстрая', temperature: 0.7,
         messages: [{ id: 'tests-user', role: 'user', text: 'Проверь тесты перед релизом.' }, { id: 'tests-answer', role: 'assistant', text: 'Запущена проверка: есть один нестабильный сценарий, перепроверяю его.', duration: '8,2 с', request: '{ "model": "gpt-6-luna", "stream": true }' }],
       },
       {
         id: 'agent-docs', rootId: 'team-lead', parentId: null, subagentOf: 'team-lead', active: false, pinned: true,
-        x: 0, y: 0, width: 410, title: 'Документация', provider: 'Codex', model: 'GPT-6 Luna', context: 22,
+        x: 0, y: 0, width: 560, title: 'Документация', provider: 'Codex', model: 'GPT-6 Luna', context: 22,
         approval: 'Требует подтверждения', effort: 'Низкий', speed: 'Обычная', temperature: 0.7,
         messages: [{ id: 'docs-user', role: 'user', text: 'Проверь документацию релиза.' }, { id: 'docs-answer', role: 'assistant', text: 'Описание изменений и инструкция обновления готовы.', duration: '6,5 с', request: '{ "model": "gpt-6-luna", "stream": true }' }],
       },
       {
         id: 'agent-risks', rootId: 'team-lead', parentId: null, subagentOf: 'team-lead', active: false, pinned: false,
-        x: 0, y: 0, width: 410, title: 'Риски', provider: 'Codex', model: 'GPT-6 Luna', context: 18,
+        x: 0, y: 0, width: 560, title: 'Риски', provider: 'Codex', model: 'GPT-6 Luna', context: 18,
         approval: 'Требует подтверждения', effort: 'Средний', speed: 'Обычная', temperature: 0.7,
         messages: [{ id: 'risks-user', role: 'user', text: 'Собери риски релиза.' }, { id: 'risks-answer', role: 'assistant', text: 'Главный риск — нестабильный тест оплаты; требуется повторный прогон.', duration: '5,3 с', request: '{ "model": "gpt-6-luna", "stream": true }' }],
       },
@@ -127,17 +128,25 @@ function renderTabs() {
   </nav>`;
 }
 
+function renderBoardCard(item) {
+  return `<article class="board-card"><div class="board-card-top"><span class="board-status ${item.archived ? 'archived' : item.closed ? 'closed' : ''}">${item.archived ? 'В архиве' : item.closed ? 'Вкладка закрыта' : 'Открыта'}</span><span>${sessionCount(item.lanes.length)}</span></div><h3>${escapeHtml(item.name)}</h3><div class="board-card-actions">${item.archived ? `<button class="secondary-button" type="button" data-action="restore-board" data-board="${item.id}">Восстановить</button>` : `<button class="secondary-button" type="button" data-action="select-board" data-board="${item.id}">Открыть</button><button class="icon-button" type="button" data-action="archive-board" data-board="${item.id}" title="В архив" aria-label="В архив: ${escapeHtml(item.name)}">${icon('archive', 17)}</button>`}<button class="icon-button" type="button" data-action="delete-board" data-board="${item.id}" title="Удалить доску" aria-label="Удалить доску ${escapeHtml(item.name)}">${icon('trash', 17)}</button></div></article>`;
+}
+
 function renderHome() {
+  const current = boards.filter((item) => !item.archived);
+  const archived = boards.filter((item) => item.archived);
   app.innerHTML = `<div class="prototype-shell">${renderTabs()}<main class="home-screen"><div class="home-content"><div class="home-heading"><div><h1>Доски</h1><p>Открой доску или создай новую. Закрытая вкладка остаётся здесь.</p></div><button class="primary-button" type="button" data-action="add-board">${icon('plus', 16)} Создать доску</button></div>
-    <div class="home-grid">${boards.map((item) => `<article class="board-card"><div class="board-card-top"><span class="board-status ${item.archived ? 'archived' : item.closed ? 'closed' : ''}">${item.archived ? 'В архиве' : item.closed ? 'Вкладка закрыта' : 'Открыта'}</span><span>${sessionCount(item.lanes.length)}</span></div><h2>${escapeHtml(item.name)}</h2><div class="board-card-actions">${item.archived ? `<button class="secondary-button" type="button" data-action="restore-board" data-board="${item.id}">Восстановить</button>` : `<button class="secondary-button" type="button" data-action="select-board" data-board="${item.id}">Открыть</button><button class="icon-button" type="button" data-action="archive-board" data-board="${item.id}" title="В архив" aria-label="В архив: ${escapeHtml(item.name)}">${icon('archive', 17)}</button>`}<button class="icon-button" type="button" data-action="delete-board" data-board="${item.id}" title="Удалить доску" aria-label="Удалить доску ${escapeHtml(item.name)}">${icon('trash', 17)}</button></div></article>`).join('') || '<p class="home-empty">Досок пока нет.</p>'}</div></div></main></div>`;
+    <div class="home-grid">${current.map(renderBoardCard).join('') || '<p class="home-empty">Досок пока нет.</p>'}</div>${archived.length ? `<section class="home-archive"><h2>Архив досок</h2><div class="home-grid">${archived.map(renderBoardCard).join('')}</div></section>` : ''}</div></main></div>`;
 }
 
 function layoutLanes() {
   let x = 160;
+  let previous = null;
   for (const lane of visibleLanes()) {
+    if (previous) x += previous.width + (lane.subagentOf && lane.rootId === previous.rootId ? 0 : 66);
     lane.x = x;
     if (!lane.parentId) lane.y = 0;
-    x += lane.width + 66;
+    previous = lane;
   }
 }
 
@@ -147,7 +156,7 @@ function alignBranches() {
     const source = document.querySelector(`[data-lane-id="${parent.id}"] [data-message-id="${lane.sourceMessageId}"]`);
     const element = document.querySelector(`[data-lane-id="${lane.id}"]`);
     const headerHeight = element?.querySelector('.lane-header')?.offsetHeight ?? 47;
-    lane.y = parent.y + (source?.offsetTop ?? lane.sourceOffset ?? 190) - headerHeight - 9;
+    lane.y = parent.y + (source?.offsetTop ?? lane.sourceOffset ?? 190) - headerHeight - 8;
     lane.sourceOffset = (source?.offsetTop ?? lane.sourceOffset ?? 190);
     if (element) element.style.top = `${lane.y}px`;
   }
@@ -155,10 +164,19 @@ function alignBranches() {
 
 function configMenu(lane, key, label, values, className = '') {
   const open = state.openMenu === `${lane.id}:${key}`;
-  const valueHtml = key === 'speed' ? icon('bolt', 16) : escapeHtml(lane[key]);
+  const valueHtml = escapeHtml(lane[key]);
   return `<div class="config-menu ${className}"><span class="config-label">${escapeHtml(label)}</span>
     <button class="config-trigger" type="button" data-action="toggle-config" data-lane="${lane.id}" data-config="${key}" aria-label="${escapeHtml(label)}: ${escapeHtml(lane[key])}" title="${escapeHtml(label)}: ${escapeHtml(lane[key])}" aria-expanded="${open}" aria-haspopup="menu">${valueHtml}</button>
     ${open ? `<div class="config-popover" role="menu" aria-label="${escapeHtml(label)}">${values.map((value) => `<button class="config-option" type="button" role="menuitemradio" aria-checked="${String(lane[key]) === value}" data-action="config-choice" data-lane="${lane.id}" data-config="${key}" data-value="${escapeHtml(value)}"><span>${escapeHtml(value)}</span>${String(lane[key]) === value ? icon('check', 14) : ''}</button>`).join('')}</div>` : ''}
+  </div>`;
+}
+
+function modelWidget(lane) {
+  const open = state.openMenu === `${lane.id}:model-widget`;
+  const fast = lane.speed === 'Быстрая';
+  return `<div class="model-widget"><button class="model-widget-trigger" type="button" data-action="toggle-model-widget" data-lane="${lane.id}" aria-label="Модель: ${escapeHtml(lane.model)}; уровень рассуждения: ${escapeHtml(lane.effort)}" aria-expanded="${open}" aria-haspopup="menu"><span>${escapeHtml(lane.model)}</span><span class="model-widget-effort">${escapeHtml(lane.effort)}</span>${icon('chevron', 13)}</button>
+    <button class="speed-toggle ${fast ? 'active' : ''}" type="button" data-action="toggle-speed" data-lane="${lane.id}" aria-label="Скорость: ${escapeHtml(lane.speed)}" aria-pressed="${fast}" title="${fast ? 'Быстрая скорость' : 'Обычная скорость'}">${icon('bolt', 15)}</button>
+    ${open ? `<div class="model-popover" role="menu" aria-label="Модель и уровень рассуждения"><span class="model-popover-label">Модель</span><div class="model-options">${MODEL_CHOICES.Codex.map((value) => `<button type="button" role="menuitemradio" aria-checked="${lane.model === value}" data-action="model-choice" data-lane="${lane.id}" data-value="${escapeHtml(value)}">${escapeHtml(value)}${lane.model === value ? icon('check', 14) : ''}</button>`).join('')}</div><span class="model-popover-label">Уровень рассуждения</span><div class="effort-options">${['Низкий', 'Средний', 'Высокий'].map((value) => `<button type="button" aria-pressed="${lane.effort === value}" data-action="effort-choice" data-lane="${lane.id}" data-value="${value}">${value}</button>`).join('')}</div></div>` : ''}
   </div>`;
 }
 
@@ -220,9 +238,7 @@ function renderMessage(lane, message) {
 function renderLane(lane) {
   const selected = board().selectedLaneId === lane.id;
   const independent = !lane.parentId && !lane.subagentOf;
-  const providerMeta = lane.provider === 'Codex'
-    ? `${configMenu(lane, 'approval', 'Подтверждение', ['Требует подтверждения', 'Автоподтверждение'], 'approval-menu')}${configMenu(lane, 'effort', 'Уровень рассуждения', ['Низкий', 'Средний', 'Высокий'], 'effort-menu')}${configMenu(lane, 'speed', 'Скорость', ['Обычная', 'Быстрая'], 'speed-menu')}`
-    : `${configMenu(lane, 'approval', 'Подтверждение', ['Требует подтверждения', 'Автоподтверждение'], 'approval-menu')}`;
+  const modelControls = lane.provider === 'Codex' ? modelWidget(lane) : configMenu(lane, 'model', 'Модель', MODEL_CHOICES.OpenRouter, 'model-menu');
   return `<section class="lane ${selected ? 'selected' : ''} ${independent ? 'independent' : 'linked'} ${lane.subagentOf ? 'subagent-lane' : ''}" data-lane-id="${lane.id}" style="left:${lane.x}px;top:${lane.y}px;width:${lane.width}px">
     <header class="lane-header" ${independent ? `data-drop-root="${lane.id}"` : ''}>
       <div class="lane-header-main">${independent ? `<span class="drag-grip" data-drag-root="${lane.id}" title="Перетащить сессию вместе с ветками" aria-label="Перетащить сессию вместе с ветками">${icon('grip', 16)}</span>` : ''}<span class="lane-title" data-title-lane="${lane.id}" title="Двойной щелчок — изменить название">${escapeHtml(lane.title)}</span>
@@ -232,16 +248,16 @@ function renderLane(lane) {
     </header>
     <div class="lane-body">
       ${lane.parentId ? `<div class="branch-context"><span>Ответвление от сообщения</span><p>${escapeHtml(lane.sourceText || '')}</p></div>` : ''}
-      <div class="messages">${lane.messages.length ? lane.messages.map((message) => renderMessage(lane, message)).join('') : '<p class="empty-lane">Сессия пуста. Начни с сообщения внизу.</p>'}</div>
-      <div class="provider-label">${escapeHtml(lane.provider)}</div>
+      <div class="messages">${lane.messages.length ? lane.messages.map((message) => renderMessage(lane, message)).join('') : lane.provider ? '<p class="empty-lane">Сессия пуста. Начни с сообщения внизу.</p>' : `<div class="provider-choice"><strong>С чего начнём?</strong><p>Выбери провайдера для новой сессии.</p><div><button type="button" data-action="choose-provider" data-lane="${lane.id}" data-provider="Codex">Codex</button><button type="button" data-action="choose-provider" data-lane="${lane.id}" data-provider="OpenRouter">OpenRouter</button></div></div>`}</div>
+      ${lane.provider ? `<div class="provider-label">${escapeHtml(lane.provider)}</div>
       <div class="composer"><label class="sr-only" for="composer-${lane.id}">Сообщение в сессию ${escapeHtml(lane.title)}</label>
         <textarea id="composer-${lane.id}" data-composer="${lane.id}" rows="1" placeholder="Написать сообщение…" spellcheck="true">${escapeHtml(state.drafts.get(lane.id) || '')}</textarea>
-        <footer class="lane-footer"><div class="composer-controls">${configMenu(lane, 'model', 'Модель', MODEL_CHOICES[lane.provider], 'model-menu')}${providerMeta}
+        <footer class="lane-footer"><div class="composer-controls">${modelControls}${configMenu(lane, 'approval', 'Подтверждение', ['Требует подтверждения', 'Автоподтверждение'], 'approval-menu')}
           <span class="context-meter" role="img" aria-label="Контекст заполнен на ${lane.context}%" data-tooltip="Контекст ${lane.context}%" style="--context:${Math.min(100, lane.context)}%"></span>
           <button class="icon-button settings-button" type="button" data-action="settings" data-lane="${lane.id}" title="Настройки сессии" aria-label="Настройки сессии">${icon('settings', 17)}</button>
           <button class="send-button" type="button" data-action="send" data-lane="${lane.id}" title="Отправить корректировку" aria-label="Отправить корректировку">${icon('send', 17)}</button>
         </div></footer>
-      </div>
+      </div>` : ''}
     </div>
   </section>`;
 }
@@ -251,22 +267,21 @@ function render() {
   layoutLanes();
   const columns = visibleLanes();
   const rails = columns.filter((lane) => !lane.parentId && !lane.subagentOf && board().lanes.some((item) => item.subagentOf === lane.id)).map((lane) => {
-    const group = columns.filter((item) => item.id === lane.id || item.rootId === lane.rootId);
-    const lastInGroup = group.at(-1);
     const expanded = Boolean(board().expandedSubagents?.[lane.id]);
-    return `<div class="subagent-rail" style="left:${lastInGroup.x + lastInGroup.width + 33}px" data-subagent-rail="${lane.id}"><span class="subagent-rail-line"></span><div class="subagent-rail-actions"><button type="button" data-action="toggle-subagents" data-lane="${lane.id}" title="${expanded ? 'Скрыть закреплённых сабагентов' : 'Показать закреплённых сабагентов'}" aria-label="${expanded ? 'Скрыть' : 'Показать'} закреплённых сабагентов" aria-expanded="${expanded}">${icon('chevron', 18)}</button><button type="button" data-action="subagent-settings" data-lane="${lane.id}" title="Настроить сабагентов" aria-label="Настроить сабагентов">${icon('settings', 17)}</button></div></div>`;
+    return `<div class="subagent-rail" style="left:${lane.x + lane.width}px" data-subagent-rail="${lane.id}"><span class="subagent-rail-line"></span><div class="subagent-rail-actions"><button type="button" data-action="toggle-subagents" data-lane="${lane.id}" title="${expanded ? 'Скрыть закреплённых сабагентов' : 'Показать закреплённых сабагентов'}" aria-label="${expanded ? 'Скрыть' : 'Показать'} закреплённых сабагентов" aria-expanded="${expanded}">${icon('chevron', 18)}</button><button type="button" data-action="subagent-settings" data-lane="${lane.id}" title="Настроить сабагентов" aria-label="Настроить сабагентов">${icon('settings', 17)}</button></div></div>`;
   }).join('');
   const boundaries = columns.slice(0, -1).map((lane, index) => {
     const next = columns[index + 1];
     const grouped = lane.rootId === next.rootId;
-    return `<div class="column-boundary ${grouped ? 'group-boundary' : ''}" style="left:${lane.x + lane.width}px" data-boundary-after="${lane.id}">
+    const compact = Boolean(next.subagentOf && grouped);
+    return `<div class="column-boundary ${grouped ? 'group-boundary' : ''} ${compact ? 'compact-boundary' : ''} ${compact && !lane.subagentOf ? 'rail-boundary' : ''}" style="left:${lane.x + lane.width - (compact ? 33 : 0)}px" data-boundary-after="${lane.id}">
       <div class="boundary-line"></div><div class="boundary-resize" data-resize-boundary="${lane.id}" title="Изменить ширину сессии"></div>
       ${grouped ? '' : `<div class="boundary-actions"><button class="boundary-add" type="button" data-action="insert-session" data-insert-after="${lane.id}" title="Добавить сессию слева от границы" aria-label="Добавить сессию слева от границы">${icon('plus', 16)}</button><button class="boundary-add" type="button" data-action="insert-session" data-insert-before="${next.id}" title="Добавить сессию справа от границы" aria-label="Добавить сессию справа от границы">${icon('plus', 16)}</button></div>`}
     </div>`;
   }).join('');
   const first = columns[0];
   const last = columns.at(-1);
-  const rightOffset = board().lanes.some((item) => item.subagentOf === last?.rootId) ? 86 : 33;
+  const rightOffset = last?.subagentOf ? 0 : 33;
   const outerZones = columns.length ? `<div class="outer-add-zone left-zone" style="left:${first.x - 99}px"><span class="outer-line"></span><button type="button" data-action="insert-session" data-insert-before="${first.id}" title="Добавить сессию слева" aria-label="Добавить сессию слева">${icon('plus', 19)}</button></div>
     <div class="outer-add-zone right-zone" style="left:${last.x + last.width + rightOffset}px"><span class="outer-line"></span><button type="button" data-action="insert-session" data-insert-after="${last.id}" title="Добавить сессию справа" aria-label="Добавить сессию справа">${icon('plus', 19)}</button></div>` : '';
   app.innerHTML = `<div class="prototype-shell">
@@ -310,7 +325,7 @@ function applyCamera() {
     const viewportLeft = -x / zoom;
     const viewportRight = (viewport.clientWidth - x) / zoom;
     const leftBorder = first.x - 33;
-    const rightBorder = last.x + last.width + (board().lanes.some((item) => item.subagentOf === last.rootId) ? 86 : 33);
+    const rightBorder = last.x + last.width + (last.subagentOf ? 0 : 33);
     leftZone.style.left = `${viewportLeft}px`;
     leftZone.style.width = `${Math.max(0, leftBorder - viewportLeft)}px`;
     rightZone.style.left = `${rightBorder}px`;
@@ -330,16 +345,16 @@ function clampCameraX(value) {
   const half = viewport.clientWidth / 2;
   const zoom = camera().zoom;
   const last = columns.at(-1);
-  const min = half - (last.x + last.width + (board().lanes.some((item) => item.subagentOf === last.rootId) ? 86 : 33)) * zoom;
+  const min = half - (last.x + last.width + (last.subagentOf ? 0 : 33)) * zoom;
   const max = half - (columns[0].x - 33) * zoom;
   return Math.max(min, Math.min(max, value));
 }
 
 function positionMenu() {
-  const menu = document.querySelector('.config-popover');
+  const menu = document.querySelector('.config-popover, .model-popover');
   if (!menu) return;
   const viewport = document.querySelector('#board-viewport').getBoundingClientRect();
-  const trigger = menu.closest('.config-menu').querySelector('.config-trigger').getBoundingClientRect();
+  const trigger = menu.closest('.config-menu, .model-widget').querySelector('.config-trigger, .model-widget-trigger').getBoundingClientRect();
   menu.classList.toggle('opens-down', trigger.top - menu.offsetHeight - 7 < viewport.top + 8);
 }
 
@@ -363,7 +378,7 @@ function renderConnections() {
   svg.innerHTML = visibleLanes().filter((lane) => lane.parentId).map((lane) => {
     const parent = laneById(lane.parentId);
     const source = document.querySelector(`[data-lane-id="${parent.id}"] [data-message-id="${lane.sourceMessageId}"]`);
-    const y1 = parent.y + (source?.offsetTop ?? lane.sourceOffset ?? 190) - 9;
+    const y1 = parent.y + (source?.offsetTop ?? lane.sourceOffset ?? 190) - 8.5;
     const x1 = parent.x + 1;
     const x2 = lane.x;
     return `<path d="M ${x1} ${y1} H ${x2}" />`;
@@ -508,8 +523,8 @@ function addBoard() {
   const laneId = uid();
   const id = uid();
   boards.push({ id, name: `Доска ${number}`, camera: null, selectedLaneId: laneId, lanes: [{
-    id: laneId, rootId: laneId, parentId: null, x: 190, y: 140, width: 476,
-    title: 'Новая сессия', provider: 'Codex', model: 'GPT-6 Sol', context: 0,
+    id: laneId, rootId: laneId, parentId: null, x: 190, y: 140, width: MIN_LANE_WIDTH,
+    title: 'Новая сессия', provider: null, model: null, context: 0,
     approval: 'Требует подтверждения', effort: 'Средний', speed: 'Обычная', temperature: 0.7, messages: [],
   }] });
   state.activeBoardId = id;
@@ -541,10 +556,10 @@ function showDeleteBoard(id) {
 }
 
 function showSubagentSettings(parent) {
-  const agents = board().lanes.filter((lane) => lane.subagentOf === parent.id);
+  const agents = board().lanes.filter((lane) => lane.subagentOf === parent.id).sort((a, b) => Number(b.active) - Number(a.active) || Number(b.pinned) - Number(a.pinned));
   subagentsDialog.innerHTML = `<form method="dialog" id="subagent-form" data-parent="${parent.id}"><div class="dialog-heading"><h2>Сабагенты · ${escapeHtml(parent.title)}</h2><button type="button" class="icon-button" data-action="close-subagents" aria-label="Закрыть">${icon('close', 19)}</button></div>
     <p class="dialog-note">Активные сессии видны всегда. Завершённые появляются на доске, если закрепить их и раскрыть список.</p>
-    <div class="subagent-list">${agents.map((lane) => `<label class="subagent-item"><span><strong>${escapeHtml(lane.title)}</strong><small>${lane.active ? 'Активен' : 'Завершён'}</small></span><span class="subagent-pin"><input type="checkbox" name="pinned" value="${lane.id}" ${lane.pinned ? 'checked' : ''}> Закрепить</span></label>`).join('')}</div>
+    <div class="subagent-list">${agents.map((lane) => `<label class="subagent-item" data-active="${Boolean(lane.active)}"><span><strong>${escapeHtml(lane.title)}</strong><small class="agent-status ${lane.active ? 'active' : ''}">${lane.active ? 'Активен' : 'Завершён'}</small></span><span class="subagent-pin"><input type="checkbox" name="pinned" value="${lane.id}" aria-label="Закрепить ${escapeHtml(lane.title)}" ${lane.pinned ? 'checked' : ''}>${icon('pin', 18)}</span></label>`).join('')}</div>
     <div class="dialog-actions"><button type="button" class="secondary-button" data-action="close-subagents">Отмена</button><button type="submit" class="primary-button">Сохранить</button></div></form>`;
   subagentsDialog.showModal();
 }
@@ -555,9 +570,9 @@ function insertSession(referenceId, before) {
   const id = uid();
   const index = board().lanes.findIndex((lane) => lane.id === referenceId) + (before ? 0 : 1);
   board().lanes.splice(index, 0, {
-    id, rootId: id, parentId: null, x: 0, y: 0, width: 476,
-    title: 'Новая сессия', provider: reference.provider,
-    model: reference.model, context: 0,
+    id, rootId: id, parentId: null, x: 0, y: 0, width: MIN_LANE_WIDTH,
+    title: 'Новая сессия', provider: null,
+    model: null, context: 0,
     approval: 'Требует подтверждения', effort: 'Средний', speed: 'Обычная', temperature: 0.7, messages: [],
   });
   board().selectedLaneId = id;
@@ -689,6 +704,15 @@ app.addEventListener('click', async (event) => {
     }
     if (action === 'toggle-details') { state.expanded.has(button.dataset.message) ? state.expanded.delete(button.dataset.message) : state.expanded.add(button.dataset.message); render(); return; }
     if (action === 'toggle-request') { state.expandedRequests.has(button.dataset.message) ? state.expandedRequests.delete(button.dataset.message) : state.expandedRequests.add(button.dataset.message); render(); return; }
+    if (action === 'choose-provider') {
+      lane.provider = button.dataset.provider;
+      lane.model = MODEL_CHOICES[lane.provider][lane.provider === 'Codex' ? 1 : 0];
+      lane.effort = lane.provider === 'Codex' ? 'Средний' : '—';
+      lane.speed = lane.provider === 'Codex' ? 'Обычная' : '—';
+      render();
+      document.querySelector(`[data-composer="${lane.id}"]`)?.focus();
+      return;
+    }
     if (action === 'settings') { showSettings(lane); return; }
     if (action === 'toggle-subagents') {
       board().expandedSubagents ??= {};
@@ -699,6 +723,28 @@ app.addEventListener('click', async (event) => {
     }
     if (action === 'subagent-settings') { showSubagentSettings(lane); return; }
     if (action === 'show-archive') { showArchive(); return; }
+    if (action === 'toggle-model-widget') {
+      const key = `${lane.id}:model-widget`;
+      state.openMenu = state.openMenu === key ? null : key;
+      render();
+      if (state.openMenu) document.querySelector('.model-options button')?.focus();
+      return;
+    }
+    if (action === 'model-choice' || action === 'effort-choice') {
+      const key = action === 'model-choice' ? 'model' : 'effort';
+      if (lane[key] !== button.dataset.value) {
+        lane[key] = button.dataset.value;
+        lane.messages.push({ id: uid(), role: 'settings', text: `Изменены настройки сессии: ${key === 'model' ? 'модель' : 'уровень рассуждения'} — ${lane[key]}` });
+      }
+      render();
+      return;
+    }
+    if (action === 'toggle-speed') {
+      lane.speed = lane.speed === 'Быстрая' ? 'Обычная' : 'Быстрая';
+      lane.messages.push({ id: uid(), role: 'settings', text: `Изменены настройки сессии: скорость — ${lane.speed}` });
+      render();
+      return;
+    }
     if (action === 'toggle-config') {
       const key = `${lane.id}:${button.dataset.config}`;
       state.openMenu = state.openMenu === key ? null : key;
@@ -738,7 +784,7 @@ app.addEventListener('click', async (event) => {
   }
   const laneElement = event.target.closest('.lane');
   if (laneElement && state.mode === 'fixed' && !event.target.closest('textarea,button,input')) focusLane(laneElement.dataset.laneId);
-  if (state.openMenu && !event.target.closest('.config-menu')) { state.openMenu = null; render(); }
+  if (state.openMenu && !event.target.closest('.config-menu, .model-widget')) { state.openMenu = null; render(); }
 });
 
 app.addEventListener('dblclick', (event) => {
@@ -866,7 +912,7 @@ window.addEventListener('pointermove', (event) => {
     applyCamera();
   } else if (drag.kind === 'resize-boundary') {
     const lane = laneById(drag.laneId);
-    const width = Math.max(360, Math.min(900, Math.round(drag.width + (event.clientX - drag.x) / camera().zoom)));
+    const width = Math.max(MIN_LANE_WIDTH, Math.min(900, Math.round(drag.width + (event.clientX - drag.x) / camera().zoom)));
     if (width === lane.width) return;
     lane.width = width;
     render();
@@ -1041,6 +1087,12 @@ archiveDialog.addEventListener('input', (event) => {
 });
 subagentsDialog.addEventListener('click', (event) => {
   if (event.target.closest('[data-action="close-subagents"]')) subagentsDialog.close();
+});
+subagentsDialog.addEventListener('change', (event) => {
+  if (!event.target.matches('input[name="pinned"]')) return;
+  const list = subagentsDialog.querySelector('.subagent-list');
+  const items = [...list.children].sort((a, b) => Number(b.dataset.active === 'true') - Number(a.dataset.active === 'true') || Number(b.querySelector('input').checked) - Number(a.querySelector('input').checked));
+  list.append(...items);
 });
 subagentsDialog.addEventListener('submit', (event) => {
   event.preventDefault();
