@@ -54,9 +54,11 @@ type Lane = {
 type BoardSummary = { id: string; title: string };
 type Agent = { id: string; name: string; description: string; instructions: string };
 type BoardResponse = { board: BoardSummary; lanes: Lane[]; agents?: Agent[] };
+type MemoryItem = { key: string; value: string; updatedAt: string };
+type BoardMemoryState = { workingMemories: Array<{ id: string; name: string; createdAt: string; items: MemoryItem[] }>; longTerm: MemoryItem[] };
 type CodexStatus = { authenticated: boolean; planType?: string; error?: string };
 type CodexModel = { slug?: string; displayName?: string; isDefault?: boolean };
-type McpCatalogServer = { id: string; name: string; description: string; status: "connected" | "error"; error?: string; tools: Array<{ name: string; description: string; inputSchema: Record<string, unknown> }> };
+type McpCatalogServer = { id: string; name: string; description: string; status: "connected" | "error"; error?: string; tools: Array<{ name: string; description: string; inputSchema: Record<string, unknown>; readOnly?: boolean }> };
 
 async function readJson<T>(url: string, init?: RequestInit): Promise<T> {
   const response = await fetch(url, init);
@@ -75,6 +77,7 @@ export function BoardChat() {
   const [openRouterConfigured, setOpenRouterConfigured] = useState(false);
   const [openRouterKey, setOpenRouterKey] = useState("");
   const [mcpServers, setMcpServers] = useState<McpCatalogServer[]>([]);
+  const [memoryRevision, setMemoryRevision] = useState(0);
   const [newLaneProvider, setNewLaneProvider] = useState<"codex" | "openrouter">("codex");
   const [error, setError] = useState<string | null>(null);
   const [focusMode, setFocusMode] = useState(() => window.localStorage.getItem("workspace.focusMode") === "true");
@@ -84,6 +87,7 @@ export function BoardChat() {
   const refreshBoard = useCallback(async (boardId: string) => {
     const value = await readJson<BoardResponse>(`/api/boards/${encodeURIComponent(boardId)}`);
     setBoard(value);
+    setMemoryRevision((revision) => revision + 1);
     return value;
   }, []);
 
@@ -397,6 +401,8 @@ export function BoardChat() {
         </details>)}
       </section>}
 
+      {board && board.board.id === activeBoardId && <BoardMemoryOverview boardId={board.board.id} revision={memoryRevision} />}
+
       <section className="canvas" ref={canvasRef} aria-label="Рабочая область доски">
         {error && <p className="error-banner" role="alert">{error}</p>}
         {board && board.board.id === activeBoardId ? (
@@ -449,6 +455,83 @@ export function BoardChat() {
       </section>
     </main>
   );
+}
+
+function BoardMemoryOverview({ boardId, revision }: { boardId: string; revision: number }) {
+  const [memory, setMemory] = useState<BoardMemoryState>({ workingMemories: [], longTerm: [] });
+  const [newMemoryName, setNewMemoryName] = useState("");
+  const [error, setError] = useState<string | null>(null);
+
+  const base = `/api/boards/${encodeURIComponent(boardId)}/memories`;
+  const refresh = useCallback(async () => setMemory(await readJson<BoardMemoryState>(base)), [base]);
+  useEffect(() => { void refresh().catch((cause: unknown) => setError(cause instanceof Error ? cause.message : "Не удалось загрузить память доски")); }, [refresh, revision]);
+
+  async function mutate(url: string, init: RequestInit) {
+    try { setMemory(await readJson<BoardMemoryState>(url, init)); setError(null); }
+    catch (cause) { setError(cause instanceof Error ? cause.message : "Не удалось изменить память доски"); }
+  }
+
+  async function createMemory(event: FormEvent) {
+    event.preventDefault();
+    if (!newMemoryName.trim()) return;
+    await mutate(`${base}/working`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ name: newMemoryName.trim() }) });
+    setNewMemoryName("");
+  }
+
+  function itemUrl(layer: "working" | "longTerm", memoryName: string, key: string) {
+    return `${base}/${layer}/${encodeURIComponent(memoryName || "-")}/${encodeURIComponent(key)}`;
+  }
+
+  function saveItem(layer: "working" | "longTerm", memoryName: string, key: string, value: string) {
+    return mutate(itemUrl(layer, memoryName, key), { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ value }) });
+  }
+
+  function deleteItem(layer: "working" | "longTerm", memoryName: string, key: string) {
+    return mutate(itemUrl(layer, memoryName, key), { method: "DELETE" });
+  }
+
+  return <details className="board-memory-overview">
+    <summary>Память доски · {memory.workingMemories.length} рабочих пространств · {memory.longTerm.length} общих записей</summary>
+    <div className="board-memory-content">
+      <p>Рабочие памяти доступны всем лентам доски по именам. Долговременная память общая для доски. Эти данные хранятся отдельно от истории лент.</p>
+      <form className="memory-create-form" onSubmit={(event) => void createMemory(event)}>
+        <input aria-label="Имя рабочей памяти" placeholder="Новая рабочая память" value={newMemoryName} onChange={(event) => setNewMemoryName(event.target.value)} />
+        <button type="submit" disabled={!newMemoryName.trim()}>Создать</button>
+      </form>
+      {memory.workingMemories.map((workspace) => <MemoryLayerEditor key={workspace.id} title={`Рабочая память · ${workspace.name}`} items={workspace.items}
+        onSave={(key, value) => saveItem("working", workspace.name, key, value)} onDelete={(key) => deleteItem("working", workspace.name, key)}
+        onClear={() => mutate(`${base}/working/${encodeURIComponent(workspace.name)}`, { method: "DELETE" })}
+        onRemove={() => mutate(`/api/boards/${encodeURIComponent(boardId)}/working-memories/${encodeURIComponent(workspace.name)}`, { method: "DELETE" })} />)}
+      <MemoryLayerEditor title="Долговременная память · общая для доски" items={memory.longTerm}
+        onSave={(key, value) => saveItem("longTerm", "", key, value)} onDelete={(key) => deleteItem("longTerm", "", key)}
+        onClear={() => mutate(`${base}/longTerm/-`, { method: "DELETE" })} />
+      {error && <p className="memory-overview-error" role="alert">{error}</p>}
+    </div>
+  </details>;
+}
+
+function MemoryLayerEditor({ title, items, onSave, onDelete, onClear, onRemove }: {
+  title: string;
+  items: MemoryItem[];
+  onSave: (key: string, value: string) => Promise<void>;
+  onDelete: (key: string) => Promise<void>;
+  onClear: () => Promise<void>;
+  onRemove?: () => Promise<void>;
+}) {
+  const [key, setKey] = useState("");
+  const [value, setValue] = useState("");
+  return <section className="board-memory-layer">
+    <div className="board-memory-layer-title"><strong>{title}</strong>{items.length > 0 && <button type="button" onClick={() => void onClear()}>Очистить записи</button>}{onRemove && <button type="button" onClick={() => void onRemove()}>Удалить память</button>}</div>
+    {items.length === 0 ? <small>Записей пока нет.</small> : <ul>{items.map((item) => <li key={item.key}>
+      <strong>{item.key}</strong><input key={`${item.key}:${item.value}`} defaultValue={item.value} aria-label={`Значение ${item.key}`} onBlur={(event) => { if (event.currentTarget.value !== item.value) void onSave(item.key, event.currentTarget.value); }} />
+      <button type="button" onClick={() => void onDelete(item.key)}>Удалить</button>
+    </li>)}</ul>}
+    <form className="memory-item-form" onSubmit={(event) => { event.preventDefault(); if (!key.trim() || !value.trim()) return; void onSave(key.trim(), value.trim()).then(() => { setKey(""); setValue(""); }); }}>
+      <input aria-label={`Новый ключ · ${title}`} placeholder="Ключ" value={key} onChange={(event) => setKey(event.target.value)} />
+      <input aria-label={`Новое значение · ${title}`} placeholder="Значение" value={value} onChange={(event) => setValue(event.target.value)} />
+      <button type="submit" disabled={!key.trim() || !value.trim()}>Сохранить</button>
+    </form>
+  </section>;
 }
 
 function LaneView({ lane, agentName, lanes, authenticated, openRouterConfigured, codexModels, mcpServers, onRefresh, onBranch, onClone, onSelect, onSaveLayout, onCopy, onMutate, onSaveConfig, onSaveMcpTools, onAutoApprove, onApproval, onEditFact, onClearFacts, onCancelRun, selected }: {
@@ -715,10 +798,11 @@ function LaneView({ lane, agentName, lanes, authenticated, openRouterConfigured,
                     const next = event.target.checked ? [...lane.mcpTools, key] : lane.mcpTools.filter((item) => item.serverId !== key.serverId || item.toolName !== key.toolName);
                     onSaveMcpTools(next);
                   }} />
-                <span><b>{tool.name}</b><small>{tool.description}</small><code>{JSON.stringify(tool.inputSchema, null, 2)}</code></span>
+                <span><b>{tool.name} · {tool.readOnly ? "только чтение" : "требует подтверждения"}</b><small>{tool.description}</small><code>{JSON.stringify(tool.inputSchema, null, 2)}</code></span>
               </label>;
             })}
           </section>)}
+          <p className="mcp-memory-note">Инструмент даёт модели возможность запросить данные текущей ленты или доски. Это не обещает улучшение ответа: результат зависит от вызова модели. Источник, аргументы и результат видны в ленте.</p>
           <small>Команда запуска задана сервером приложения; доска и модель выбирают только зарегистрированные инструменты.</small>
           <label className="mcp-tool-option"><input type="checkbox" checked={lane.mcpAutoApprove} onChange={(event) => onAutoApprove(event.target.checked)} />
             <span><b>Автоматически подтверждать изменяющие вызовы</b><small>Выключено по умолчанию. Включение разрешает выбранным инструментам выполнять изменения; источник согласия сохраняется с каждым вызовом.</small></span>
@@ -740,7 +824,7 @@ function LaneView({ lane, agentName, lanes, authenticated, openRouterConfigured,
             <strong>{approval.serverId}/{approval.toolName} · {({ pending: "ожидает подтверждения", applying: "выполняется", approved: "подтверждено", denied: "отклонено", failed: "ошибка выполнения" } as Record<string, string>)[approval.status] ?? approval.status}</strong>
             <pre>{JSON.stringify(approval.arguments, null, 2)}</pre><p>Причина: {approval.reason}</p>
             {approval.approvalSource && <small>Источник согласия: {approval.approvalSource === "user" ? "подтверждение пользователя" : "настройка autoapprove ленты"}</small>}
-            {approval.status === "pending" && <><p>Действие ещё не выполнено; факт не сохранён.</p>
+            {approval.status === "pending" && <><p>Действие ещё не выполнено; {approval.serverId === "board-memory" ? "память не изменена" : "факт не сохранён"}.</p>
               <button type="button" onClick={() => onApproval(approval.id, "approve")}>Подтвердить</button>
               <button type="button" onClick={() => onApproval(approval.id, "deny")}>Отклонить</button></>}
           </section>)}
