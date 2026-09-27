@@ -23,6 +23,43 @@ import kotlin.test.assertNotNull
 
 class RunCoordinatorMcpTest {
     @Test
+    fun `test board memory writes wait for approval and reject unavailable working memory`() = runBlocking {
+        val temp = Files.createTempDirectory("v3-board-memory-proposal")
+        val store = WorkspaceStore(temp.resolve("board.sqlite"))
+        val boardId = store.boards().first().jsonObject["id"]!!.jsonPrimitive.content
+        val lane = createOpenRouterLane(store, boardId)
+        val memories = MemoryStore(temp.resolve("external-memory.sqlite"))
+        memories.createWorkingMemory(boardId, "созданная память")
+        val toolArgs = """{"layer":"working","memoryName":"созданная память","key":"решение","value":"ожидает подтверждения","reason":"проверка"}"""
+        val invalidArgs = """{"layer":"working","memoryName":"несуществующая","key":"bad","value":"bad","reason":"проверка"}"""
+        store.saveMcpTools(lane, listOf(McpSelection("board-memory", "memory_propose_write")))
+        val root = Path.of(System.getProperty("user.dir")).toAbsolutePath().parent.parent
+        val server = McpServerConfig("board-memory", "Memory", "", "node", listOf(root.resolve("examples/mcp/board-memory-server.mjs").toString()), root.toString())
+        val coordinator = RunCoordinator(store, NoopCodex(), RecordingOpenRouter("mcp_tool_0", toolArgs),
+            OpenRouterKeyStore(temp.resolve("key")).also { it.save("test-server-key-only") }, McpRegistry(listOf(server)), memoryStore = memories)
+        try {
+            val pendingRun = coordinator.submit(lane, "Предложи запись")
+            waitForTerminal(store, pendingRun)
+            val pending = store.laneSnapshot(lane)["mcpApprovals"]!!.jsonArray.single().jsonObject
+            assertEquals("pending", pending["status"]!!.jsonPrimitive.content)
+            assertEquals("working", pending["arguments"]!!.jsonObject["layer"]!!.jsonPrimitive.content)
+            assertEquals("созданная память", pending["arguments"]!!.jsonObject["memoryName"]!!.jsonPrimitive.content)
+            assertEquals("решение", pending["arguments"]!!.jsonObject["key"]!!.jsonPrimitive.content)
+            assertEquals("ожидает подтверждения", pending["arguments"]!!.jsonObject["value"]!!.jsonPrimitive.content)
+            assertTrue(memories.state(boardId)["workingMemories"]!!.jsonArray.single().jsonObject["items"]!!.jsonArray.isEmpty())
+
+            val invalidCoordinator = RunCoordinator(store, NoopCodex(), RecordingOpenRouter("mcp_tool_0", invalidArgs),
+                OpenRouterKeyStore(temp.resolve("key")), McpRegistry(listOf(server)), memoryStore = memories)
+            try {
+                val invalidRun = invalidCoordinator.submit(lane, "Несуществующая память")
+                waitForTerminal(store, invalidRun)
+                assertEquals(1, store.laneSnapshot(lane)["mcpApprovals"]!!.jsonArray.size)
+                assertTrue(memories.state(boardId)["workingMemories"]!!.jsonArray.single().jsonObject["items"]!!.jsonArray.isEmpty())
+            } finally { invalidCoordinator.close() }
+        } finally { coordinator.close(); store.close() }
+    }
+
+    @Test
     fun `parallel lane proposals remain isolated and independently approvable`() = runBlocking {
         val temp = Files.createTempDirectory("v3-facts-parallel")
         val database = temp.resolve("board.sqlite")

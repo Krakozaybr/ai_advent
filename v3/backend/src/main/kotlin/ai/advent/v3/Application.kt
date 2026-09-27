@@ -38,6 +38,13 @@ import java.nio.file.Path
 
 private val json = Json { ignoreUnknownKeys = true }
 
+private fun platformMemoryDatabasePath(): Path {
+    System.getenv("AI_ADVENT_V3_MEMORY_DB")?.let { return Path.of(it) }
+    val root = Path.of(System.getenv("AI_ADVENT_V3_CWD") ?: System.getProperty("user.dir")).toAbsolutePath()
+        .let { if (it.resolve("examples/mcp/board-memory-server.mjs").toFile().exists()) it else it.parent.parent }
+    return root.resolve("v3/data/memory.sqlite")
+}
+
 fun Application.module(
     store: WorkspaceStore = WorkspaceStore(Path.of(System.getenv("AI_ADVENT_V3_DB") ?: "v3/data/board.sqlite")),
     codex: CodexGateway = CodexAppServer(),
@@ -45,10 +52,11 @@ fun Application.module(
     openRouterKeys: OpenRouterKeyStore = OpenRouterKeyStore(Path.of(System.getenv("AI_ADVENT_V3_SETTINGS") ?: "../data/openrouter.key")),
     mcpRegistry: McpRegistry = McpRegistry(),
     mcpClient: McpClient = McpClient(),
+    memoryStore: MemoryStore = MemoryStore(platformMemoryDatabasePath()),
 ) {
     install(ContentNegotiation) { json(json) }
     install(SSE)
-    val coordinator = RunCoordinator(store, codex, openRouter, openRouterKeys, mcpRegistry, mcpClient)
+    val coordinator = RunCoordinator(store, codex, openRouter, openRouterKeys, mcpRegistry, mcpClient, memoryStore)
     monitor.subscribe(ApplicationStopped) { coordinator.close() }
 
     routing {
@@ -73,6 +81,54 @@ fun Application.module(
 
         post("/api/boards") {
             call.respond(HttpStatusCode.Created, store.createBoard())
+        }
+
+        get("/api/boards/{boardId}/memories") {
+            val boardId = call.parameters["boardId"] ?: ""
+            try { store.board(boardId); call.respond(memoryStore.state(boardId)) }
+            catch (_: IllegalStateException) { call.respond(HttpStatusCode.NotFound, buildJsonObject { put("error", "Доска не найдена.") }) }
+        }
+
+        post("/api/boards/{boardId}/memories/working") {
+            val boardId = call.parameters["boardId"] ?: ""
+            val name = runCatching { call.receive<JsonObject>()["name"]?.jsonPrimitive?.contentOrNull }.getOrNull()
+            if (name.isNullOrBlank()) { call.respond(HttpStatusCode.BadRequest, buildJsonObject { put("error", "Укажи имя рабочей памяти.") }); return@post }
+            try { store.board(boardId); call.respond(HttpStatusCode.Created, memoryStore.createWorkingMemory(boardId, name)) }
+            catch (error: IllegalArgumentException) { call.respond(HttpStatusCode.BadRequest, buildJsonObject { put("error", error.message ?: "Имя памяти некорректно.") }) }
+            catch (_: IllegalStateException) { call.respond(HttpStatusCode.NotFound, buildJsonObject { put("error", "Доска не найдена.") }) }
+            catch (_: Exception) { call.respond(HttpStatusCode.Conflict, buildJsonObject { put("error", "Рабочая память с таким именем уже существует.") }) }
+        }
+
+        patch("/api/boards/{boardId}/memories/{layer}/{memoryName}/{key}") {
+            val boardId = call.parameters["boardId"] ?: ""; val layer = call.parameters["layer"] ?: ""
+            val memoryName = call.parameters["memoryName"] ?: ""; val key = call.parameters["key"] ?: ""
+            val value = runCatching { call.receive<JsonObject>()["value"]?.jsonPrimitive?.contentOrNull }.getOrNull()
+            if (value.isNullOrBlank()) { call.respond(HttpStatusCode.BadRequest, buildJsonObject { put("error", "Укажи значение записи.") }); return@patch }
+            try { store.board(boardId); call.respond(memoryStore.upsert(boardId, layer, if (memoryName == "-") "" else memoryName, key, value)) }
+            catch (error: IllegalArgumentException) { call.respond(HttpStatusCode.BadRequest, buildJsonObject { put("error", error.message ?: "Запись памяти некорректна.") }) }
+            catch (error: Exception) { call.respond(HttpStatusCode.NotFound, buildJsonObject { put("error", error.message ?: "Память не найдена.") }) }
+        }
+
+        delete("/api/boards/{boardId}/memories/{layer}/{memoryName}/{key}") {
+            val boardId = call.parameters["boardId"] ?: ""; val layer = call.parameters["layer"] ?: ""
+            val memoryName = call.parameters["memoryName"] ?: ""; val key = call.parameters["key"] ?: ""
+            try { store.board(boardId); call.respond(memoryStore.deleteItem(boardId, layer, if (memoryName == "-") "" else memoryName, key)) }
+            catch (error: Exception) { call.respond(HttpStatusCode.NotFound, buildJsonObject { put("error", error.message ?: "Память не найдена.") }) }
+        }
+
+        delete("/api/boards/{boardId}/memories/{layer}/{memoryName}") {
+            val boardId = call.parameters["boardId"] ?: ""; val layer = call.parameters["layer"] ?: ""
+            val memoryName = call.parameters["memoryName"] ?: ""
+            try {
+                store.board(boardId)
+                call.respond(memoryStore.clear(boardId, layer, if (memoryName == "-") "" else memoryName))
+            } catch (error: Exception) { call.respond(HttpStatusCode.NotFound, buildJsonObject { put("error", error.message ?: "Память не найдена.") }) }
+        }
+
+        delete("/api/boards/{boardId}/working-memories/{memoryName}") {
+            val boardId = call.parameters["boardId"] ?: ""; val memoryName = call.parameters["memoryName"] ?: ""
+            try { store.board(boardId); call.respond(memoryStore.deleteWorkingMemory(boardId, memoryName)) }
+            catch (error: Exception) { call.respond(HttpStatusCode.NotFound, buildJsonObject { put("error", error.message ?: "Рабочая память не найдена.") }) }
         }
 
         post("/api/boards/import") {
@@ -342,7 +398,7 @@ fun Application.module(
                     onSuccess = { tools -> buildJsonObject {
                         put("id", server.id); put("name", server.name); put("description", server.description); put("status", "connected")
                         put("tools", kotlinx.serialization.json.buildJsonArray { tools.forEach { tool -> add(buildJsonObject {
-                            put("name", tool.name); put("description", tool.description); put("inputSchema", tool.inputSchema)
+                            put("name", tool.name); put("description", tool.description); put("inputSchema", tool.inputSchema); put("readOnly", tool.readOnly)
                         }) } })
                     } },
                     onFailure = { _ -> buildJsonObject {
@@ -427,11 +483,10 @@ fun Application.module(
                     val serverId = approval["serverId"]!!.jsonPrimitive.content
                     val toolName = approval["toolName"]!!.jsonPrimitive.content
                     val arguments = approval["arguments"]!!.jsonObject
-                    val server = mcpRegistry.server(serverId).let { config ->
-                        if (serverId != "sticky-facts") config else config.copy(environment = config.environment + mapOf(
-                            "AI_ADVENT_V3_BOARD_DB" to store.laneDatabasePath(laneId), "AI_ADVENT_V3_LANE_ID" to laneId,
-                        ))
-                    }
+                    val registered = mcpRegistry.server(serverId)
+                    val server = if (serverId in setOf("sticky-facts", "lane-history", "board-memory")) {
+                        scopedMcpServer(registered, store.laneDatabasePath(laneId), laneId, memoryStore.databasePath)
+                    } else registered
                     val tool = withContext(Dispatchers.IO) { mcpClient.listTools(server).firstOrNull { it.name == toolName } }
                         ?: error("Selected MCP tool is no longer registered.")
                     require(!tool.readOnly) { "Read-only tools cannot be approved for execution." }

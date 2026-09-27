@@ -30,6 +30,7 @@ class RunCoordinator(
     private val openRouterKeys: OpenRouterKeyStore,
     private val mcpRegistry: McpRegistry = McpRegistry(),
     private val mcpClient: McpClient = McpClient(),
+    private val memoryStore: MemoryStore? = null,
 ) : AutoCloseable {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private val laneLocks = ConcurrentHashMap<String, Mutex>()
@@ -222,6 +223,13 @@ class RunCoordinator(
                     require(rawArgs.length <= MAX_TOOL_ARGUMENT_LENGTH) { "Аргументы инструмента слишком велики." }
                     require(parsedArgs != null) { "Аргументы инструмента должны быть JSON-объектом." }
                     McpClient.validateSchema(parsedArgs, selectedDefinition.second.inputSchema)
+                    if (selectedDefinition.first.serverId == "board-memory" && selectedDefinition.second.name == "memory_propose_write") {
+                        requireNotNull(memoryStore) { "Память доски недоступна." }.validateProposal(
+                            store.laneDatabasePath(run.laneId), run.laneId,
+                            parsedArgs["layer"]?.jsonPrimitive?.contentOrNull.orEmpty(),
+                            parsedArgs["memoryName"]?.jsonPrimitive?.contentOrNull,
+                        )
+                    }
                     if (!selectedDefinition.second.readOnly && !run.mcpAutoApprove) {
                         val reason = parsedArgs["reason"]?.jsonPrimitive?.contentOrNull ?: "Изменяющий инструмент запрошен моделью."
                         val approvalId = store.addMcpApproval(run.laneId, selectedDefinition.first.serverId,
@@ -285,11 +293,8 @@ class RunCoordinator(
 
     private fun scopedServer(serverId: String, laneId: String): McpServerConfig {
         val server = mcpRegistry.server(serverId)
-        if (serverId != "sticky-facts") return server
-        return server.copy(environment = server.environment + mapOf(
-            "AI_ADVENT_V3_BOARD_DB" to store.laneDatabasePath(laneId),
-            "AI_ADVENT_V3_LANE_ID" to laneId,
-        ))
+        if (serverId !in setOf("sticky-facts", "lane-history", "board-memory")) return server
+        return scopedMcpServer(server, store.laneDatabasePath(laneId), laneId, memoryStore?.databasePath ?: "v3/data/memory.sqlite")
     }
 
     suspend fun cancel(runId: String): Boolean {

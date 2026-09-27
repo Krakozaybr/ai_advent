@@ -45,4 +45,5 @@ tasks.named<JavaExec>("run") {
         System.getenv("AI_ADVENT_V3_DB") ?: rootProject.projectDir.resolve("../data/board.sqlite").absolutePath,
     )
     environment("AI_ADVENT_V3_CWD", rootProject.projectDir.resolve("../..").absolutePath)
+    environment("AI_ADVENT_V3_MEMORY_DB", System.getenv("AI_ADVENT_V3_MEMORY_DB") ?: rootProject.projectDir.resolve("../data/memory.sqlite").absolutePath)
 }

@@ -39,9 +39,13 @@ class McpRegistry(private val servers: List<McpServerConfig> = defaultServers())
             val config = Path.of(System.getenv("AI_ADVENT_V3_MCP_REGISTRY") ?: root.resolve("v3/data/mcp-servers.json").toString())
             val example = root.resolve("examples/mcp/catalog-server.mjs").toString()
             val facts = root.resolve("examples/mcp/sticky-facts-server.mjs").toString()
+            val history = root.resolve("examples/mcp/lane-history-server.mjs").toString()
+            val memory = root.resolve("examples/mcp/board-memory-server.mjs").toString()
             val builtIns = listOf(
                 McpServerConfig("local-catalog", "Локальный каталог", "Поиск в демонстрационном локальном каталоге.", "node", listOf(example), root.toString()),
                 McpServerConfig("sticky-facts", "Постоянные факты", "Факты пользователя для текущей ленты.", "node", listOf(facts), root.toString()),
+                McpServerConfig("lane-history", "История текущей ленты", "Поиск по сохранённой истории только этой ленты.", "node", listOf(history), root.toString()),
+                McpServerConfig("board-memory", "Память доски", "Рабочие и долговременная память доски в отдельной SQLite.", "node", listOf(memory), root.toString()),
             )
             if (Files.isRegularFile(config)) return (fromFile(config, root).filterNot { configured -> builtIns.any { it.id == configured.id } } + builtIns)
             return builtIns
@@ -71,6 +75,13 @@ class McpRegistry(private val servers: List<McpServerConfig> = defaultServers())
 }
 
 data class McpSelection(val serverId: String, val toolName: String)
+
+fun scopedMcpServer(server: McpServerConfig, laneDatabasePath: String, laneId: String, memoryDatabasePath: String): McpServerConfig =
+    server.copy(environment = server.environment + buildMap {
+        put("AI_ADVENT_V3_BOARD_DB", laneDatabasePath)
+        put("AI_ADVENT_V3_LANE_ID", laneId)
+        if (server.id == "board-memory") put("AI_ADVENT_V3_MEMORY_DB", memoryDatabasePath)
+    })
 
 class McpClient(private val timeoutMs: Long = 5_000) {
     private val json = Json { ignoreUnknownKeys = true }

@@ -27,6 +27,70 @@ import kotlin.test.assertTrue
 
 class McpApiTest {
     @Test
+    fun `test board memory approval and manual layers persist independently`() = testApplication {
+        val temp = Files.createTempDirectory("board-memory-api")
+        val boardDatabase = temp.resolve("board.sqlite")
+        val store = WorkspaceStore(boardDatabase)
+        val boardId = store.boards().first().jsonObject["id"]!!.jsonPrimitive.content
+        val laneId = store.createLane(boardId, "openrouter")["lanes"]!!.jsonArray.last().jsonObject["id"]!!.jsonPrimitive.content
+        val memories = MemoryStore(temp.resolve("external-memory.sqlite"))
+        memories.createWorkingMemory(boardId, "проект А")
+        val proposalArgs = buildJsonObject {
+            put("layer", "working"); put("memoryName", "проект А"); put("key", "решение"); put("value", "до подтверждения нет записи"); put("reason", "проверка approval")
+        }
+        val approvalId = store.addMcpApproval(laneId, "board-memory", "memory_propose_write", proposalArgs, "проверка approval", null)
+        assertTrue(memories.state(boardId)["workingMemories"]!!.jsonArray.first { it.jsonObject["name"]!!.jsonPrimitive.content == "проект А" }.jsonObject["items"]!!.jsonArray.isEmpty())
+        val root = generateSequence(Path.of("").toAbsolutePath()) { it.parent }
+            .first { Files.isRegularFile(it.resolve("examples/mcp/board-memory-server.mjs")) }
+        val server = McpServerConfig("board-memory", "Память доски", "test", "node",
+            listOf(root.resolve("examples/mcp/board-memory-server.mjs").toString()), root.toString())
+        application { module(store, TestCodex(), OpenRouterHttpGateway(), OpenRouterKeyStore(temp.resolve("key")), McpRegistry(listOf(server)), memoryStore = memories) }
+
+        val createdMemory = client.post("/api/boards/$boardId/memories/working") {
+            header(HttpHeaders.ContentType, ContentType.Application.Json.toString()); setBody("""{"name":"ручная"}""")
+        }
+        assertEquals(HttpStatusCode.Created, createdMemory.status)
+        assertEquals(HttpStatusCode.OK, client.get("/api/boards/$boardId/memories").status)
+
+        val approvalResponse = client.post("/api/lanes/$laneId/mcp-approvals/$approvalId") {
+            header(HttpHeaders.ContentType, ContentType.Application.Json.toString()); setBody("""{"decision":"approve"}""")
+        }
+        assertEquals(HttpStatusCode.OK, approvalResponse.status)
+        assertEquals("approved", store.approval(laneId, approvalId)!!["status"]!!.jsonPrimitive.content)
+        assertEquals("до подтверждения нет записи", memories.state(boardId)["workingMemories"]!!.jsonArray.first { it.jsonObject["name"]!!.jsonPrimitive.content == "проект А" }.jsonObject["items"]!!.jsonArray.single().jsonObject["value"]!!.jsonPrimitive.content)
+
+        val manualWorking = client.patch("/api/boards/$boardId/memories/working/%D1%80%D1%83%D1%87%D0%BD%D0%B0%D1%8F/%D1%80%D1%83%D1%87%D0%BD%D0%BE") {
+            header(HttpHeaders.ContentType, ContentType.Application.Json.toString()); setBody("""{"value":"отредактировано вручную"}""")
+        }
+        assertEquals(HttpStatusCode.OK, manualWorking.status)
+        val manualLongTerm = client.patch("/api/boards/$boardId/memories/longTerm/-/%D0%BD%D0%B0%D0%B4%D0%BE%D0%BB%D0%B3%D0%BE") {
+            header(HttpHeaders.ContentType, ContentType.Application.Json.toString()); setBody("""{"value":"общая запись"}""")
+        }
+        assertEquals(HttpStatusCode.OK, manualLongTerm.status)
+        val clearWorking = client.delete("/api/boards/$boardId/memories/working/%D1%80%D1%83%D1%87%D0%BD%D0%B0%D1%8F")
+        assertEquals(HttpStatusCode.OK, clearWorking.status)
+        val stateAfterWorkingClear = memories.state(boardId)
+        assertTrue(stateAfterWorkingClear["workingMemories"]!!.jsonArray.first { it.jsonObject["name"]!!.jsonPrimitive.content == "ручная" }.jsonObject["items"]!!.jsonArray.isEmpty())
+        assertEquals("общая запись", stateAfterWorkingClear["longTerm"]!!.jsonArray.single().jsonObject["value"]!!.jsonPrimitive.content)
+        val clearLongTerm = client.delete("/api/boards/$boardId/memories/longTerm/-")
+        assertEquals(HttpStatusCode.OK, clearLongTerm.status)
+        assertTrue(memories.state(boardId)["longTerm"]!!.jsonArray.isEmpty())
+
+        val unavailableMemory = client.patch("/api/boards/$boardId/memories/working/unknown/key") {
+            header(HttpHeaders.ContentType, ContentType.Application.Json.toString()); setBody("""{"value":"no"}""")
+        }
+        assertEquals(HttpStatusCode.NotFound, unavailableMemory.status)
+
+        store.close()
+        val reopenedBoard = WorkspaceStore(boardDatabase)
+        val reopenedMemory = MemoryStore(temp.resolve("external-memory.sqlite"))
+        assertEquals("approved", reopenedBoard.approval(laneId, approvalId)!!["status"]!!.jsonPrimitive.content)
+        assertTrue(reopenedMemory.state(boardId)["longTerm"]!!.jsonArray.isEmpty())
+        assertEquals("до подтверждения нет записи", reopenedMemory.state(boardId)["workingMemories"]!!.jsonArray.first { it.jsonObject["name"]!!.jsonPrimitive.content == "проект А" }.jsonObject["items"]!!.jsonArray.single().jsonObject["value"]!!.jsonPrimitive.content)
+        reopenedBoard.close()
+    }
+
+    @Test
     fun `catalog and selection errors do not reveal MCP command paths`() = testApplication {
         val temp = Files.createTempDirectory("mcp-error-sanitization")
         val store = WorkspaceStore(temp.resolve("board.sqlite"))
