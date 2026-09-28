@@ -1,0 +1,23 @@
+{
+  "externalId": "ai-advent-day-20",
+  "title": "День 20 · Агент и несколько MCP-серверов",
+  "lanes": [
+    {
+      "externalId": "orchestration",
+      "title": "Агент выбирает инструменты",
+      "provider": "openrouter",
+      "model": "qwen/qwen3-30b-a3b-instruct-2507",
+      "contextStrategy": "full",
+      "contextWindowSize": 10,
+      "contextBudgetTokens": 32768,
+      "instructions": "Для запросов о демонстрационных событиях используй доступные MCP-инструменты. Сначала найди события через demo-events/search_events, затем передай полученные события в demo-events/summarize_events. Если пользователь просит сохранить сводку, передай её в demo-notes/save_summary на другом сервере. Не выдумывай результат инструментов и сообщи пользователю, если сохранение ждёт подтверждения.",
+      "instructionMode": "append",
+      "layout": {
+        "x": 24,
+        "y": 24,
+        "width": 440
+      },
+      "messages": []
+    }
+  ]
+}

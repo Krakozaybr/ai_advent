@@ -26,6 +26,59 @@ import kotlin.test.assertNotNull
 
 class RunCoordinatorMcpTest {
     @Test
+    fun `test OpenRouter stops after four tool rounds without a final answer`() = runBlocking {
+        val temp = Files.createTempDirectory("v3-demo-round-limit")
+        val store = WorkspaceStore(temp.resolve("board.sqlite"))
+        val boardId = store.boards().first().jsonObject.getValue("id").jsonPrimitive.content
+        val lane = createOpenRouterLane(store, boardId)
+        store.saveMcpTools(lane, listOf(McpSelection("demo-events", "search_events")))
+        val gateway = EndlessDemoOpenRouter()
+        val coordinator = RunCoordinator(store, NoopCodex(), gateway,
+            OpenRouterKeyStore(temp.resolve("key")).also { it.save("test-server-key-only") })
+        try {
+            val runId = coordinator.submit(lane, "Продолжай искать")
+            waitForTerminal(store, runId)
+            assertEquals(4, gateway.rounds)
+            val answer = store.laneSnapshot(lane)["messages"]!!.jsonArray.map { it.jsonObject }
+                .last { it["role"]?.jsonPrimitive?.content == "assistant" }
+            assertEquals("failed", answer["runStatus"]!!.jsonPrimitive.content)
+            val started = store.eventsAfter(runId, 0).map { it.second }.count { it["type"]?.jsonPrimitive?.content == "tool.started" }
+            assertEquals(4, started)
+        } finally { coordinator.close(); store.close() }
+    }
+
+    @Test
+    fun `test OpenRouter performs three sequential demo MCP calls then answers`() = runBlocking {
+        val temp = Files.createTempDirectory("v3-demo-agent")
+        val store = WorkspaceStore(temp.resolve("board.sqlite"))
+        val boardId = store.boards().first().jsonObject.getValue("id").jsonPrimitive.content
+        val lane = createOpenRouterLane(store, boardId)
+        store.saveMcpTools(lane, listOf(
+            McpSelection("demo-events", "search_events"),
+            McpSelection("demo-events", "summarize_events"),
+            McpSelection("demo-notes", "save_summary"),
+        ))
+        store.setMcpAutoApprove(lane, true)
+        val gateway = DemoAgentOpenRouter()
+        val coordinator = RunCoordinator(store, NoopCodex(), gateway,
+            OpenRouterKeyStore(temp.resolve("key")).also { it.save("test-server-key-only") })
+        try {
+            val runId = coordinator.submit(lane, "Найди событие MCP и сохрани сводку")
+            waitForTerminal(store, runId)
+            assertEquals(4, gateway.rounds)
+            val answer = store.laneSnapshot(lane)["messages"]!!.jsonArray.map { it.jsonObject }
+                .last { it["role"]?.jsonPrimitive?.content == "assistant" }
+            assertEquals("Демо-сводка сохранена.", answer["content"]!!.jsonPrimitive.content)
+            val calls = answer["technicalDetails"]!!.jsonObject["toolCalls"]!!.jsonArray.map { it.jsonObject }
+            assertEquals(listOf("search_events", "summarize_events", "save_summary"), calls.map { it["toolName"]!!.jsonPrimitive.content })
+            assertEquals(listOf("demo-events", "demo-events", "demo-notes"), calls.map { it["serverId"]!!.jsonPrimitive.content })
+            assertTrue(calls.all { it["ok"]!!.jsonPrimitive.content == "true" })
+            val saved = calls.last()["result"]!!.jsonObject["structuredContent"]!!.jsonObject["path"]!!.jsonPrimitive.content
+            Files.deleteIfExists(Path.of(System.getProperty("user.dir")).toAbsolutePath().parent.parent.resolve(saved))
+        } finally { coordinator.close(); store.close() }
+    }
+
+    @Test
     fun `assigned agent instructions reach OpenRouter and Codex and survive lane copies`() = runBlocking {
         val temp = Files.createTempDirectory("v3-agent-instructions")
         val store = WorkspaceStore(temp.resolve("board.sqlite"))
@@ -306,7 +359,7 @@ class RunCoordinatorMcpTest {
             waitForTerminal(store, selectedRun)
             waitForTerminal(store, disabledRun)
 
-            assertEquals(2, gateway.toolRoundCalls)
+            assertEquals(3, gateway.toolRoundCalls)
             assertTrue(gateway.messagesSeenByContinuation.single().last { it["role"]?.jsonPrimitive?.content == "tool" }["content"]!!.jsonPrimitive.content.contains("structuredContent"))
             assertTrue(gateway.standardStreamCalls >= 1)
             val selected = store.laneSnapshot(selectedLane)["messages"]!!.jsonArray
@@ -320,11 +373,80 @@ class RunCoordinatorMcpTest {
             assertTrue("tool.started" in events && "tool.completed" in events)
             val disabled = store.laneSnapshot(disabledLane)["messages"]!!.jsonArray.map { it.jsonObject }
                 .last { it["role"]?.jsonPrimitive?.content == "assistant" }
-            assertFalse(disabled["technicalDetails"]!!.jsonObject.containsKey("toolCalls"))
+            assertTrue(disabled["technicalDetails"]!!.jsonObject["toolCalls"]!!.jsonArray.isEmpty())
             assertFalse(keyStore.get() in store.board(boardId).toString())
         } finally {
             coordinator.close()
         }
+    }
+
+    @Test
+    fun `OpenRouter model can start a persistent subagent from its tool call`() = runBlocking {
+        val temp = Files.createTempDirectory("v3-openrouter-subagent")
+        val store = WorkspaceStore(temp.resolve("board.sqlite"))
+        val boardId = store.boards().first().jsonObject["id"]!!.jsonPrimitive.content
+        val parentLane = createOpenRouterLane(store, boardId)
+        store.saveSkills(parentLane, listOf("planning"))
+        val gateway = SpawnSubagentOpenRouter()
+        val coordinator = RunCoordinator(store, NoopCodex(), gateway,
+            OpenRouterKeyStore(temp.resolve("key")).also { it.save("test-server-key-only") })
+        try {
+            val parentRun = coordinator.submit(parentLane, "Исследуй и ответь")
+            waitForTerminal(store, parentRun)
+            for (attempt in 0 until 200) {
+                val children = store.board(boardId)["lanes"]!!.jsonArray.map { it.jsonObject }
+                    .filter { it["originKind"]?.jsonPrimitive?.content == "subagent" }
+                if (children.any { lane -> lane["activeRun"] == null && lane["messages"]!!.jsonArray.any { it.jsonObject["runStatus"]?.jsonPrimitive?.content == "completed" } }) break
+                delay(25)
+            }
+            val lanes = store.board(boardId)["lanes"]!!.jsonArray.map { it.jsonObject }
+            val parentAssistant = lanes.first { it["id"]!!.jsonPrimitive.content == parentLane }["messages"]!!.jsonArray
+                .map { it.jsonObject }.last { it["role"]!!.jsonPrimitive.content == "assistant" }
+            val child = lanes.single { it["originKind"]?.jsonPrimitive?.content == "subagent" }
+            assertEquals(parentLane, child["originLaneId"]!!.jsonPrimitive.content)
+            assertEquals(parentAssistant["id"]!!.jsonPrimitive.content, child["originMessageId"]!!.jsonPrimitive.content)
+            assertEquals("Дочернее исследование", child["title"]!!.jsonPrimitive.content)
+            assertTrue(child["messages"]!!.jsonArray.any { it.jsonObject["content"]?.jsonPrimitive?.content == "Ответ сабагента" })
+            assertTrue(gateway.spawnToolOffered)
+            assertTrue(gateway.childStreamStarted)
+            assertTrue(store.eventsAfter(parentRun, 0).any { it.second["type"]?.jsonPrimitive?.content == "tool.completed" && it.second.toString().contains("spawn_subagent") })
+        } finally { coordinator.close(); store.close() }
+    }
+
+    @Test
+    fun `Codex bridge creates a child for the active thread and records public tool events`() = runBlocking {
+        val temp = Files.createTempDirectory("v3-codex-subagent")
+        val store = WorkspaceStore(temp.resolve("board.sqlite"))
+        val boardId = store.boards().first().jsonObject["id"]!!.jsonPrimitive.content
+        val parentLane = store.createLane(boardId, "codex")["lanes"]!!.jsonArray.last().jsonObject["id"]!!.jsonPrimitive.content
+        val codex = BridgeTestCodex()
+        val coordinator = RunCoordinator(store, codex, InstructionOpenRouter(), OpenRouterKeyStore(temp.resolve("missing-key")))
+        try {
+            val parentRun = coordinator.submit(parentLane, "Родительский запрос")
+            val threadId = codex.parentThread.await()
+            val spawnResult = coordinator.spawnSubagentFromCodex(threadId, "Дочерний Codex", "Ответь коротко")
+            codex.releaseParent.complete(Unit)
+            waitForTerminal(store, parentRun)
+            for (attempt in 0 until 200) {
+                val child = store.board(boardId)["lanes"]!!.jsonArray.map { it.jsonObject }
+                    .firstOrNull { it["originKind"]?.jsonPrimitive?.content == "subagent" }
+                if (child?.get("activeRun") == null && child?.get("messages")?.jsonArray?.any { it.jsonObject["content"]?.jsonPrimitive?.content == "Ответ дочерней сессии" } == true) break
+                delay(25)
+            }
+            val lanes = store.board(boardId)["lanes"]!!.jsonArray.map { it.jsonObject }
+            val parentAnswer = lanes.first { it["id"]!!.jsonPrimitive.content == parentLane }["messages"]!!.jsonArray.map { it.jsonObject }
+                .last { it["role"]?.jsonPrimitive?.content == "assistant" }
+            val child = lanes.single { it["originKind"]?.jsonPrimitive?.content == "subagent" }
+            assertEquals("Дочерний Codex", child["title"]!!.jsonPrimitive.content)
+            assertEquals(parentAnswer["id"]!!.jsonPrimitive.content, child["originMessageId"]!!.jsonPrimitive.content)
+            assertEquals("active", spawnResult["status"]!!.jsonPrimitive.content)
+            assertTrue(child["messages"]!!.jsonArray.any { it.jsonObject["content"]?.jsonPrimitive?.content == "Ответ дочерней сессии" })
+            val parentEvents = store.eventsAfter(parentRun, 0).map { it.second }
+            assertEquals(listOf("tool.started", "tool.completed"), parentEvents.mapNotNull { event ->
+                event.takeIf { it["data"]?.jsonObject?.get("toolName")?.jsonPrimitive?.content == "spawn_subagent" }
+                    ?.get("type")?.jsonPrimitive?.content
+            })
+        } finally { coordinator.close(); store.close() }
     }
 
     @Test
@@ -397,6 +519,65 @@ class RunCoordinatorMcpTest {
         }
         error("Run did not finish in time: ${store.eventsAfter(runId, 0)}")
     }
+}
+
+private class EndlessDemoOpenRouter : OpenRouterGateway {
+    var rounds = 0
+
+    override suspend fun stream(apiKey: String, config: LaneConfig, history: List<ContextMessage>, prompt: String, onText: suspend (String) -> Unit, instructions: String): JsonObject =
+        error("The demo agent must use tools")
+
+    override suspend fun toolRound(apiKey: String, config: LaneConfig, messages: List<JsonObject>, tools: List<JsonObject>, onText: suspend (String) -> Unit, instructions: String): OpenRouterToolRound {
+        rounds++
+        return OpenRouterToolRound(buildJsonObject {
+            put("role", "assistant"); put("content", kotlinx.serialization.json.JsonNull)
+            put("tool_calls", buildJsonArray { add(buildJsonObject {
+                put("id", "endless-$rounds"); put("type", "function")
+                put("function", buildJsonObject { put("name", "mcp_tool_0"); put("arguments", """{"query":"MCP"}""") })
+            }) })
+        }, buildJsonObject { put("provider", "openrouter") })
+    }
+
+    override fun close() = Unit
+}
+
+private class DemoAgentOpenRouter : OpenRouterGateway {
+    var rounds = 0
+
+    override suspend fun stream(apiKey: String, config: LaneConfig, history: List<ContextMessage>, prompt: String, onText: suspend (String) -> Unit, instructions: String): JsonObject =
+        error("The demo agent must use tools")
+
+    override suspend fun toolRound(apiKey: String, config: LaneConfig, messages: List<JsonObject>, tools: List<JsonObject>, onText: suspend (String) -> Unit, instructions: String): OpenRouterToolRound {
+        rounds++
+        assertEquals(listOf("mcp_tool_0", "mcp_tool_1", "mcp_tool_2"),
+            tools.mapNotNull { it["function"]?.jsonObject?.get("name")?.jsonPrimitive?.content }.filter { it.startsWith("mcp_tool_") })
+        val replies = messages.filter { it["role"]?.jsonPrimitive?.content == "tool" }
+        if (replies.size == 3) {
+            onText("Демо-сводка сохранена.")
+            return OpenRouterToolRound(buildJsonObject { put("role", "assistant"); put("content", "Демо-сводка сохранена.") },
+                buildJsonObject { put("provider", "openrouter") })
+        }
+        val args = when (replies.size) {
+            0 -> buildJsonObject { put("query", "MCP") }
+            1 -> buildJsonObject {
+                put("events", kotlinx.serialization.json.Json.parseToJsonElement(replies.last()["content"]!!.jsonPrimitive.content)
+                    .jsonObject["structuredContent"]!!.jsonObject["events"]!!)
+            }
+            else -> buildJsonObject {
+                put("summary", kotlinx.serialization.json.Json.parseToJsonElement(replies.last()["content"]!!.jsonPrimitive.content)
+                    .jsonObject["structuredContent"]!!)
+            }
+        }
+        return OpenRouterToolRound(buildJsonObject {
+            put("role", "assistant"); put("content", kotlinx.serialization.json.JsonNull)
+            put("tool_calls", buildJsonArray { add(buildJsonObject {
+                put("id", "demo-${replies.size}"); put("type", "function")
+                put("function", buildJsonObject { put("name", "mcp_tool_${replies.size}"); put("arguments", args.toString()) })
+            }) })
+        }, buildJsonObject { put("provider", "openrouter") })
+    }
+
+    override fun close() = Unit
 }
 
 private class ScriptedFactsOpenRouter : OpenRouterGateway {
@@ -476,7 +657,14 @@ private class RecordingOpenRouter(
             onText("Найдено в локальном каталоге.")
             return OpenRouterToolRound(buildJsonObject { put("role", "assistant"); put("content", "Найдено в локальном каталоге.") }, buildJsonObject { put("provider", "openrouter") })
         }
-        assertEquals(1, tools.size)
+        if (tools.none { it["function"]?.jsonObject?.get("name")?.jsonPrimitive?.content?.startsWith("mcp_tool_") == true }) {
+            standardStreamCalls++
+            onText("Обычный ответ")
+            return OpenRouterToolRound(buildJsonObject { put("role", "assistant"); put("content", "Обычный ответ") }, buildJsonObject { put("provider", "openrouter") })
+        }
+        val expectedToolCount = tools.count { it["function"]?.jsonObject?.get("name")?.jsonPrimitive?.content?.startsWith("mcp_tool_") == true } +
+            if (tools.any { it["function"]?.jsonObject?.get("name")?.jsonPrimitive?.content == "spawn_subagent" }) 1 else 0
+        assertEquals(expectedToolCount, tools.size)
         return OpenRouterToolRound(buildJsonObject {
             put("role", "assistant")
             put("content", kotlinx.serialization.json.JsonNull)
@@ -497,7 +685,8 @@ private class NoopCodex : CodexGateway {
     override suspend fun beginLogin() = CodexLogin("https://example.invalid")
     override suspend fun stream(threadId: String?, prompt: String, contextToSeed: List<ContextMessage>, shouldSeedContext: Boolean, model: String,
         onThreadId: suspend (String) -> Unit, onContextSeeded: suspend () -> Unit, onContextSeedFailed: suspend () -> Unit,
-        onText: suspend (String) -> Unit, ephemeral: Boolean, onUsage: suspend (JsonObject) -> Unit, developerInstructions: String) {
+        onText: suspend (String) -> Unit, ephemeral: Boolean, onUsage: suspend (JsonObject) -> Unit, developerInstructions: String,
+        effort: String?, serviceTier: String?) {
         error("Codex is not part of this test")
     }
     override fun close() = Unit
@@ -518,7 +707,68 @@ private class InstructionOpenRouter : OpenRouterGateway {
     override suspend fun toolRound(
         apiKey: String, config: LaneConfig, messages: List<JsonObject>, tools: List<JsonObject>,
         onText: suspend (String) -> Unit, instructions: String,
-    ): OpenRouterToolRound = error("MCP tools are not part of this test")
+    ): OpenRouterToolRound {
+        this.instructions += instructions
+        onText("OpenRouter answer")
+        return OpenRouterToolRound(buildJsonObject { put("role", "assistant"); put("content", "OpenRouter answer") }, buildJsonObject { put("provider", "openrouter") })
+    }
+
+    override fun close() = Unit
+}
+
+private class SpawnSubagentOpenRouter : OpenRouterGateway {
+    @Volatile var spawnToolOffered = false
+    @Volatile var childStreamStarted = false
+
+    override suspend fun stream(apiKey: String, config: LaneConfig, history: List<ContextMessage>, prompt: String, onText: suspend (String) -> Unit, instructions: String): JsonObject {
+        childStreamStarted = true
+        onText("Ответ сабагента")
+        return buildJsonObject { put("provider", "openrouter"); put("model", config.model) }
+    }
+
+    override suspend fun toolRound(apiKey: String, config: LaneConfig, messages: List<JsonObject>, tools: List<JsonObject>, onText: suspend (String) -> Unit, instructions: String): OpenRouterToolRound {
+        spawnToolOffered = tools.any { it["function"]?.jsonObject?.get("name")?.jsonPrimitive?.content == "spawn_subagent" }
+        if (messages.any { it["role"]?.jsonPrimitive?.content == "tool" }) {
+            onText("Ответ родительской сессии")
+            return OpenRouterToolRound(buildJsonObject { put("role", "assistant"); put("content", "Ответ родительской сессии") }, buildJsonObject { put("provider", "openrouter") })
+        }
+        return OpenRouterToolRound(buildJsonObject {
+            put("role", "assistant"); put("content", kotlinx.serialization.json.JsonNull)
+            put("tool_calls", buildJsonArray { add(buildJsonObject {
+                put("id", "spawn-call"); put("type", "function")
+                put("function", buildJsonObject { put("name", "spawn_subagent"); put("arguments", """{"task":"Исследуй дочернюю задачу","title":"Дочернее исследование"}""") })
+            }) })
+        }, buildJsonObject { put("provider", "openrouter") })
+    }
+
+    override fun close() = Unit
+}
+
+private class BridgeTestCodex : CodexGateway {
+    val parentThread = CompletableDeferred<String>()
+    val releaseParent = CompletableDeferred<Unit>()
+
+    override suspend fun status() = CodexStatus(true, "test")
+    override suspend fun models() = JsonArray(emptyList())
+    override suspend fun interrupt(threadId: String) = true
+    override suspend fun beginLogin() = CodexLogin("https://example.invalid")
+
+    override suspend fun stream(threadId: String?, prompt: String, contextToSeed: List<ContextMessage>, shouldSeedContext: Boolean, model: String,
+        onThreadId: suspend (String) -> Unit, onContextSeeded: suspend () -> Unit, onContextSeedFailed: suspend () -> Unit,
+        onText: suspend (String) -> Unit, ephemeral: Boolean, onUsage: suspend (JsonObject) -> Unit, developerInstructions: String,
+        effort: String?, serviceTier: String?) {
+        if (prompt == "Родительский запрос") {
+            onThreadId("codex-parent-thread")
+            onContextSeeded()
+            parentThread.complete("codex-parent-thread")
+            releaseParent.await()
+            onText("Родительский ответ")
+        } else {
+            onThreadId("codex-child-thread")
+            onContextSeeded()
+            onText("Ответ дочерней сессии")
+        }
+    }
 
     override fun close() = Unit
 }
@@ -534,6 +784,7 @@ private class InstructionCodex : CodexGateway {
         threadId: String?, prompt: String, contextToSeed: List<ContextMessage>, shouldSeedContext: Boolean, model: String,
         onThreadId: suspend (String) -> Unit, onContextSeeded: suspend () -> Unit, onContextSeedFailed: suspend () -> Unit,
         onText: suspend (String) -> Unit, ephemeral: Boolean, onUsage: suspend (JsonObject) -> Unit, developerInstructions: String,
+        effort: String?, serviceTier: String?,
     ) {
         instructions += developerInstructions
         onThreadId("instruction-test-thread")

@@ -35,17 +35,25 @@ class WorkspaceStore(private val originalFile: Path) : Closeable {
                 .thenBy { it.second.second }
                 .thenBy { it.second.first },
         )
-        JsonArray(ordered.map { it.first.board()["board"]!!.jsonObject })
+        JsonArray(ordered.map { it.first.board()["board"]!!.jsonObject }.filter { it["deleted"]?.jsonPrimitive?.content != "true" })
     }
 
     fun board(boardId: String): JsonObject = synchronized(lock) {
         store(boardId).board()
     }
 
-    fun createBoard(): JsonObject = synchronized(lock) {
+    fun createBoard(requiresProviderChoice: Boolean = false): JsonObject = synchronized(lock) {
         val path = boardsDirectory.resolve("${UUID.randomUUID()}.sqlite")
-        openBoard(path, "Доска ${stores.size + 1}").board()
+        val created = openBoard(path, "Доска ${stores.size + 1}")
+        if (requiresProviderChoice) created.requireProviderChoiceForDefaultLane()
+        created.board()
     }
+
+    fun setBoardArchived(boardId: String, archived: Boolean): JsonObject = synchronized(lock) {
+        store(boardId).also { it.setBoardArchived(archived) }.board()
+    }
+
+    fun deleteBoard(boardId: String) = synchronized(lock) { store(boardId).markBoardDeleted() }
 
     fun importPreparedBoard(imported: ImportedBoard): Pair<JsonObject, Boolean> = synchronized(lock) {
         stores.values.firstNotNullOfOrNull { it.findBoardByExternalId(imported.externalId) }?.let { return@synchronized store(it).board() to true }
@@ -70,18 +78,23 @@ class WorkspaceStore(private val originalFile: Path) : Closeable {
         }
     }
 
-    fun createLane(boardId: String, provider: String = "codex"): JsonObject = synchronized(lock) {
+    fun createLane(boardId: String, provider: String = "codex", requiresProviderChoice: Boolean = false): JsonObject = synchronized(lock) {
         val boardStore = store(boardId)
-        boardStore.createLane(provider)
+        boardStore.createLane(provider, requiresProviderChoice)
         boardStore.board()
+    }
+
+    fun chooseProvider(laneId: String, provider: String): JsonObject = synchronized(lock) {
+        storeForLane(laneId).also { it.chooseProvider(laneId, provider) }.board()
     }
 
     fun updateLaneConfig(
         laneId: String, model: String, temperature: Double?, maxTokens: Int?, stop: String?,
         contextStrategy: String, contextWindowSize: Int, contextBudgetTokens: Int,
+        effort: String? = null, serviceTier: String? = null,
     ): JsonObject = synchronized(lock) {
         storeForLane(laneId).also {
-            it.updateLaneConfig(laneId, model, temperature, maxTokens, stop, contextStrategy, contextWindowSize, contextBudgetTokens)
+            it.updateLaneConfig(laneId, model, temperature, maxTokens, stop, contextStrategy, contextWindowSize, contextBudgetTokens, effort, serviceTier)
         }.board()
     }
 
@@ -108,6 +121,7 @@ class WorkspaceStore(private val originalFile: Path) : Closeable {
     fun boardForLane(laneId: String): JsonObject = synchronized(lock) { storeForLane(laneId).board() }
 
     fun providerForLane(laneId: String): String = storeForLane(laneId).providerForLane(laneId)
+    fun canSpawnSubagents(laneId: String): Boolean = storeForLane(laneId).canSpawnSubagents(laneId)
     fun laneDatabasePath(laneId: String): String = storeForLane(laneId).laneDatabasePath()
     fun setMcpAutoApprove(laneId: String, enabled: Boolean): JsonObject = synchronized(lock) {
         storeForLane(laneId).also { it.setMcpAutoApprove(laneId, enabled) }.board()
@@ -156,8 +170,46 @@ class WorkspaceStore(private val originalFile: Path) : Closeable {
         storeForLane(laneId).also { it.saveLayout(laneId, x, y, width) }.board()
     }
 
+    fun renameLane(laneId: String, title: String): JsonObject = synchronized(lock) {
+        storeForLane(laneId).also { it.renameLane(laneId, title) }.board()
+    }
+
+    fun setLaneArchived(laneId: String, archived: Boolean): JsonObject = synchronized(lock) {
+        storeForLane(laneId).also { it.setLaneArchived(laneId, archived) }.board()
+    }
+
+    fun enqueueMessage(laneId: String, prompt: String, overrides: RequestOverrides): String =
+        storeForLane(laneId).enqueueMessage(laneId, prompt, overrides)
+
+    fun queuedLaneIds(): List<String> = synchronized(lock) { stores.values.flatMap { it.queuedLaneIds() } }
+
+    fun failNextQueuedMessage(laneId: String, error: String): Boolean =
+        storeForLane(laneId).failNextQueuedMessage(laneId, error)
+
+    fun startNextQueuedRun(laneId: String): StartedRun? = storeForLane(laneId).startNextQueuedRun(laneId)
+
+    fun deleteLaneTree(laneId: String): JsonObject = synchronized(lock) {
+        storeForLane(laneId).also { it.deleteLaneTree(laneId) }.board()
+    }
+
+    fun setGroupColor(laneId: String, color: String): JsonObject = synchronized(lock) {
+        storeForLane(laneId).also { it.setGroupColor(laneId, color) }.board()
+    }
+
     fun saveMcpTools(laneId: String, tools: List<McpSelection>): JsonObject = synchronized(lock) {
         storeForLane(laneId).also { it.saveMcpTools(laneId, tools) }.board()
+    }
+
+    fun saveSkills(laneId: String, skills: List<String>): JsonObject = synchronized(lock) {
+        storeForLane(laneId).also { it.saveSkills(laneId, skills) }.board()
+    }
+
+    fun createSubagentLane(parentRunId: String, title: String, task: String): SpawnedSubagent = synchronized(lock) {
+        storeForRun(parentRunId).createSubagentLane(parentRunId, title, task)
+    }
+
+    fun updateSubagents(parentLaneId: String, expanded: Boolean, pinnedIds: Set<String>): JsonObject = synchronized(lock) {
+        storeForLane(parentLaneId).also { it.updateSubagents(parentLaneId, expanded, pinnedIds) }.board()
     }
 
     fun mcpTools(laneId: String): List<McpSelection> = storeForLane(laneId).mcpTools(laneId)
@@ -185,18 +237,22 @@ class WorkspaceStore(private val originalFile: Path) : Closeable {
         return boardStore
     }
 
-    private fun store(boardId: String): BoardStore = stores[boardId]
-        ?: throw IllegalStateException("Unknown board")
+    private fun store(boardId: String): BoardStore = stores[boardId]?.takeUnless {
+        it.board()["board"]!!.jsonObject["deleted"]?.jsonPrimitive?.content == "true"
+    } ?: throw IllegalStateException("Unknown board")
 
     private fun storeForLane(laneId: String): BoardStore = synchronized(lock) { stores.values.firstOrNull { candidate ->
-        candidate.hasLane(laneId)
+        candidate.board()["board"]!!.jsonObject["deleted"]?.jsonPrimitive?.content != "true" && candidate.hasLane(laneId)
     } ?: throw IllegalStateException("Unknown lane") }
 
     private fun storeForMessage(messageId: String): BoardStore = synchronized(lock) {
-        stores.values.firstOrNull { it.hasMessage(messageId) } ?: throw IllegalStateException("Unknown message")
+        stores.values.firstOrNull { it.board()["board"]!!.jsonObject["deleted"]?.jsonPrimitive?.content != "true" && it.hasMessage(messageId) }
+            ?: throw IllegalStateException("Unknown message")
     }
 
-    private fun storeForRun(runId: String): BoardStore = synchronized(lock) { stores.values.firstOrNull { it.runExists(runId) }
+    private fun storeForRun(runId: String): BoardStore = synchronized(lock) { stores.values.firstOrNull {
+        it.board()["board"]!!.jsonObject["deleted"]?.jsonPrimitive?.content != "true" && it.runExists(runId)
+    }
         ?: throw IllegalStateException("Unknown run")
     }
 

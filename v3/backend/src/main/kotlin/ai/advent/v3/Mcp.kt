@@ -52,10 +52,23 @@ class McpRegistry(private val servers: List<McpServerConfig> = defaultServers())
                 McpServerConfig("board-memory", "Память доски", "Рабочие и долговременная память доски в отдельной SQLite.", "node", listOf(memory), root.toString()),
                 McpServerConfig("board-tasks", "Задачи доски", "Задачи, этапы, план и комментарии текущей доски.", "node", listOf(tasks), root.toString(), mapOf("AI_ADVENT_V3_TASKS_DB" to taskDatabase)),
                 McpServerConfig("board-schedules", "Расписания доски", "Локальные расписания запусков и история агрегатов текущей доски.", "node", listOf(schedules), root.toString(), mapOf("AI_ADVENT_V3_SCHEDULES_DB" to schedulesDatabase)),
-            )
+            ) + demoServers(root)
             if (Files.isRegularFile(config)) return (fromFile(config, root).filterNot { configured -> builtIns.any { it.id == configured.id } } + builtIns)
             return builtIns
         }
+
+        fun demoServers(): List<McpServerConfig> {
+            val root = Path.of(System.getenv("AI_ADVENT_V3_CWD") ?: System.getProperty("user.dir"))
+                .toAbsolutePath().let { if (it.resolve("examples/mcp/demo-events-server.mjs").toFile().exists()) it else it.parent.parent }
+            return demoServers(root)
+        }
+
+        private fun demoServers(root: Path): List<McpServerConfig> = listOf(
+            McpServerConfig("demo-events", "Демо-события", "Поиск и сводка по локальным демонстрационным событиям.",
+                "node", listOf(root.resolve("examples/mcp/demo-events-server.mjs").toString()), root.toString()),
+            McpServerConfig("demo-notes", "Демо-заметки", "Сохранение демонстрационной сводки в локальный каталог.",
+                "node", listOf(root.resolve("examples/mcp/demo-notes-server.mjs").toString()), root.toString()),
+        )
 
         private fun fromFile(config: Path, root: Path): List<McpServerConfig> {
             val value = Json.parseToJsonElement(Files.readString(config)).jsonObject

@@ -20,3 +20,17 @@ export function applyRunEvent(current, event) {
 export function emptyRunState(sequence = 0) {
   return { sequence, status: "idle", answer: "", error: null };
 }
+
+export function applyToolRunEvent(current, event) {
+  if (event.type === "tool.started") {
+    if (current.some((item) => item.startSequence === event.sequence)) return current;
+    return [...current, { ...event.data, startSequence: event.sequence, status: "Выполняется" }];
+  }
+  if (event.type !== "tool.completed") return current;
+  const index = current.findIndex((item) => item.toolName === event.data.toolName && item.status === "Выполняется");
+  if (index < 0) return current;
+  const next = [...current];
+  next[index] = { ...event.data, startSequence: next[index].startSequence,
+    status: event.data.result?.status === "pending" ? "Ожидает подтверждения" : event.data.ok ? "Готово" : "Ошибка" };
+  return next;
+}

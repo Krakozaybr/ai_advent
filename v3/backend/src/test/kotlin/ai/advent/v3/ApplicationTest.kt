@@ -215,7 +215,7 @@ class ApplicationTest {
             .first { Files.isDirectory(it.resolve("examples/ai-advent/boards")) }
         val seedDirectory = project.resolve("examples/ai-advent/boards")
         val seedFiles = Files.list(seedDirectory).use { paths -> paths.filter { it.fileName.toString().endsWith(".json") }.sorted().toList() }
-        assertEquals(18, seedFiles.size)
+        assertEquals(20, seedFiles.size)
         val database = Files.createTempDirectory("seed-pack-import-").resolve("board.sqlite")
         val store = WorkspaceStore(database)
         application { module(store, FakeCodexAppServer()) }
@@ -234,9 +234,9 @@ class ApplicationTest {
             assertTrue(Json.parseToJsonElement(second.bodyAsText()).jsonObject.getValue("reused").jsonPrimitive.content.toBoolean())
         }
         val boards = client.get("/api/boards").bodyAsText().let { Json.parseToJsonElement(it).jsonObject.getValue("boards").jsonArray }
-        assertEquals(19, boards.size)
+        assertEquals(21, boards.size)
         val idempotentAgain = WorkspaceStore(database)
-        assertEquals(19, idempotentAgain.boards().size)
+        assertEquals(21, idempotentAgain.boards().size)
         seedFiles.forEach { file ->
             val payload = Json.parseToJsonElement(Files.readString(file)).jsonObject
             val summary = idempotentAgain.boards().map { it.jsonObject }.first { it["title"]!!.jsonPrimitive.content == payload["title"]!!.jsonPrimitive.content }
@@ -851,6 +851,40 @@ for line in sys.stdin:
     }
 
     @Test
+    fun `test shift enter request queues behind the active run and starts automatically`() = testApplication {
+        val directory = Files.createTempDirectory("ai-advent-v3-queue-")
+        val store = WorkspaceStore(directory.resolve("board.sqlite"))
+        val fake = FakeCodexAppServer(blockUntilReleased = true, expectedStreams = 2)
+        application { module(store, fake) }
+        val board = client.get("/api/board").bodyAsText().let(Json::parseToJsonElement).jsonObject
+        val laneId = board["lanes"]!!.jsonArray[0].jsonObject["id"]!!.jsonPrimitive.content
+
+        val first = client.post("/api/lanes/$laneId/messages") {
+            header(HttpHeaders.ContentType, ContentType.Application.Json.toString())
+            setBody("""{"text":"Первый запрос"}""")
+        }
+        assertEquals(HttpStatusCode.Accepted, first.status)
+        fake.started.await()
+
+        val queued = client.post("/api/lanes/$laneId/messages") {
+            header(HttpHeaders.ContentType, ContentType.Application.Json.toString())
+            setBody("""{"text":"Второй запрос","queued":true,"parameters":{"model":"gpt-test"}}""")
+        }
+        assertEquals(HttpStatusCode.Accepted, queued.status, queued.bodyAsText())
+        val queueItem = client.get("/api/board").bodyAsText().let(Json::parseToJsonElement).jsonObject
+            .getValue("lanes").jsonArray[0].jsonObject.getValue("queuedMessages").jsonArray.single().jsonObject
+        assertEquals("pending", queueItem.getValue("status").jsonPrimitive.content)
+        assertEquals("Второй запрос", queueItem.getValue("content").jsonPrimitive.content)
+
+        fake.release.complete(Unit)
+        fake.allStarted.await()
+        fake.finished.await()
+        assertEquals(listOf("Первый запрос", "Второй запрос"), fake.runs.map { it.prompt })
+        assertEquals(0, store.laneSnapshot(laneId).getValue("queuedMessages").jsonArray.size)
+        store.close()
+    }
+
+    @Test
     fun `test failed app-server turn stays a failed run`() = testApplication {
         val database = Files.createTempDirectory("ai-advent-v3-").resolve("board.sqlite")
         val store = WorkspaceStore(database)
@@ -1333,6 +1367,8 @@ private class FakeCodexAppServer(
         ephemeral: Boolean,
         onUsage: suspend (kotlinx.serialization.json.JsonObject) -> Unit,
         developerInstructions: String,
+        effort: String?,
+        serviceTier: String?,
     ) {
         val resolvedThreadId = threadId ?: "fake-codex-thread-${nextThreadId.incrementAndGet()}"
         onThreadId(resolvedThreadId)

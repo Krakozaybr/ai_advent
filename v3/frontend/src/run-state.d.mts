@@ -15,3 +15,4 @@ export type RunEvent = {
 
 export function applyRunEvent(current: RunState, event: RunEvent): RunState;
 export function emptyRunState(sequence?: number): RunState;
+export function applyToolRunEvent(current: Array<Record<string, unknown>>, event: RunEvent): Array<Record<string, unknown>>;

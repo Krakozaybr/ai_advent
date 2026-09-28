@@ -22,7 +22,7 @@ async function request(path, options) {
   return value;
 }
 
-const boardFiles = Array.from({ length: 9 }, (_, index) => `board-${String(index + 10).padStart(2, "0")}.json`);
+const boardFiles = Array.from({ length: 11 }, (_, index) => `board-${String(index + 10).padStart(2, "0")}.json`);
 const imported = new Map();
 for (const file of boardFiles) {
   const payload = await readFile(join(root, "boards", file), "utf8");
@@ -36,6 +36,8 @@ const plan = [
   { day: 15, tools: { "Предложение MCP · approval": [["board-tasks", "tasks_list"], ["board-tasks", "tasks_read"], ["board-tasks", "tasks_propose_update"]] } },
   { day: 16, tools: { "Каталог локального MCP": [["ai-advent-demo", "lookup_demo_event"], ["local-catalog", "search_catalog"]] } },
   { day: 17, tools: { "Вызов read-only инструмента": [["ai-advent-demo", "lookup_demo_event"]] } },
+  { day: 18, tools: { "Запрос для сценария расписания": [["ai-advent-demo", "lookup_demo_event"]] } },
+  { day: 20, tools: { "Агент выбирает инструменты": [["demo-events", "search_events"], ["demo-events", "summarize_events"], ["demo-notes", "save_summary"]] } },
 ];
 
 function findLane(board, title) {

@@ -36,6 +36,7 @@ class RunCoordinator(
     private val laneLocks = ConcurrentHashMap<String, Mutex>()
     private val jobs = ConcurrentHashMap<String, Job>()
     private val threadIds = ConcurrentHashMap<String, String>()
+    private val codexRunByThread = ConcurrentHashMap<String, String>()
     private val providers = ConcurrentHashMap<String, String>()
 
     suspend fun generateSummary(laneId: String): JsonObject {
@@ -103,16 +104,96 @@ class RunCoordinator(
         try {
             val apiKey = openRouterKeys.get()
             val run = store.startRun(laneId, prompt, overrides)
-            providers[run.runId] = run.config.provider
-            run.threadId?.let { threadIds[run.runId] = it }
-            val job = scope.launch {
+            launchRun(run, apiKey, laneLock)
+            jobStarted = true
+            return run.runId
+        } finally {
+            if (!jobStarted) laneLock.unlock()
+        }
+    }
+
+    fun enqueue(laneId: String, prompt: String, overrides: RequestOverrides): String {
+        val queuedId = store.enqueueMessage(laneId, prompt, overrides)
+        scope.launch { drainQueue(laneId) }
+        return queuedId
+    }
+
+    suspend fun spawnSubagent(parentRunId: String, title: String, task: String): JsonObject {
+        val child = store.createSubagentLane(parentRunId, title, task)
+        val runId = submit(child.laneId, task)
+        return buildJsonObject {
+            put("ok", true)
+            put("laneId", child.laneId)
+            put("title", child.title)
+            put("launchOrder", child.launchOrder)
+            put("runId", runId)
+            put("status", "active")
+        }
+    }
+
+    suspend fun spawnSubagentFromCodex(threadId: String, title: String, task: String): JsonObject {
+        val parentRunId = codexRunByThread[threadId] ?: error("Не найден активный запуск Codex для вызова spawn_subagent.")
+        val eventData = buildJsonObject {
+            put("toolName", "spawn_subagent")
+            put("serverId", "ai-advent-subagents")
+            put("arguments", buildJsonObject { put("title", title); put("task", task) })
+        }
+        store.appendRunEvent(parentRunId, "tool.started", eventData)
+        return try {
+            val result = spawnSubagent(parentRunId, title, task)
+            store.appendRunEvent(parentRunId, "tool.completed", buildJsonObject {
+                eventData.forEach { (key, value) -> put(key, value) }
+                put("result", result); put("ok", true)
+            })
+            result
+        } catch (error: Exception) {
+            store.appendRunEvent(parentRunId, "tool.completed", buildJsonObject {
+                eventData.forEach { (key, value) -> put(key, value) }
+                put("error", error.message ?: "Не удалось запустить сабагента."); put("ok", false)
+            })
+            throw error
+        }
+    }
+
+    fun resumeQueuedMessages() {
+        store.queuedLaneIds().forEach { laneId -> scope.launch { drainQueue(laneId) } }
+    }
+
+    private suspend fun drainQueue(laneId: String) {
+        val laneLock = laneLocks.computeIfAbsent(laneId) { Mutex() }
+        if (!laneLock.tryLock()) return
+        var jobStarted = false
+        try {
+            var run: StartedRun? = null
+            while (run == null) {
+                try {
+                    run = store.startNextQueuedRun(laneId)
+                    if (run == null) return
+                } catch (_: ActiveRunException) {
+                    return
+                } catch (error: Exception) {
+                    if (!store.failNextQueuedMessage(laneId, error.message ?: "Не удалось запустить запрос из очереди.")) return
+                }
+            }
+            launchRun(run, openRouterKeys.get(), laneLock)
+            jobStarted = true
+        } finally {
+            if (!jobStarted) laneLock.unlock()
+        }
+    }
+
+    private fun launchRun(run: StartedRun, apiKey: String, laneLock: Mutex) {
+        val laneId = run.laneId
+        providers[run.runId] = run.config.provider
+        run.threadId?.let { threadIds[run.runId] = it }
+        val job = scope.launch {
                 val startedAt = System.nanoTime()
                 try {
                     val details = if (run.config.provider == "openrouter") {
-                        val details = if (run.mcpTools.isEmpty()) {
-                            openRouter.stream(apiKey, run.config, run.contextPlan.messages, prompt, { store.appendText(run.runId, it) }, run.effectiveInstructions)
+                        val details = if (run.mcpTools.isEmpty() && !store.canSpawnSubagents(run.laneId)) {
+                            openRouter.stream(apiKey, run.config, run.contextPlan.messages, run.prompt, { store.appendText(run.runId, it) }, run.effectiveInstructions)
                         } else {
-                            runOpenRouterWithTools(run, apiKey, prompt)
+                            runOpenRouterWithTools(run, apiKey, run.prompt)
                         }
                         kotlinx.serialization.json.buildJsonObject {
                             details.forEach { (key, value) -> put(key, value) }
@@ -122,13 +203,16 @@ class RunCoordinator(
                         var actualUsage: kotlinx.serialization.json.JsonObject? = null
                         codex.stream(
                             threadId = run.threadId,
-                            prompt = prompt,
+                            prompt = run.prompt,
                             contextToSeed = run.contextToSeed,
                             shouldSeedContext = run.shouldSeedContext,
                             model = run.config.model,
+                            effort = run.config.effort,
+                            serviceTier = run.config.serviceTier,
                             ephemeral = run.contextStrategy != ContextStrategy.FULL,
                             onThreadId = {
                                 threadIds[run.runId] = it
+                                codexRunByThread[it] = run.runId
                                 if (run.contextStrategy == ContextStrategy.FULL) store.saveThread(laneId, it)
                             },
                             onContextSeeded = { store.markContextSeeded(laneId) },
@@ -164,18 +248,14 @@ class RunCoordinator(
                     store.failRun(run.runId, safeMessage)
                 } finally {
                     jobs.remove(run.runId)
-                    threadIds.remove(run.runId)
+                    threadIds.remove(run.runId)?.let { codexRunByThread.remove(it, run.runId) }
                     providers.remove(run.runId)
                     laneLock.unlock()
+                    scope.launch { drainQueue(laneId) }
                 }
             }
-            jobs[run.runId] = job
-            job.invokeOnCompletion { jobs.remove(run.runId, job) }
-            jobStarted = true
-            return run.runId
-        } finally {
-            if (!jobStarted) laneLock.unlock()
-        }
+        jobs[run.runId] = job
+        job.invokeOnCompletion { jobs.remove(run.runId, job) }
     }
 
     private suspend fun runOpenRouterWithTools(run: StartedRun, apiKey: String, prompt: String): JsonObject {
@@ -194,10 +274,26 @@ class RunCoordinator(
         }
         require(definitions.size <= MAX_TOOL_CALLS) { "В ленте выбрано слишком много инструментов." }
         val byWireName = definitions.mapIndexed { index, definition -> "mcp_tool_$index" to definition }.toMap()
+        val spawnDefinition = if (store.canSpawnSubagents(run.laneId)) buildJsonObject {
+            put("type", "function")
+            put("function", buildJsonObject {
+                put("name", "spawn_subagent")
+                put("description", "Запустить отдельную дочернюю сессию для независимой параллельной работы. Сабагент получит только указанную задачу и общие инструкции доски. Вызов сразу возвращает id активной сессии, не ожидая её завершения. Не делегируй несвязанные или дублирующие задачи.")
+                put("parameters", buildJsonObject {
+                    put("type", "object")
+                    put("properties", buildJsonObject {
+                        put("task", buildJsonObject { put("type", "string"); put("description", "Самостоятельная задача для сабагента, до 6000 символов.") })
+                        put("title", buildJsonObject { put("type", "string"); put("description", "Короткое название дочерней сессии.") })
+                    })
+                    put("required", JsonArray(listOf(kotlinx.serialization.json.JsonPrimitive("task"))))
+                    put("additionalProperties", false)
+                })
+            })
+        } else null
         val messages = (listOfNotNull(run.effectiveInstructions.takeIf(String::isNotBlank)?.let { ContextMessage("system", it) }) + run.contextPlan.messages + ContextMessage("user", prompt)).map { item ->
             buildJsonObject { put("role", item.role); put("content", item.content) }
         }.toMutableList()
-        val wireTools = definitions.map { it.third }
+        val wireTools = definitions.map { it.third } + listOfNotNull(spawnDefinition)
         val toolEvents = mutableListOf<JsonObject>()
         val rounds = mutableListOf<JsonObject>()
         var lastDetails = buildJsonObject {}
@@ -223,19 +319,29 @@ class RunCoordinator(
                 val wireName = function["name"]?.jsonPrimitive?.contentOrNull.orEmpty()
                 val rawArgs = function["arguments"]?.jsonPrimitive?.contentOrNull ?: "{}"
                 val selectedDefinition = byWireName[wireName]
+                val isSpawnSubagent = wireName == "spawn_subagent" && spawnDefinition != null
                 val parsedArgs = runCatching { Json.parseToJsonElement(rawArgs) as? JsonObject }.getOrNull()
                 val eventData = buildJsonObject {
-                    put("toolName", selectedDefinition?.second?.name ?: wireName)
-                    put("serverId", selectedDefinition?.first?.serverId ?: "")
+                    put("toolName", if (isSpawnSubagent) "spawn_subagent" else selectedDefinition?.second?.name ?: wireName)
+                    put("serverId", if (isSpawnSubagent) "ai-advent-subagents" else selectedDefinition?.first?.serverId ?: "")
                     put("modelToolName", wireName)
                     put("arguments", parsedArgs ?: JsonNull)
                 }
                 store.appendRunEvent(run.runId, "tool.started", eventData)
                 toolEvents += buildJsonObject { eventData.forEach { (key, value) -> put(key, value) }; put("status", "running") }
                 val outcome = runCatching {
-                    require(selectedDefinition != null) { "Модель запросила неизвестный или неразрешённый инструмент." }
+                    require(selectedDefinition != null || isSpawnSubagent) { "Модель запросила неизвестный или неразрешённый инструмент." }
                     require(rawArgs.length <= MAX_TOOL_ARGUMENT_LENGTH) { "Аргументы инструмента слишком велики." }
                     require(parsedArgs != null) { "Аргументы инструмента должны быть JSON-объектом." }
+                    if (isSpawnSubagent) {
+                        require(parsedArgs.keys.all { it == "task" || it == "title" }) { "Неизвестные поля инструмента spawn_subagent." }
+                        val task = parsedArgs["task"]?.jsonPrimitive?.contentOrNull.orEmpty()
+                        val title = parsedArgs["title"]?.jsonPrimitive?.contentOrNull.orEmpty()
+                        require(task.isNotBlank() && task.length <= 6_000) { "Укажи задачу сабагента длиной до 6000 символов." }
+                        require(title.length <= 120) { "Название сабагента не должно превышать 120 символов." }
+                        return@runCatching spawnSubagent(run.runId, title, task)
+                    }
+                    requireNotNull(selectedDefinition)
                     McpClient.validateSchema(parsedArgs, selectedDefinition.second.inputSchema)
                     if (selectedDefinition.first.serverId == "board-memory" && selectedDefinition.second.name == "memory_propose_write") {
                         requireNotNull(memoryStore) { "Память доски недоступна." }.validateProposal(
@@ -330,7 +436,7 @@ class RunCoordinator(
     }
 }
 
-private const val MAX_TOOL_ROUNDS = 3
+private const val MAX_TOOL_ROUNDS = 4
 private const val MAX_TOOL_CALLS = 5
 private const val MAX_TOOL_ARGUMENT_LENGTH = 64_000
 private const val MAX_TOOL_RESULT_LENGTH = 100_000

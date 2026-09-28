@@ -8,6 +8,17 @@ const MODEL_CHOICES = {
   Codex: ['GPT-6 Astra', 'GPT-6 Sol', 'GPT-6 Luna', 'GPT-5.6 Sol', 'GPT-5.6 Terra', 'GPT-5.6 Luna', 'GPT-5.5'],
   OpenRouter: ['Qwen 3', 'GPT-4o mini', 'DeepSeek V3'],
 };
+const REASONING_LEVELS = ['Низкий', 'Средний', 'Высокий', 'Очень высокий', 'Максимальный', 'Ультра'];
+const MODEL_REASONING_LIMITS = {
+  'GPT-6 Astra': 5,
+  'GPT-6 Sol': 5,
+  'GPT-6 Luna': 4,
+  'GPT-5.6 Sol': 5,
+  'GPT-5.6 Terra': 5,
+  'GPT-5.6 Luna': 4,
+  'GPT-5.5': 2,
+};
+const supportedReasoningLevels = (model) => REASONING_LEVELS.slice(0, MODEL_REASONING_LIMITS[model] + 1);
 const MIN_LANE_WIDTH = 560;
 const GROUP_COLORS = ['#9fb7d3', '#a8cbb5', '#d8be9e', '#bcaed2', '#d6afb4', '#9bc7cc'];
 const DEFAULT_GROUP_COLOR = GROUP_COLORS[0];
@@ -69,23 +80,23 @@ const boards = [
         approval: 'Требует подтверждения', effort: 'Высокий', speed: 'Обычная', temperature: 0.7,
         messages: [
           { id: 'team-user', role: 'user', text: 'Проверь готовность релиза: тесты, документацию и риски.' },
-          { id: 'team-answer', role: 'assistant', text: 'Раздал три независимые проверки сабагентам. Тесты ещё идут; документация проверена, риски собраны.', duration: '12,4 с', request: '{ "model": "gpt-6-sol", "stream": true }', toolUses: [{ name: 'spawn_subagent', input: { task: 'Проверить тесты' }, result: 'Сабагент «Тесты» запущен.' }, { name: 'spawn_subagent', input: { task: 'Проверить документацию' }, result: 'Сабагент «Документация» завершил работу.' }] },
+          { id: 'team-answer', role: 'assistant', text: 'Раздал три независимые проверки сабагентам. Тесты ещё идут; документация проверена, риски собраны.', duration: '12,4 с', request: '{ "model": "gpt-6-sol", "stream": true }', toolUses: [{ name: 'spawn_subagent', input: { task: 'Проверить тесты' }, result: 'Сабагент «Тесты» запущен.' }, { name: 'spawn_subagent', input: { task: 'Проверить документацию' }, result: 'Сабагент «Документация» завершил работу.' }, { name: 'spawn_subagent', input: { task: 'Собрать риски' }, result: 'Сабагент «Риски» завершил работу.' }] },
         ],
       },
       {
-        id: 'agent-tests', rootId: 'team-lead', parentId: null, subagentOf: 'team-lead', active: true, pinned: false,
+        id: 'agent-tests', rootId: 'team-lead', parentId: null, subagentOf: 'team-lead', sourceMessageId: 'team-answer', launchOrder: 1, active: true, pinned: false,
         x: 0, y: 0, width: 560, title: 'Тесты', provider: 'Codex', model: 'GPT-6 Luna', context: 35,
         approval: 'Требует подтверждения', effort: 'Средний', speed: 'Быстрая', temperature: 0.7,
         messages: [{ id: 'tests-user', role: 'user', text: 'Проверь тесты перед релизом.' }, { id: 'tests-answer', role: 'assistant', text: 'Запущена проверка: есть один нестабильный сценарий, перепроверяю его.', duration: '8,2 с', request: '{ "model": "gpt-6-luna", "stream": true }' }],
       },
       {
-        id: 'agent-docs', rootId: 'team-lead', parentId: null, subagentOf: 'team-lead', active: false, pinned: true,
+        id: 'agent-docs', rootId: 'team-lead', parentId: null, subagentOf: 'team-lead', sourceMessageId: 'team-answer', launchOrder: 2, active: false, pinned: true,
         x: 0, y: 0, width: 560, title: 'Документация', provider: 'Codex', model: 'GPT-6 Luna', context: 22,
         approval: 'Требует подтверждения', effort: 'Низкий', speed: 'Обычная', temperature: 0.7,
         messages: [{ id: 'docs-user', role: 'user', text: 'Проверь документацию релиза.' }, { id: 'docs-answer', role: 'assistant', text: 'Описание изменений и инструкция обновления готовы.', duration: '6,5 с', request: '{ "model": "gpt-6-luna", "stream": true }' }],
       },
       {
-        id: 'agent-risks', rootId: 'team-lead', parentId: null, subagentOf: 'team-lead', active: false, pinned: false,
+        id: 'agent-risks', rootId: 'team-lead', parentId: null, subagentOf: 'team-lead', sourceMessageId: 'team-answer', launchOrder: 3, active: false, pinned: false,
         x: 0, y: 0, width: 560, title: 'Риски', provider: 'Codex', model: 'GPT-6 Luna', context: 18,
         approval: 'Требует подтверждения', effort: 'Средний', speed: 'Обычная', temperature: 0.7,
         messages: [{ id: 'risks-user', role: 'user', text: 'Собери риски релиза.' }, { id: 'risks-answer', role: 'assistant', text: 'Главный риск — нестабильный тест оплаты; требуется повторный прогон.', duration: '5,3 с', request: '{ "model": "gpt-6-luna", "stream": true }' }],
@@ -110,7 +121,7 @@ function laneVisible(lane) {
   if (!lane || lane.archived) return false;
   if (lane.subagentOf) {
     const parent = laneById(lane.subagentOf);
-    return Boolean(parent && laneVisible(parent) && (lane.active || (board().expandedSubagents?.[parent.id] && lane.pinned)));
+    return Boolean(parent && laneVisible(parent) && board().expandedSubagents?.[parent.id] && (lane.active || lane.pinned));
   }
   if (lane.parentId) {
     const parent = laneById(lane.parentId);
@@ -118,9 +129,19 @@ function laneVisible(lane) {
   }
   return true;
 }
-const visibleLanes = () => board().lanes.filter(laneVisible);
+const visibleLanes = () => {
+  const lanes = board().lanes.filter(laneVisible);
+  return lanes.filter((lane) => !lane.subagentOf).flatMap((lane) => {
+    const agents = lanes.filter((agent) => agent.subagentOf === lane.id);
+    agents.sort((a, b) => (b.launchOrder ?? board().lanes.indexOf(b)) - (a.launchOrder ?? board().lanes.indexOf(a)));
+    return [lane, ...agents];
+  });
+};
 const rootLane = (lane) => laneById(lane.rootId) || lane;
 const hasGroup = (lane) => !lane.parentId && !lane.subagentOf && board().lanes.some((item) => item.id !== lane.id && item.rootId === lane.id && !item.archived);
+const hasSubagents = (lane) => board().lanes.some((item) => item.subagentOf === lane?.id);
+const leadingBoundaryOffset = (lane) => hasSubagents(lane) ? 0 : 33;
+const trailingBoundaryOffset = (lane) => lane?.subagentOf || hasSubagents(lane) ? 0 : 33;
 const groupColor = (lane) => {
   const root = rootLane(lane);
   return state.colorDraft?.laneId === root.id ? state.colorDraft.value : root.groupColor || DEFAULT_GROUP_COLOR;
@@ -153,18 +174,19 @@ function layoutLanes() {
   for (const lane of visibleLanes()) {
     if (previous) x += previous.width + (lane.subagentOf && lane.rootId === previous.rootId ? 0 : 66);
     lane.x = x;
-    if (!lane.parentId) lane.y = 0;
+    if (!lane.parentId && !lane.subagentOf) lane.y = 0;
     previous = lane;
   }
 }
 
-function alignBranches() {
-  for (const lane of visibleLanes().filter((item) => item.parentId)) {
-    const parent = laneById(lane.parentId);
+function alignLinkedLanes() {
+  for (const lane of visibleLanes().filter((item) => item.parentId || item.subagentOf)) {
+    const parent = laneById(lane.parentId || lane.subagentOf);
     const source = document.querySelector(`[data-lane-id="${parent.id}"] [data-message-id="${lane.sourceMessageId}"]`);
     const element = document.querySelector(`[data-lane-id="${lane.id}"]`);
     const headerHeight = element?.querySelector('.lane-header')?.offsetHeight ?? 47;
-    lane.y = parent.y + (source?.offsetTop ?? lane.sourceOffset ?? 190) - headerHeight - 8;
+    const launchOffset = lane.subagentOf ? ((lane.launchOrder ?? 1) - 1) * 20 : 0;
+    lane.y = parent.y + (source?.offsetTop ?? lane.sourceOffset ?? 190) + launchOffset - headerHeight - 8;
     lane.sourceOffset = (source?.offsetTop ?? lane.sourceOffset ?? 190);
     if (element) element.style.top = `${lane.y}px`;
   }
@@ -182,9 +204,10 @@ function configMenu(lane, key, label, values, className = '') {
 function modelWidget(lane) {
   const open = state.openMenu === `${lane.id}:model-widget`;
   const fast = lane.speed === 'Быстрая';
-  return `<div class="model-widget"><button class="model-widget-trigger" type="button" data-action="toggle-model-widget" data-lane="${lane.id}" aria-label="Модель: ${escapeHtml(lane.model)}; уровень рассуждения: ${escapeHtml(lane.effort)}" aria-expanded="${open}" aria-haspopup="menu"><span>${escapeHtml(lane.model)}</span><span class="model-widget-effort">${escapeHtml(lane.effort)}</span>${icon('chevron', 13)}</button>
+  const supported = supportedReasoningLevels(lane.model);
+  return `<div class="model-widget"><button class="model-widget-trigger" type="button" data-action="toggle-model-widget" data-lane="${lane.id}" aria-label="Модель: ${escapeHtml(lane.model)}; уровень рассуждения: ${escapeHtml(lane.effort)}" aria-expanded="${open}" aria-haspopup="menu"><span>${escapeHtml(lane.model)}</span><span class="model-widget-effort">${escapeHtml(lane.effort)}</span></button>
     <button class="speed-toggle ${fast ? 'active' : ''}" type="button" data-action="toggle-speed" data-lane="${lane.id}" aria-label="Скорость: ${escapeHtml(lane.speed)}" aria-pressed="${fast}" title="${fast ? 'Быстрая скорость' : 'Обычная скорость'}">${icon('bolt', 15)}</button>
-    ${open ? `<div class="model-popover" role="menu" aria-label="Модель и уровень рассуждения"><span class="model-popover-label">Модель</span><div class="model-options">${MODEL_CHOICES.Codex.map((value) => `<button type="button" role="menuitemradio" aria-checked="${lane.model === value}" data-action="model-choice" data-lane="${lane.id}" data-value="${escapeHtml(value)}">${escapeHtml(value)}${lane.model === value ? icon('check', 14) : ''}</button>`).join('')}</div><span class="model-popover-label">Уровень рассуждения</span><div class="effort-options">${['Низкий', 'Средний', 'Высокий'].map((value) => `<button type="button" aria-pressed="${lane.effort === value}" data-action="effort-choice" data-lane="${lane.id}" data-value="${value}">${value}</button>`).join('')}</div></div>` : ''}
+    ${open ? `<div class="model-popover" role="menu" aria-label="Модель и уровень рассуждения"><span class="model-popover-label">Модель</span><div class="model-options">${MODEL_CHOICES.Codex.map((value) => `<button type="button" role="menuitemradio" aria-checked="${lane.model === value}" data-action="model-choice" data-lane="${lane.id}" data-value="${escapeHtml(value)}">${escapeHtml(value)}${lane.model === value ? icon('check', 14) : ''}</button>`).join('')}</div><span class="model-popover-label">Уровень рассуждения</span><div class="effort-options">${REASONING_LEVELS.map((value) => `<button type="button" aria-pressed="${lane.effort === value}" data-action="effort-choice" data-lane="${lane.id}" data-value="${value}" ${supported.includes(value) ? '' : `disabled title="Недоступно для ${escapeHtml(lane.model)}"`}>${value}</button>`).join('')}</div></div>` : ''}
   </div>`;
 }
 
@@ -213,13 +236,26 @@ function formatRequest(request) {
   catch { return request; }
 }
 
+function highlightJson(request) {
+  const tokens = /"(?:\\.|[^"\\])*"|-?\d+(?:\.\d+)?(?:[eE][+-]?\d+)?|\b(?:true|false|null)\b|[{}\[\]:,]/g;
+  let cursor = 0;
+  let html = '';
+  for (const match of request.matchAll(tokens)) {
+    html += escapeHtml(request.slice(cursor, match.index));
+    const token = match[0];
+    const type = token.startsWith('"') ? (/^\s*:/.test(request.slice(match.index + token.length)) ? 'key' : 'string')
+      : /^[\d-]/.test(token) ? 'number' : /^(true|false|null)$/.test(token) ? 'literal' : 'punctuation';
+    html += `<span class="json-${type}">${escapeHtml(token)}</span>`;
+    cursor = match.index + token.length;
+  }
+  return html + escapeHtml(request.slice(cursor));
+}
+
 function renderMessage(lane, message) {
   const common = `data-message-id="${escapeHtml(message.id)}"`;
-  if (message.role === 'settings') {
-    return `<div class="settings-event" ${common}>${icon('settings', 15)}<span>${escapeHtml(message.text)}</span></div>`;
-  }
+  const configNote = message.configChanged ? `<span class="message-config-note">${icon('settings', 13)} Настройки изменены</span>` : '';
   if (message.role === 'queue') {
-    return `<div class="queue-event" ${common}><span class="queue-dot"></span><span><strong>В очереди</strong> · ${textContent(message.text)}</span></div>`;
+    return `<div class="queue-event" ${common}><span class="queue-dot"></span><span><strong>В очереди</strong> · ${textContent(message.text)}${configNote}</span></div>`;
   }
   if (message.role === 'demo') {
     return `<div class="demo-note" ${common}>${escapeHtml(message.text)}</div>`;
@@ -231,14 +267,14 @@ function renderMessage(lane, message) {
     <button class="icon-button" type="button" data-action="delete-message" data-lane="${lane.id}" data-message="${message.id}" title="Удалить сообщение" aria-label="Удалить сообщение">${icon('trash', 15)}</button>
   </div>`;
   if (message.role === 'user') {
-    return `<article class="message user-message" ${common}><div class="user-bubble">${textContent(message.text)}</div>${actions}</article>`;
+    return `<article class="message user-message" ${common}>${configNote}<div class="user-bubble">${textContent(message.text)}</div>${actions}</article>`;
   }
   const expanded = state.expanded.has(message.id);
   const request = formatRequest(message.request || '{ "stream": true }');
   const longRequest = request.length > 180 || request.split('\n').length > 8;
   const requestExpanded = state.expandedRequests.has(message.id);
   const detailHtml = `<div class="run-details"><div class="detail-line"><div class="detail-heading"><span>Запрос к LLM</span><button class="icon-button" type="button" data-action="copy-request" data-lane="${lane.id}" data-message="${message.id}" title="Копировать запрос" aria-label="Копировать запрос">${icon('copy', 15)}</button></div>
-    <pre class="request-code ${longRequest && !requestExpanded ? 'collapsed' : ''}"><code>${escapeHtml(request)}</code></pre>
+    <pre class="request-code ${longRequest && !requestExpanded ? 'collapsed' : ''}"><code>${highlightJson(request)}</code></pre>
     ${longRequest ? `<button class="request-expand" type="button" data-action="toggle-request" data-message="${message.id}" aria-expanded="${requestExpanded}">${requestExpanded ? 'Свернуть запрос' : 'Показать весь запрос'}${icon('chevron', 13)}</button>` : ''}</div>
     ${message.reasoningSummary ? `<div class="detail-line"><span>Ход работы · краткое публичное описание</span><p>${escapeHtml(message.reasoningSummary)}</p></div>` : ''}
     ${message.toolUses?.length ? `<div class="detail-line"><span>Использование инструментов</span>${message.toolUses.map((tool) => `<div class="tool-use"><strong>${escapeHtml(tool.name)}</strong><div><small>Вход</small><code>${escapeHtml(JSON.stringify(tool.input, null, 2))}</code></div><div><small>Результат</small><p>${escapeHtml(tool.result)}</p></div></div>`).join('')}</div>` : message.tools && message.tools !== 'Инструменты не вызывались.' ? `<div class="detail-line"><span>Использование инструментов</span><p>${escapeHtml(message.tools)}</p></div>` : ''}</div>`;
@@ -255,8 +291,9 @@ function renderMessage(lane, message) {
 function renderLane(lane) {
   const selected = board().selectedLaneId === lane.id;
   const independent = !lane.parentId && !lane.subagentOf;
+  const grouped = hasGroup(rootLane(lane));
   const modelControls = lane.provider === 'Codex' ? modelWidget(lane) : configMenu(lane, 'model', 'Модель', MODEL_CHOICES.OpenRouter, 'model-menu');
-  return `<section class="lane ${selected ? 'selected' : ''} ${independent ? 'independent' : 'linked'} ${lane.subagentOf ? 'subagent-lane' : ''}" data-lane-id="${lane.id}" data-root-id="${lane.rootId}" style="left:${lane.x}px;top:${lane.y}px;width:${lane.width}px;--group-color:${groupColor(lane)}">
+  return `<section class="lane ${selected ? 'selected' : ''} ${independent ? 'independent' : 'linked'} ${lane.subagentOf ? 'subagent-lane' : ''} ${grouped ? 'grouped' : ''}" data-lane-id="${lane.id}" data-root-id="${lane.rootId}" style="left:${lane.x}px;top:${lane.y}px;width:${lane.width}px;--group-color:${groupColor(lane)}">
     <header class="lane-header" ${independent ? `data-drop-root="${lane.id}"` : ''}>
       <div class="lane-header-main">${independent ? `<span class="drag-grip" data-drag-root="${lane.id}" title="Перетащить сессию вместе с ветками" aria-label="Перетащить сессию вместе с ветками">${icon('grip', 16)}</span>` : ''}<span class="lane-title" data-title-lane="${lane.id}" title="Двойной щелчок — изменить название">${escapeHtml(lane.title)}</span>
         <div class="lane-header-actions">${renderGroupColorControl(lane)}<button class="icon-button" type="button" data-action="clone" data-lane="${lane.id}" title="Клонировать сессию" aria-label="Клонировать сессию">${icon('copy', 16)}</button><button class="icon-button" type="button" data-action="archive" data-lane="${lane.id}" title="В архив" aria-label="В архив">${icon('archive', 16)}</button><button class="icon-button" type="button" data-action="delete-session" data-lane="${lane.id}" title="Удалить сессию" aria-label="Удалить сессию">${icon('trash', 16)}</button></div>
@@ -286,11 +323,13 @@ function render() {
   const groupSurfaces = columns.filter(hasGroup).map((lane) => {
     const members = columns.filter((item) => item.rootId === lane.id);
     const lastMember = members.at(-1);
-    return `<div class="group-surface" data-group-surface="${lane.id}" style="left:${lane.x}px;width:${lastMember.x + lastMember.width - lane.x}px;--group-color:${groupColor(lane)}"></div>`;
+    const left = lane.x - leadingBoundaryOffset(lane) - 1;
+    const right = lastMember.x + lastMember.width + trailingBoundaryOffset(lastMember);
+    return `<div class="group-surface" data-group-surface="${lane.id}" style="left:${left}px;width:${right - left}px;--group-color:${groupColor(lane)}"></div>`;
   }).join('');
-  const rails = columns.filter((lane) => !lane.parentId && !lane.subagentOf && board().lanes.some((item) => item.subagentOf === lane.id)).map((lane) => {
+  const subagentControls = columns.filter((lane) => !lane.parentId && !lane.subagentOf && hasSubagents(lane)).map((lane) => {
     const expanded = Boolean(board().expandedSubagents?.[lane.id]);
-    return `<div class="subagent-rail" style="left:${lane.x + lane.width}px" data-subagent-rail="${lane.id}"><span class="subagent-rail-line"></span><div class="subagent-rail-actions"><button type="button" data-action="toggle-subagents" data-lane="${lane.id}" title="${expanded ? 'Скрыть закреплённых сабагентов' : 'Показать закреплённых сабагентов'}" aria-label="${expanded ? 'Скрыть' : 'Показать'} закреплённых сабагентов" aria-expanded="${expanded}">${icon('chevron', 18)}</button><button type="button" data-action="subagent-settings" data-lane="${lane.id}" title="Настроить сабагентов" aria-label="Настроить сабагентов">${icon('settings', 17)}</button></div></div>`;
+    return `<div class="subagent-boundary-controls" style="left:${lane.x + lane.width}px" data-subagent-controls="${lane.id}"><button type="button" data-action="toggle-subagents" data-lane="${lane.id}" title="${expanded ? 'Скрыть сабагентов' : 'Показать сабагентов'}" aria-label="${expanded ? 'Скрыть' : 'Показать'} сабагентов" aria-expanded="${expanded}">${icon('chevron', 18)}</button><button type="button" data-action="subagent-settings" data-lane="${lane.id}" title="Настроить сабагентов" aria-label="Настроить сабагентов">${icon('settings', 17)}</button></div>`;
   }).join('');
   const boundaries = columns.slice(0, -1).map((lane, index) => {
     const next = columns[index + 1];
@@ -303,13 +342,13 @@ function render() {
   }).join('');
   const first = columns[0];
   const last = columns.at(-1);
-  const rightOffset = last?.subagentOf ? 0 : 33;
-  const outerZones = columns.length ? `<div class="outer-add-zone left-zone" style="left:${first.x - 99}px"><span class="outer-line"></span><button type="button" data-action="insert-session" data-insert-before="${first.id}" title="Добавить сессию слева" aria-label="Добавить сессию слева">${icon('plus', 19)}</button></div>
+  const rightOffset = trailingBoundaryOffset(last);
+  const outerZones = columns.length ? `<div class="outer-add-zone left-zone" style="left:${first.x - leadingBoundaryOffset(first) - 66}px"><span class="outer-line"></span><button type="button" data-action="insert-session" data-insert-before="${first.id}" title="Добавить сессию слева" aria-label="Добавить сессию слева">${icon('plus', 19)}</button></div>
     <div class="outer-add-zone right-zone" style="left:${last.x + last.width + rightOffset}px"><span class="outer-line"></span><button type="button" data-action="insert-session" data-insert-after="${last.id}" title="Добавить сессию справа" aria-label="Добавить сессию справа">${icon('plus', 19)}</button></div>` : '';
   app.innerHTML = `<div class="prototype-shell">
     ${renderTabs()}
     <main class="board-viewport" id="board-viewport" aria-label="Доска с сессиями">
-      <div class="board-stage" id="board-stage">${groupSurfaces}<svg class="connection-layer" id="connections" aria-hidden="true"></svg>${outerZones}${boundaries}${rails}${columns.map(renderLane).join('')}</div>
+      <div class="board-stage" id="board-stage">${groupSurfaces}<svg class="connection-layer" id="connections" aria-hidden="true"></svg>${outerZones}${boundaries}${subagentControls}${columns.map(renderLane).join('')}</div>
       <div class="canvas-controls"><button class="mode-button" type="button" data-action="toggle-mode" title="Переключить режим перемещения">${icon(state.mode === 'free' ? 'free' : 'focus', 18)}<span>${state.mode === 'free' ? 'Свободный' : 'Фиксированный'}</span></button>
         <span class="control-divider"></span><button class="icon-button" type="button" data-action="zoom-out" title="Уменьшить" aria-label="Уменьшить">${icon('zoom-out', 18)}</button>
         <span class="zoom-level">${Math.round((board().camera?.zoom ?? 0.9) * 100)}%</span>
@@ -323,7 +362,7 @@ function render() {
     const x = board().id === 'main' ? 105 - lane.x * zoom : board().id === 'subagents' ? 55 - lane.x * zoom : viewport.clientWidth / 2 - (lane.x + lane.width / 2) * zoom;
     board().camera = { zoom, x, y: -lane.y * zoom };
   }
-  alignBranches();
+  alignLinkedLanes();
   applyCamera();
   renderConnections();
   document.querySelectorAll('textarea[data-composer]').forEach(autoGrow);
@@ -346,8 +385,8 @@ function applyCamera() {
   if (first && leftZone && rightZone) {
     const viewportLeft = -x / zoom;
     const viewportRight = (viewport.clientWidth - x) / zoom;
-    const leftBorder = first.x - 33;
-    const rightBorder = last.x + last.width + (last.subagentOf ? 0 : 33);
+    const leftBorder = first.x - leadingBoundaryOffset(first);
+    const rightBorder = last.x + last.width + trailingBoundaryOffset(last);
     leftZone.style.left = `${viewportLeft}px`;
     leftZone.style.width = `${Math.max(0, leftBorder - viewportLeft)}px`;
     rightZone.style.left = `${rightBorder}px`;
@@ -367,8 +406,8 @@ function clampCameraX(value) {
   const half = viewport.clientWidth / 2;
   const zoom = camera().zoom;
   const last = columns.at(-1);
-  const min = half - (last.x + last.width + (last.subagentOf ? 0 : 33)) * zoom;
-  const max = half - (columns[0].x - 33) * zoom;
+  const min = half - (last.x + last.width + trailingBoundaryOffset(last)) * zoom;
+  const max = half - (columns[0].x - leadingBoundaryOffset(columns[0])) * zoom;
   return Math.max(min, Math.min(max, value));
 }
 
@@ -389,8 +428,10 @@ function updateStickyHeaders() {
     const composer = element.querySelector('.composer');
     const visualTop = lane.y * camera().zoom + camera().y;
     const needed = Math.max(0, -visualTop / camera().zoom);
-    const limit = Math.max(0, composer.offsetTop - header.offsetHeight - 12);
-    header.style.transform = `translateY(${Math.min(needed, limit)}px)`;
+    const limit = Math.max(0, (composer?.offsetTop ?? header.offsetHeight + 12) - header.offsetHeight - 12);
+    const offset = Math.min(needed, limit);
+    header.style.transform = `translateY(${offset}px)`;
+    header.style.backgroundPosition = `${-lane.x}px ${-lane.y - offset}px`;
   }
 }
 
@@ -580,7 +621,7 @@ function showDeleteBoard(id) {
 function showSubagentSettings(parent) {
   const agents = board().lanes.filter((lane) => lane.subagentOf === parent.id).sort((a, b) => Number(b.active) - Number(a.active) || Number(b.pinned) - Number(a.pinned));
   subagentsDialog.innerHTML = `<form method="dialog" id="subagent-form" data-parent="${parent.id}"><div class="dialog-heading"><h2>Сабагенты · ${escapeHtml(parent.title)}</h2><button type="button" class="icon-button" data-action="close-subagents" aria-label="Закрыть">${icon('close', 19)}</button></div>
-    <p class="dialog-note">Активные сессии видны всегда. Завершённые появляются на доске, если закрепить их и раскрыть список.</p>
+    <p class="dialog-note">При раскрытии видны все активные сабагенты. Завершённые видны, только если их закрепить.</p>
     <div class="subagent-list">${agents.map((lane) => `<label class="subagent-item" data-active="${Boolean(lane.active)}"><span><strong>${escapeHtml(lane.title)}</strong><small class="agent-status ${lane.active ? 'active' : ''}">${lane.active ? 'Активен' : 'Завершён'}</small></span><span class="subagent-pin"><input type="checkbox" name="pinned" value="${lane.id}" aria-label="Закрепить ${escapeHtml(lane.title)}" ${lane.pinned ? 'checked' : ''}>${icon('pin', 18)}</span></label>`).join('')}</div>
     <div class="dialog-actions"><button type="button" class="secondary-button" data-action="close-subagents">Отмена</button><button type="submit" class="primary-button">Сохранить</button></div></form>`;
   subagentsDialog.showModal();
@@ -621,6 +662,7 @@ function branchFrom(lane, message) {
   const id = uid();
   const branch = {
     ...lane, id, rootId: lane.rootId, parentId: lane.id, subagentOf: null, sourceMessageId: message.id,
+    pendingConfigChange: false,
     sourceText: message.text.slice(0, 120), sourceOffset: document.querySelector(`[data-lane-id="${lane.id}"] [data-message-id="${message.id}"]`)?.offsetTop ?? 140,
     title: `${lane.title} · ветка`, context: Math.max(0, lane.context - 8),
     historyPrefix: [...(lane.historyPrefix || []), ...lane.messages.slice(0, lane.messages.indexOf(message) + 1)].map((item) => ({ ...item })), messages: [],
@@ -635,7 +677,7 @@ function branchFrom(lane, message) {
 
 function cloneLane(lane) {
   const id = uid();
-  board().lanes.push({ ...lane, id, rootId: id, parentId: null, subagentOf: null, active: false, pinned: false, sourceMessageId: null, historyPrefix: [],
+  board().lanes.push({ ...lane, id, rootId: id, parentId: null, subagentOf: null, active: false, pinned: false, pendingConfigChange: false, sourceMessageId: null, historyPrefix: [],
     archived: false, title: `${lane.title} · копия`,
     messages: [...(lane.historyPrefix || []), ...lane.messages].map((message) => ({ ...message, id: uid() })) });
   board().selectedLaneId = id;
@@ -705,7 +747,8 @@ function sendMessage(laneId, queued) {
   if (!value) return;
   const lane = laneById(laneId);
   state.drafts.delete(laneId);
-  lane.messages.push({ id: uid(), role: queued ? 'queue' : 'user', text: value });
+  lane.messages.push({ id: uid(), role: queued ? 'queue' : 'user', text: value, configChanged: Boolean(lane.pendingConfigChange) });
+  lane.pendingConfigChange = false;
   if (!queued) lane.messages.push({ id: uid(), role: 'demo', text: 'Макет: запрос не отправлен, ответ модели здесь не генерируется.' });
   board().selectedLaneId = laneId;
   render();
@@ -783,16 +826,21 @@ app.addEventListener('click', async (event) => {
     }
     if (action === 'model-choice' || action === 'effort-choice') {
       const key = action === 'model-choice' ? 'model' : 'effort';
+      if (key === 'effort' && !supportedReasoningLevels(lane.model).includes(button.dataset.value)) return;
       if (lane[key] !== button.dataset.value) {
         lane[key] = button.dataset.value;
-        lane.messages.push({ id: uid(), role: 'settings', text: `Изменены настройки сессии: ${key === 'model' ? 'модель' : 'уровень рассуждения'} — ${lane[key]}` });
+        if (key === 'model' && !supportedReasoningLevels(lane.model).includes(lane.effort)) {
+          const previousLevel = REASONING_LEVELS.indexOf(lane.effort);
+          lane.effort = supportedReasoningLevels(lane.model).at(Math.min(previousLevel, supportedReasoningLevels(lane.model).length - 1));
+        }
+        lane.pendingConfigChange = true;
       }
       render();
       return;
     }
     if (action === 'toggle-speed') {
       lane.speed = lane.speed === 'Быстрая' ? 'Обычная' : 'Быстрая';
-      lane.messages.push({ id: uid(), role: 'settings', text: `Изменены настройки сессии: скорость — ${lane.speed}` });
+      lane.pendingConfigChange = true;
       render();
       return;
     }
@@ -809,8 +857,7 @@ app.addEventListener('click', async (event) => {
       state.openMenu = null;
       if (lane[key] !== value) {
         lane[key] = value;
-        const labels = { model: 'модель', approval: 'подтверждение', effort: 'effort', speed: 'скорость', temperature: 'температура' };
-        lane.messages.push({ id: uid(), role: 'settings', text: `Изменены настройки сессии: ${labels[key]} — ${value}` });
+        lane.pendingConfigChange = true;
       }
       render();
       return;
@@ -1068,7 +1115,7 @@ settingsDialog.addEventListener('submit', (event) => {
   }
   settingsDialog.close();
   if (changes.length) {
-    lane.messages.push({ id: uid(), role: 'settings', text: `Изменены настройки сессии: ${changes.join(', ')}` });
+    lane.pendingConfigChange = true;
     render();
     toast('Настройки сохранены в макете.');
   }

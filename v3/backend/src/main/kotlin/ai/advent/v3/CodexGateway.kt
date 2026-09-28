@@ -34,6 +34,8 @@ data class CodexLogin(val authUrl: String) {
 }
 
 interface CodexGateway : Closeable {
+    fun configureSubagentBridge(endpoint: String, token: String) = Unit
+
     suspend fun status(): CodexStatus
 
     suspend fun models(): JsonArray
@@ -55,6 +57,8 @@ interface CodexGateway : Closeable {
         ephemeral: Boolean = false,
         onUsage: suspend (JsonObject) -> Unit = {},
         developerInstructions: String = "",
+        effort: String? = null,
+        serviceTier: String? = null,
     )
 }
 
@@ -72,6 +76,13 @@ class CodexAppServer(
     private lateinit var process: Process
     private lateinit var writer: BufferedWriter
     private var initialized = false
+    @Volatile private var subagentEndpoint: String? = null
+    @Volatile private var subagentToken: String? = null
+
+    override fun configureSubagentBridge(endpoint: String, token: String) {
+        subagentEndpoint = endpoint
+        subagentToken = token
+    }
 
     override suspend fun status(): CodexStatus {
         ensureStarted()
@@ -128,6 +139,8 @@ class CodexAppServer(
         ephemeral: Boolean,
         onUsage: suspend (JsonObject) -> Unit,
         developerInstructions: String,
+        effort: String?,
+        serviceTier: String?,
     ) {
         ensureStarted()
         val threadMethod = if (threadId == null) "thread/start" else "thread/resume"
@@ -188,6 +201,8 @@ class CodexAppServer(
                 buildJsonObject {
                     put("threadId", thread)
                     if (model.isNotBlank()) put("model", model)
+                    effort?.takeIf(String::isNotBlank)?.let { put("effort", it) }
+                    serviceTier?.takeIf(String::isNotBlank)?.let { put("serviceTier", it) }
                     put("cwd", workingDirectory)
                     put("approvalPolicy", "on-request")
                     put("sandboxPolicy", buildJsonObject { put("type", "readOnly") })
@@ -229,7 +244,21 @@ class CodexAppServer(
     private suspend fun ensureStarted() {
         startLock.withLock {
             if (initialized && ::process.isInitialized && process.isAlive) return
-            process = ProcessBuilder(executable, "app-server", "--stdio")
+            val args = mutableListOf(executable, "app-server", "--stdio")
+            val endpoint = subagentEndpoint
+            val token = subagentToken
+            if (endpoint != null && token != null) {
+                val serverPath = java.nio.file.Path.of(workingDirectory).resolve("server/subagent-mcp-server.mjs").toAbsolutePath()
+                val nodeCommand = System.getenv("AI_ADVENT_V3_NODE") ?: "node"
+                val overrides = listOf(
+                    "mcp_servers.ai_advent_subagents.command=${tomlString(nodeCommand)}",
+                    "mcp_servers.ai_advent_subagents.args=[${tomlString("--disable-warning=ExperimentalWarning")}, ${tomlString(serverPath.toString())}]",
+                    "mcp_servers.ai_advent_subagents.env.AI_ADVENT_V3_SUBAGENT_ENDPOINT=${tomlString(endpoint)}",
+                    "mcp_servers.ai_advent_subagents.env.AI_ADVENT_V3_SUBAGENT_TOKEN=${tomlString(token)}",
+                )
+                overrides.forEach { override -> args += listOf("-c", override) }
+            }
+            process = ProcessBuilder(args)
                 .directory(java.io.File(workingDirectory))
                 .redirectError(ProcessBuilder.Redirect.DISCARD)
                 .start()
@@ -343,6 +372,11 @@ class CodexAppServer(
         }
         write(response)
     }
+
+    private fun tomlString(value: String): String = "\"" + value
+        .replace("\\", "\\\\")
+        .replace("\"", "\\\"")
+        .replace("\n", "\\n") + "\""
 
     override fun close() {
         if (::process.isInitialized) process.destroy()

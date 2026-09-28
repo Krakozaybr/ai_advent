@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { applyRunEvent, emptyRunState } from "../src/run-state.mjs";
+import { applyRunEvent, applyToolRunEvent, emptyRunState } from "../src/run-state.mjs";
 
 test("public text deltas build the answer once and completion seals the run", () => {
   let state = emptyRunState();
@@ -52,4 +52,17 @@ test("cancelled runs reach a terminal state", () => {
   });
 
   assert.equal(state.status, "cancelled");
+});
+
+test("replayed tool events do not duplicate a completed MCP call", () => {
+  const started = { sequence: 2, type: "tool.started", data: { toolName: "save_summary" } };
+  const completed = { sequence: 3, type: "tool.completed", data: {
+    toolName: "save_summary", ok: true, result: { status: "pending" },
+  } };
+  let events = applyToolRunEvent([], started);
+  events = applyToolRunEvent(events, completed);
+  events = applyToolRunEvent(events, started);
+  events = applyToolRunEvent(events, completed);
+  assert.equal(events.length, 1);
+  assert.equal(events[0].status, "Ожидает подтверждения");
 });

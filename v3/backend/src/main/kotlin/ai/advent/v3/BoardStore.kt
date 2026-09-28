@@ -8,6 +8,9 @@ import kotlinx.serialization.json.jsonPrimitive
 import kotlinx.serialization.json.JsonNull
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.put
+import kotlinx.serialization.json.contentOrNull
+import kotlinx.serialization.json.doubleOrNull
+import kotlinx.serialization.json.intOrNull
 import java.io.Closeable
 import java.nio.file.Files
 import java.nio.file.Path
@@ -77,7 +80,11 @@ data class LaneConfig(
     val temperature: Double?,
     val maxTokens: Int?,
     val stop: String?,
-)
+    val effort: String? = null,
+    val serviceTier: String? = null,
+) {
+    override fun toString(): String = super.toString()
+}
 
 private fun LaneConfig.toJson(): String = kotlinx.serialization.json.Json.encodeToString(
     JsonObject.serializer(),
@@ -87,6 +94,8 @@ private fun LaneConfig.toJson(): String = kotlinx.serialization.json.Json.encode
         temperature?.let { put("temperature", it) }
         maxTokens?.let { put("maxTokens", it) }
         stop?.let { put("stop", it) }
+        effort?.let { put("effort", it) }
+        serviceTier?.let { put("serviceTier", it) }
     },
 )
 
@@ -105,7 +114,9 @@ private data class CopyableMessage(
 data class StartedRun(
     val boardId: String,
     val laneId: String,
+    val prompt: String,
     val runId: String,
+    val assistantMessageId: String,
     val threadId: String?,
     val contextToSeed: List<ContextMessage>,
     val contextPlan: ContextPlan,
@@ -125,9 +136,52 @@ data class RequestOverrides(
     val maxTokens: Int? = null,
     val stop: String? = null,
     val forceSend: Boolean = false,
+    val effort: String? = null,
+    val serviceTier: String? = null,
+    val contextStrategy: String? = null,
+    val contextWindowSize: Int? = null,
+    val contextBudgetTokens: Int? = null,
+    val skillIds: List<String>? = null,
 )
 
+data class SpawnedSubagent(val laneId: String, val title: String, val launchOrder: Int)
+
+private fun RequestOverrides.toJson(): String = kotlinx.serialization.json.Json.encodeToString(JsonObject.serializer(), buildJsonObject {
+    model?.let { put("model", it) }
+    temperature?.let { put("temperature", it) }
+    maxTokens?.let { put("maxTokens", it) }
+    stop?.let { put("stop", it) }
+    put("forceSend", forceSend)
+    effort?.let { put("effort", it) }
+    serviceTier?.let { put("serviceTier", it) }
+    contextStrategy?.let { put("contextStrategy", it) }
+    contextWindowSize?.let { put("contextWindowSize", it) }
+    contextBudgetTokens?.let { put("contextBudgetTokens", it) }
+    skillIds?.let { put("skillIds", JsonArray(it.map { skillId -> kotlinx.serialization.json.JsonPrimitive(skillId) })) }
+})
+
+private fun requestOverridesFromJson(value: String): RequestOverrides {
+    val json = kotlinx.serialization.json.Json.parseToJsonElement(value).jsonObject
+    return RequestOverrides(
+        model = json["model"]?.jsonPrimitive?.contentOrNull,
+        temperature = json["temperature"]?.jsonPrimitive?.doubleOrNull,
+        maxTokens = json["maxTokens"]?.jsonPrimitive?.intOrNull,
+        stop = json["stop"]?.jsonPrimitive?.contentOrNull,
+        forceSend = json["forceSend"]?.jsonPrimitive?.contentOrNull == "true",
+        effort = json["effort"]?.jsonPrimitive?.contentOrNull,
+        serviceTier = json["serviceTier"]?.jsonPrimitive?.contentOrNull,
+        contextStrategy = json["contextStrategy"]?.jsonPrimitive?.contentOrNull,
+        contextWindowSize = json["contextWindowSize"]?.jsonPrimitive?.intOrNull,
+        contextBudgetTokens = json["contextBudgetTokens"]?.jsonPrimitive?.intOrNull,
+        skillIds = (json["skillIds"] as? JsonArray)?.mapNotNull { it.jsonPrimitive.contentOrNull },
+    )
+}
+
 class ActiveRunException : IllegalStateException("A request is already running in this lane")
+class PendingQueueException : IllegalStateException("Queued messages must start before a new direct request")
+
+private const val MAX_SUBAGENTS_PER_RUN = 8
+private const val MAX_ACTIVE_SUBAGENTS_PER_RUN = 4
 
 class BoardStore(
     private val file: Path,
@@ -219,11 +273,25 @@ class BoardStore(
                     "CREATE UNIQUE INDEX IF NOT EXISTS one_running_run_per_lane " +
                         "ON runs(lane_id) WHERE status = 'running'",
                 )
+                statement.execute("""CREATE TABLE IF NOT EXISTS queued_messages (
+                    id TEXT PRIMARY KEY,
+                    lane_id TEXT NOT NULL REFERENCES lanes(id) ON DELETE CASCADE,
+                    content TEXT NOT NULL,
+                    request_overrides TEXT NOT NULL,
+                    created_at TEXT NOT NULL,
+                    status TEXT NOT NULL DEFAULT 'pending',
+                    error TEXT
+                )""")
                 statement.execute("""CREATE TABLE IF NOT EXISTS lane_mcp_tools (
                     lane_id TEXT NOT NULL REFERENCES lanes(id) ON DELETE CASCADE,
                     server_id TEXT NOT NULL,
                     tool_name TEXT NOT NULL,
                     PRIMARY KEY(lane_id, server_id, tool_name)
+                )""")
+                statement.execute("""CREATE TABLE IF NOT EXISTS lane_skills (
+                    lane_id TEXT NOT NULL REFERENCES lanes(id) ON DELETE CASCADE,
+                    skill_id TEXT NOT NULL,
+                    PRIMARY KEY(lane_id, skill_id)
                 )""")
                 statement.execute("""CREATE TABLE IF NOT EXISTS sticky_facts (
                     lane_id TEXT NOT NULL REFERENCES lanes(id) ON DELETE CASCADE,
@@ -271,8 +339,18 @@ class BoardStore(
             ensureColumn(db, "lanes", "mcp_auto_approve", "INTEGER NOT NULL DEFAULT 0")
             ensureColumn(db, "boards", "external_id", "TEXT")
             ensureColumn(db, "boards", "instructions", "TEXT NOT NULL DEFAULT ''")
+            ensureColumn(db, "boards", "archived", "INTEGER NOT NULL DEFAULT 0")
+            ensureColumn(db, "boards", "deleted", "INTEGER NOT NULL DEFAULT 0")
             ensureColumn(db, "lanes", "instructions", "TEXT NOT NULL DEFAULT ''")
             ensureColumn(db, "lanes", "instruction_mode", "TEXT NOT NULL DEFAULT 'inherit'")
+            ensureColumn(db, "lanes", "archived", "INTEGER NOT NULL DEFAULT 0")
+            ensureColumn(db, "lanes", "group_color", "TEXT NOT NULL DEFAULT '#9fb7d3'")
+            ensureColumn(db, "lanes", "reasoning_effort", "TEXT")
+            ensureColumn(db, "lanes", "service_tier", "TEXT")
+            ensureColumn(db, "lanes", "launch_order", "INTEGER")
+            ensureColumn(db, "lanes", "subagent_pinned", "INTEGER NOT NULL DEFAULT 0")
+            ensureColumn(db, "lanes", "subagents_expanded", "INTEGER NOT NULL DEFAULT 0")
+            ensureColumn(db, "lanes", "provider_chosen", "INTEGER NOT NULL DEFAULT 1")
             ensureColumn(db, "messages", "provenance", "TEXT")
             db.createStatement().use { it.execute("CREATE UNIQUE INDEX IF NOT EXISTS boards_external_id ON boards(external_id) WHERE external_id IS NOT NULL") }
             ensureColumn(db, "runs", "request_config", "TEXT")
@@ -288,7 +366,7 @@ class BoardStore(
     fun board(): JsonObject = synchronized(lock) {
         connect().use { db ->
             val board = db.prepareStatement(
-                "SELECT id, title, instructions FROM boards ORDER BY created_at LIMIT 1",
+                "SELECT id, title, instructions, archived, deleted FROM boards ORDER BY created_at LIMIT 1",
             ).use { query ->
                 query.executeQuery().use { result ->
                     check(result.next()) { "Board has not been initialized" }
@@ -296,6 +374,8 @@ class BoardStore(
                         put("id", result.getString("id"))
                         put("title", result.getString("title"))
                         put("instructions", result.getString("instructions"))
+                        put("archived", result.getInt("archived") != 0)
+                        put("deleted", result.getInt("deleted") != 0)
                     }
                 }
             }
@@ -312,7 +392,7 @@ class BoardStore(
             db.prepareStatement(
                 "SELECT id, title, codex_thread_id, origin_lane_id, origin_message_id, origin_kind, " +
                     "origin_message_role, origin_message_content, " +
-                    "position_x, position_y, width, provider, model, temperature, max_tokens, stop, " +
+                "position_x, position_y, width, provider, provider_chosen, model, temperature, max_tokens, stop, archived, group_color, reasoning_effort, service_tier, launch_order, subagent_pinned, subagents_expanded, " +
                     "context_strategy, context_window_size, context_summary, context_summary_watermark, context_budget_tokens, " +
                     "context_summary_usage, context_summary_usage_source, context_summary_stale, agent_id, mcp_auto_approve, " +
                     "instructions, instruction_mode, (SELECT instructions FROM boards WHERE id = lanes.board_id) AS board_instructions, " +
@@ -335,6 +415,11 @@ class BoardStore(
                             put("stickyFacts", JsonArray(stickyFacts(db, laneId)))
                             put("mcpApprovals", JsonArray(mcpApprovals(db, laneId)))
                             put("provider", result.getString("provider"))
+                            put("providerChosen", result.getInt("provider_chosen") != 0)
+                            put("archived", result.getInt("archived") != 0)
+                            put("groupColor", result.getString("group_color"))
+                            result.getString("reasoning_effort")?.let { put("effort", it) }
+                            result.getString("service_tier")?.let { put("serviceTier", it) }
                             put("model", result.getString("model"))
                             result.getDouble("temperature").takeUnless { result.wasNull() }?.let { put("temperature", it) }
                             result.getInt("max_tokens").takeUnless { result.wasNull() }?.let { put("maxTokens", it) }
@@ -356,6 +441,9 @@ class BoardStore(
                             result.getString("origin_lane_id")?.let { put("originLaneId", it) }
                             result.getString("origin_message_id")?.let { put("originMessageId", it) }
                             result.getString("origin_kind")?.let { put("originKind", it) }
+                            put("subagentPinned", result.getInt("subagent_pinned") != 0)
+                            put("subagentsExpanded", result.getInt("subagents_expanded") != 0)
+                            result.getInt("launch_order").takeUnless { result.wasNull() }?.let { put("launchOrder", it) }
                             result.getString("origin_lane_id")?.let { originLaneId ->
                                 val originMessageId = result.getString("origin_message_id")
                                 if (originMessageId != null) {
@@ -374,6 +462,8 @@ class BoardStore(
                                 }
                             }
                             put("messages", messages(db, laneId))
+                            put("queuedMessages", JsonArray(queuedMessages(db, laneId)))
+                            put("skills", JsonArray(skillIds(db, laneId).map { kotlinx.serialization.json.JsonPrimitive(it) }))
                             put("mcpTools", kotlinx.serialization.json.JsonArray(mcpTools(db, laneId).map { selection ->
                                 buildJsonObject { put("serverId", selection.serverId); put("toolName", selection.toolName) }
                             }))
@@ -401,7 +491,7 @@ class BoardStore(
         }
     }
 
-    fun createLane(provider: String): String = synchronized(lock) {
+    fun createLane(provider: String, requiresProviderChoice: Boolean = false): String = synchronized(lock) {
         require(provider in setOf("codex", "openrouter")) { "Unsupported provider" }
         connect().use { db ->
             val boardId = db.createStatement().use { statement ->
@@ -416,8 +506,8 @@ class BoardStore(
             }
             val laneId = UUID.randomUUID().toString()
             db.prepareStatement(
-                "INSERT INTO lanes(id, board_id, title, created_at, position_x, position_y, width, provider, model, temperature, max_tokens) " +
-                    "VALUES (?, ?, ?, ?, ?, 24, 440, ?, ?, ?, ?)",
+                "INSERT INTO lanes(id, board_id, title, created_at, position_x, position_y, width, provider, provider_chosen, model, temperature, max_tokens) " +
+                    "VALUES (?, ?, ?, ?, ?, 24, 440, ?, ?, ?, ?, ?)",
             ).use { query ->
                 query.setString(1, laneId)
                 query.setString(2, boardId)
@@ -425,12 +515,41 @@ class BoardStore(
                 query.setString(4, Instant.now().toString())
                 query.setInt(5, 24 + count * 460)
                 query.setString(6, provider)
-                query.setString(7, if (provider == "codex") "" else "openai/gpt-4o-mini")
-                if (provider == "openrouter") query.setDouble(8, 0.7) else query.setNull(8, java.sql.Types.REAL)
-                if (provider == "openrouter") query.setInt(9, 2048) else query.setNull(9, java.sql.Types.INTEGER)
+                query.setInt(7, if (requiresProviderChoice) 0 else 1)
+                query.setString(8, if (provider == "codex") "" else "openai/gpt-4o-mini")
+                if (provider == "openrouter") query.setDouble(9, 0.7) else query.setNull(9, java.sql.Types.REAL)
+                if (provider == "openrouter") query.setInt(10, 2048) else query.setNull(10, java.sql.Types.INTEGER)
                 query.executeUpdate()
             }
             laneId
+        }
+    }
+
+    fun chooseProvider(laneId: String, provider: String) = synchronized(lock) {
+        require(provider in setOf("codex", "openrouter")) { "Unsupported provider" }
+        connect().use { db ->
+            check(!hasActiveRun(db, laneId)) { "Cannot change provider while a request is running" }
+            val hasMessages = db.prepareStatement("SELECT 1 FROM messages WHERE lane_id = ? LIMIT 1").use { query ->
+                query.setString(1, laneId)
+                query.executeQuery().use { it.next() }
+            }
+            check(!hasMessages) { "Cannot change provider after the first message" }
+            db.prepareStatement("UPDATE lanes SET provider = ?, provider_chosen = 1, model = ?, temperature = ?, max_tokens = ? WHERE id = ? AND provider_chosen = 0").use { query ->
+                query.setString(1, provider)
+                query.setString(2, if (provider == "codex") "" else "openai/gpt-4o-mini")
+                if (provider == "openrouter") query.setDouble(3, 0.7) else query.setNull(3, java.sql.Types.REAL)
+                if (provider == "openrouter") query.setInt(4, 2048) else query.setNull(4, java.sql.Types.INTEGER)
+                query.setString(5, laneId)
+                check(query.executeUpdate() == 1) { "Lane not found or provider already chosen" }
+            }
+        }
+    }
+
+    fun requireProviderChoiceForDefaultLane() = synchronized(lock) {
+        connect().use { db ->
+            db.createStatement().use { statement ->
+                statement.executeUpdate("UPDATE lanes SET provider_chosen = 0 WHERE id = (SELECT id FROM lanes ORDER BY created_at, rowid LIMIT 1) AND NOT EXISTS (SELECT 1 FROM messages)")
+            }
         }
     }
 
@@ -647,9 +766,104 @@ class BoardStore(
         }
     }
 
+    fun setBoardArchived(archived: Boolean) = synchronized(lock) {
+        connect().use { db ->
+            db.prepareStatement("UPDATE boards SET archived = ?").use { query ->
+                query.setInt(1, if (archived) 1 else 0)
+                query.executeUpdate()
+            }
+        }
+    }
+
+    fun markBoardDeleted() = synchronized(lock) {
+        connect().use { db ->
+            val active = db.createStatement().use { query ->
+                query.executeQuery("SELECT 1 FROM runs WHERE status = 'running' LIMIT 1").use { it.next() }
+            }
+            check(!active) { "Cannot delete a board while a request is running" }
+            db.createStatement().use { it.executeUpdate("UPDATE boards SET deleted = 1") }
+        }
+    }
+
+    fun renameLane(laneId: String, title: String) = synchronized(lock) {
+        require(title.isNotBlank() && title.length <= 120) { "Название сессии должно содержать от 1 до 120 символов." }
+        connect().use { db ->
+            db.prepareStatement("UPDATE lanes SET title = ? WHERE id = ?").use { query ->
+                query.setString(1, title.trim())
+                query.setString(2, laneId)
+                check(query.executeUpdate() == 1) { "Unknown lane" }
+            }
+        }
+    }
+
+    fun setLaneArchived(laneId: String, archived: Boolean) = synchronized(lock) {
+        connect().use { db ->
+            db.prepareStatement("UPDATE lanes SET archived = ? WHERE id = ?").use { query ->
+                query.setInt(1, if (archived) 1 else 0)
+                query.setString(2, laneId)
+                check(query.executeUpdate() == 1) { "Unknown lane" }
+            }
+        }
+    }
+
+    fun deleteLaneTree(laneId: String) = synchronized(lock) {
+        connect().use { db ->
+            db.autoCommit = false
+            try {
+                val ids = db.prepareStatement(
+                    "WITH RECURSIVE descendants(id) AS (SELECT id FROM lanes WHERE id = ? UNION SELECT child.id FROM lanes child JOIN descendants parent ON child.origin_lane_id = parent.id WHERE child.origin_kind IN ('branch', 'subagent')) SELECT id FROM descendants",
+                ).use { query ->
+                    query.setString(1, laneId)
+                    query.executeQuery().use { result -> buildList { while (result.next()) add(result.getString(1)) } }
+                }
+                check(ids.isNotEmpty()) { "Unknown lane" }
+                val visibleRemaining = db.createStatement().use { query ->
+                    query.executeQuery("SELECT id, archived FROM lanes").use { result ->
+                        var count = 0
+                        while (result.next()) if (result.getString(1) !in ids && result.getInt(2) == 0) count++
+                        count
+                    }
+                }
+                check(visibleRemaining > 0) { "The board must keep at least one visible session" }
+                check(ids.none { hasActiveRun(db, it) }) { "Cannot delete a session while a request is running" }
+                for (id in ids) {
+                    for ((statement, parameter) in listOf(
+                        "DELETE FROM run_events WHERE run_id IN (SELECT id FROM runs WHERE lane_id = ?)" to id,
+                        "DELETE FROM runs WHERE lane_id = ?" to id,
+                        "DELETE FROM messages WHERE lane_id = ?" to id,
+                        "DELETE FROM lane_mcp_tools WHERE lane_id = ?" to id,
+                        "DELETE FROM sticky_facts WHERE lane_id = ?" to id,
+                        "DELETE FROM mcp_approvals WHERE lane_id = ?" to id,
+                        "DELETE FROM lanes WHERE id = ?" to id,
+                    )) {
+                        db.prepareStatement(statement).use { query -> query.setString(1, parameter); query.executeUpdate() }
+                    }
+                }
+                db.commit()
+            } catch (error: Exception) {
+                db.rollback()
+                throw error
+            } finally {
+                db.autoCommit = true
+            }
+        }
+    }
+
+    fun setGroupColor(laneId: String, color: String) = synchronized(lock) {
+        require(Regex("#[0-9a-fA-F]{6}").matches(color)) { "Цвет должен быть в формате #RRGGBB." }
+        connect().use { db ->
+            db.prepareStatement("UPDATE lanes SET group_color = ? WHERE id = ?").use { query ->
+                query.setString(1, color.lowercase())
+                query.setString(2, laneId)
+                check(query.executeUpdate() == 1) { "Unknown lane" }
+            }
+        }
+    }
+
     fun updateLaneConfig(
         laneId: String, model: String, temperature: Double?, maxTokens: Int?, stop: String?,
         contextStrategy: String = "full", contextWindowSize: Int = 10, contextBudgetTokens: Int = 32768,
+        effort: String? = null, serviceTier: String? = null,
     ) = synchronized(lock) {
         require(model.length <= 200) { "Model is too long" }
         require(temperature == null || temperature in 0.0..2.0) { "Temperature must be between 0 and 2" }
@@ -658,8 +872,10 @@ class BoardStore(
         ContextStrategy.parse(contextStrategy)
         require(contextWindowSize in 1..200) { "Размер окна должен быть от 1 до 200 сообщений." }
         require(contextBudgetTokens in 256..1_000_000) { "Бюджет контекста должен быть от 256 до 1000000 токенов." }
+        require(effort == null || effort in setOf("none", "minimal", "low", "medium", "high", "xhigh", "max", "ultra")) { "Уровень рассуждения некорректен." }
+        require(serviceTier == null || serviceTier == "priority") { "Режим скорости некорректен." }
         connect().use { db ->
-            db.prepareStatement("UPDATE lanes SET model = ?, temperature = ?, max_tokens = ?, stop = ?, context_strategy = ?, context_window_size = ?, context_budget_tokens = ? WHERE id = ?").use { query ->
+            db.prepareStatement("UPDATE lanes SET model = ?, temperature = ?, max_tokens = ?, stop = ?, context_strategy = ?, context_window_size = ?, context_budget_tokens = ?, reasoning_effort = ?, service_tier = ? WHERE id = ?").use { query ->
                 query.setString(1, model.trim())
                 if (temperature == null) query.setNull(2, java.sql.Types.REAL) else query.setDouble(2, temperature)
                 if (maxTokens == null) query.setNull(3, java.sql.Types.INTEGER) else query.setInt(3, maxTokens)
@@ -667,7 +883,9 @@ class BoardStore(
                 query.setString(5, contextStrategy)
                 query.setInt(6, contextWindowSize)
                 query.setInt(7, contextBudgetTokens)
-                query.setString(8, laneId)
+                query.setString(8, effort)
+                query.setString(9, serviceTier)
+                query.setString(10, laneId)
                 check(query.executeUpdate() == 1) { "Unknown lane" }
             }
         }
@@ -897,7 +1115,8 @@ class BoardStore(
             try {
                 val source = db.prepareStatement(
                     "SELECT board_id, title, provider, model, temperature, max_tokens, stop, context_strategy, " +
-                        "context_window_size, context_budget_tokens, agent_id, instructions, instruction_mode FROM lanes WHERE id = ?",
+                        "context_window_size, context_budget_tokens, agent_id, instructions, instruction_mode, " +
+                        "group_color, reasoning_effort, service_tier FROM lanes WHERE id = ?",
                 ).use { query ->
                     query.setString(1, sourceLaneId)
                     query.executeQuery().use { result ->
@@ -905,7 +1124,8 @@ class BoardStore(
                         listOf(result.getString("board_id"), result.getString("title"), result.getString("provider"),
                             result.getString("model"), result.getString("temperature"), result.getString("max_tokens"), result.getString("stop"),
                             result.getString("context_strategy"), result.getString("context_window_size"), result.getString("context_budget_tokens"),
-                            result.getString("agent_id"), result.getString("instructions"), result.getString("instruction_mode"))
+                            result.getString("agent_id"), result.getString("instructions"), result.getString("instruction_mode"),
+                            result.getString("group_color"), result.getString("reasoning_effort"), result.getString("service_tier"))
                     }
                 }
                 check(!hasActiveRun(db, sourceLaneId)) { "Cannot copy a lane while a request is running" }
@@ -936,8 +1156,9 @@ class BoardStore(
                     "INSERT INTO lanes(id, board_id, title, created_at, origin_lane_id, origin_message_id, " +
                     "origin_kind, codex_context_seeded, origin_message_role, origin_message_content, " +
                         "position_x, position_y, width, provider, model, temperature, max_tokens, stop, " +
-                        "context_strategy, context_window_size, context_budget_tokens, agent_id, instructions, instruction_mode) " +
-                        "VALUES (?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?, 24, 440, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                        "context_strategy, context_window_size, context_budget_tokens, agent_id, instructions, instruction_mode, " +
+                        "group_color, reasoning_effort, service_tier) " +
+                        "VALUES (?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?, 24, 440, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 ).use { query ->
                     query.setString(1, laneId)
                     query.setString(2, source[0])
@@ -960,6 +1181,9 @@ class BoardStore(
                     query.setString(19, source[10])
                     query.setString(20, source[11])
                     query.setString(21, source[12])
+                    query.setString(22, source[13])
+                    query.setString(23, source[14])
+                    query.setString(24, source[15])
                     query.executeUpdate()
                 }
                 db.prepareStatement("INSERT INTO lane_mcp_tools(lane_id, server_id, tool_name) SELECT ?, server_id, tool_name FROM lane_mcp_tools WHERE lane_id = ?").use { query ->
@@ -1063,6 +1287,15 @@ class BoardStore(
         }
     }
 
+    fun canSpawnSubagents(laneId: String): Boolean = synchronized(lock) {
+        connect().use { db ->
+            db.prepareStatement("SELECT origin_kind FROM lanes WHERE id = ?").use { query ->
+                query.setString(1, laneId)
+                query.executeQuery().use { result -> check(result.next()) { "Unknown lane" }; result.getString(1) != "subagent" }
+            }
+        }
+    }
+
     fun hasMessage(messageId: String): Boolean = synchronized(lock) {
         connect().use { db ->
             db.prepareStatement("SELECT 1 FROM messages WHERE id = ?").use { query ->
@@ -1072,15 +1305,191 @@ class BoardStore(
         }
     }
 
-    fun startRun(laneId: String, prompt: String, overrides: RequestOverrides = RequestOverrides()): StartedRun = synchronized(lock) {
+    fun enqueueMessage(laneId: String, prompt: String, overrides: RequestOverrides): String = synchronized(lock) {
+        require(prompt.isNotBlank() && prompt.length <= 6_000) { "Введи сообщение длиной до 6000 символов." }
+        connect().use { db ->
+            val providerChosen = db.prepareStatement("SELECT provider_chosen FROM lanes WHERE id = ?").use { query ->
+                query.setString(1, laneId)
+                query.executeQuery().use { result -> result.next() && result.getInt(1) != 0 }
+            }
+            check(providerChosen) { "Choose a provider before sending a message" }
+            val snapshotOverrides = overrides.copy(skillIds = SkillCatalog.validate(overrides.skillIds ?: skillIds(db, laneId)))
+            val id = UUID.randomUUID().toString()
+            db.prepareStatement("INSERT INTO queued_messages(id, lane_id, content, request_overrides, created_at) VALUES (?, ?, ?, ?, ?)").use { query ->
+                query.setString(1, id)
+                query.setString(2, laneId)
+                query.setString(3, prompt)
+                query.setString(4, snapshotOverrides.toJson())
+                query.setString(5, Instant.now().toString())
+                query.executeUpdate()
+            }
+            id
+        }
+    }
+
+    fun saveSkills(laneId: String, ids: List<String>) = synchronized(lock) {
+        val validated = SkillCatalog.validate(ids)
         connect().use { db ->
             db.autoCommit = false
             try {
+                check(db.prepareStatement("SELECT 1 FROM lanes WHERE id = ?").use { q -> q.setString(1, laneId); q.executeQuery().use { it.next() } }) { "Unknown lane" }
+                if (hasActiveRun(db, laneId)) throw ActiveRunException()
+                db.prepareStatement("DELETE FROM lane_skills WHERE lane_id = ?").use { q -> q.setString(1, laneId); q.executeUpdate() }
+                validated.forEach { id ->
+                    db.prepareStatement("INSERT INTO lane_skills(lane_id, skill_id) VALUES (?, ?)").use { q -> q.setString(1, laneId); q.setString(2, id); q.executeUpdate() }
+                }
+                db.commit()
+            } catch (error: Exception) { db.rollback(); throw error } finally { db.autoCommit = true }
+        }
+    }
+
+    fun skillIds(laneId: String): List<String> = synchronized(lock) { connect().use { skillIds(it, laneId) } }
+
+    private fun skillIds(db: Connection, laneId: String): List<String> = db.prepareStatement(
+        "SELECT skill_id FROM lane_skills WHERE lane_id = ? ORDER BY rowid",
+    ).use { query ->
+        query.setString(1, laneId)
+        query.executeQuery().use { result -> buildList { while (result.next()) add(result.getString(1)) } }
+    }
+
+    fun createSubagentLane(parentRunId: String, title: String, task: String): SpawnedSubagent = synchronized(lock) {
+        require(task.isNotBlank() && task.length <= 6_000) { "Задача сабагента должна содержать от 1 до 6000 символов." }
+        val normalizedTitle = title.trim().ifBlank { task.lineSequence().first().take(120) }.take(120)
+        connect().use { db ->
+            db.autoCommit = false
+            try {
+                val parent = db.prepareStatement(
+                    "SELECT r.lane_id, r.assistant_message_id, r.status, l.origin_kind FROM runs r JOIN lanes l ON l.id = r.lane_id WHERE r.id = ?",
+                ).use { query ->
+                    query.setString(1, parentRunId)
+                    query.executeQuery().use { result ->
+                        check(result.next()) { "Родительский запуск не найден." }
+                        listOf(result.getString("lane_id"), result.getString("assistant_message_id"), result.getString("status"), result.getString("origin_kind"))
+                    }
+                }
+                check(parent[2] == "running") { "Родительский запуск уже завершён." }
+                require(parent[3] != "subagent") { "Сабагент не может создавать вложенных сабагентов." }
+                val launchOrder = db.prepareStatement(
+                    "SELECT COALESCE(MAX(launch_order), 0) + 1 FROM lanes WHERE origin_lane_id = ? AND origin_message_id = ? AND origin_kind = 'subagent'",
+                ).use { query ->
+                    query.setString(1, parent[0]); query.setString(2, parent[1])
+                    query.executeQuery().use { result -> result.next(); result.getInt(1) }
+                }
+                require(launchOrder <= MAX_SUBAGENTS_PER_RUN) { "У запуска достигнут предел в $MAX_SUBAGENTS_PER_RUN сабагентов." }
+                val activeChildren = db.prepareStatement(
+                    "SELECT COUNT(*) FROM lanes l JOIN runs r ON r.lane_id = l.id AND r.status = 'running' WHERE l.origin_lane_id = ? AND l.origin_message_id = ? AND l.origin_kind = 'subagent'",
+                ).use { query ->
+                    query.setString(1, parent[0]); query.setString(2, parent[1])
+                    query.executeQuery().use { result -> result.next(); result.getInt(1) }
+                }
+                require(activeChildren < MAX_ACTIVE_SUBAGENTS_PER_RUN) { "Одновременно можно запустить не более $MAX_ACTIVE_SUBAGENTS_PER_RUN сабагентов." }
+                val childId = UUID.randomUUID().toString()
+                db.prepareStatement(
+                    """INSERT INTO lanes(id, board_id, title, created_at, origin_lane_id, origin_message_id, origin_kind,
+                       origin_message_role, origin_message_content, position_x, position_y, width, provider, provider_chosen,
+                       model, temperature, max_tokens, stop, context_strategy, context_window_size, context_budget_tokens,
+                       agent_id, instructions, instruction_mode, mcp_auto_approve, group_color, reasoning_effort, service_tier, launch_order)
+                       SELECT ?, l.board_id, ?, ?, l.id, r.assistant_message_id, 'subagent', 'assistant', NULL,
+                       l.position_x, l.position_y, l.width, l.provider, l.provider_chosen, l.model, l.temperature, l.max_tokens,
+                       l.stop, l.context_strategy, l.context_window_size, l.context_budget_tokens, l.agent_id, l.instructions,
+                       l.instruction_mode, 0, l.group_color, l.reasoning_effort, l.service_tier, ?
+                       FROM runs r JOIN lanes l ON l.id = r.lane_id WHERE r.id = ?""",
+                ).use { query ->
+                    query.setString(1, childId); query.setString(2, normalizedTitle); query.setString(3, Instant.now().toString())
+                    query.setInt(4, launchOrder); query.setString(5, parentRunId)
+                    check(query.executeUpdate() == 1) { "Не удалось создать сабагента." }
+                }
+                for (table in listOf("lane_mcp_tools", "lane_skills")) {
+                    val columns = if (table == "lane_mcp_tools") "server_id, tool_name" else "skill_id"
+                    db.prepareStatement("INSERT INTO $table(lane_id, $columns) SELECT ?, $columns FROM $table WHERE lane_id = ?").use { query ->
+                        query.setString(1, childId); query.setString(2, parent[0]); query.executeUpdate()
+                    }
+                }
+                db.commit()
+                SpawnedSubagent(childId, normalizedTitle, launchOrder)
+            } catch (error: Exception) { db.rollback(); throw error } finally { db.autoCommit = true }
+        }
+    }
+
+    fun updateSubagents(parentLaneId: String, expanded: Boolean, pinnedIds: Set<String>) = synchronized(lock) {
+        connect().use { db ->
+            db.autoCommit = false
+            try {
+                check(db.prepareStatement("SELECT 1 FROM lanes WHERE id = ?").use { query -> query.setString(1, parentLaneId); query.executeQuery().use { it.next() } }) { "Unknown lane" }
+                db.prepareStatement("UPDATE lanes SET subagents_expanded = ? WHERE id = ?").use { query ->
+                    query.setInt(1, if (expanded) 1 else 0); query.setString(2, parentLaneId); query.executeUpdate()
+                }
+                db.prepareStatement("UPDATE lanes SET subagent_pinned = 0 WHERE origin_lane_id = ? AND origin_kind = 'subagent'").use { query ->
+                    query.setString(1, parentLaneId); query.executeUpdate()
+                }
+                pinnedIds.forEach { childId ->
+                    db.prepareStatement("UPDATE lanes SET subagent_pinned = 1 WHERE id = ? AND origin_lane_id = ? AND origin_kind = 'subagent'").use { query ->
+                        query.setString(1, childId); query.setString(2, parentLaneId)
+                        check(query.executeUpdate() == 1) { "В списке закрепления есть чужой сабагент." }
+                    }
+                }
+                db.commit()
+            } catch (error: Exception) { db.rollback(); throw error } finally { db.autoCommit = true }
+        }
+    }
+
+    fun queuedLaneIds(): List<String> = synchronized(lock) {
+        connect().use { db ->
+            db.createStatement().use { statement ->
+                statement.executeQuery("SELECT DISTINCT lane_id FROM queued_messages WHERE status = 'pending'").use { result ->
+                    buildList { while (result.next()) add(result.getString(1)) }
+                }
+            }
+        }
+    }
+
+    fun failNextQueuedMessage(laneId: String, error: String): Boolean = synchronized(lock) {
+        connect().use { db ->
+            db.prepareStatement("UPDATE queued_messages SET status = 'failed', error = ? WHERE id = (SELECT id FROM queued_messages WHERE lane_id = ? AND status = 'pending' ORDER BY created_at, rowid LIMIT 1)").use { query ->
+                query.setString(1, error.take(1_000))
+                query.setString(2, laneId)
+                query.executeUpdate() == 1
+            }
+        }
+    }
+
+    fun startNextQueuedRun(laneId: String): StartedRun? = synchronized(lock) {
+        val id = connect().use { db ->
+            db.prepareStatement("SELECT id FROM queued_messages WHERE lane_id = ? AND status = 'pending' ORDER BY created_at, rowid LIMIT 1").use { query ->
+                query.setString(1, laneId)
+                query.executeQuery().use { result -> if (result.next()) result.getString(1) else null }
+            }
+        } ?: return@synchronized null
+        startRun(laneId, "", RequestOverrides(), id)
+    }
+
+    fun startRun(laneId: String, prompt: String, overrides: RequestOverrides = RequestOverrides(), queuedMessageId: String? = null): StartedRun = synchronized(lock) {
+        connect().use { db ->
+            db.autoCommit = false
+            try {
+                val queued = queuedMessageId?.let { id ->
+                    db.prepareStatement("SELECT content, request_overrides FROM queued_messages WHERE id = ? AND lane_id = ? AND status = 'pending'").use { query ->
+                        query.setString(1, id)
+                        query.setString(2, laneId)
+                        query.executeQuery().use { result ->
+                            check(result.next()) { "Queued message no longer exists" }
+                            result.getString("content") to requestOverridesFromJson(result.getString("request_overrides"))
+                        }
+                    }
+                }
+                val requestPrompt = queued?.first ?: prompt
+                val requestOverrides = queued?.second ?: overrides
+                val selectedSkills = SkillCatalog.validate(requestOverrides.skillIds ?: skillIds(db, laneId))
+                val providerChosen = db.prepareStatement("SELECT provider_chosen FROM lanes WHERE id = ?").use { query ->
+                    query.setString(1, laneId)
+                    query.executeQuery().use { result -> result.next() && result.getInt(1) != 0 }
+                }
+                check(providerChosen) { "Choose a provider before sending a message" }
                 val lane = db.prepareStatement(
                 "SELECT l.board_id, l.codex_thread_id, l.codex_context_seeded, l.provider, l.model, l.temperature, l.max_tokens, l.stop, " +
                         "l.context_strategy, l.context_window_size, l.context_summary, l.context_summary_watermark, l.context_budget_tokens, l.mcp_auto_approve, " +
                         "l.instructions, l.instruction_mode, b.instructions AS board_instructions, " +
-                        "l.agent_id, a.name AS agent_name, a.instructions AS agent_instructions " +
+                        "l.agent_id, a.name AS agent_name, a.instructions AS agent_instructions, l.reasoning_effort, l.service_tier " +
                         "FROM lanes l JOIN boards b ON b.id = l.board_id LEFT JOIN agents a ON a.id = l.agent_id WHERE l.id = ?",
                 ).use { query ->
                     query.setString(1, laneId)
@@ -1092,7 +1501,8 @@ class BoardStore(
                             result.getString("context_strategy"), result.getString("context_window_size"), result.getString("context_summary"),
                             result.getString("context_summary_watermark"), result.getString("context_budget_tokens"), result.getString("mcp_auto_approve"),
                             result.getString("instructions"), result.getString("instruction_mode"), result.getString("board_instructions"),
-                            result.getString("agent_id"), result.getString("agent_name"), result.getString("agent_instructions"))
+                            result.getString("agent_id"), result.getString("agent_name"), result.getString("agent_instructions"),
+                            result.getString("reasoning_effort"), result.getString("service_tier"))
                     }
                 }
                 val isActive = db.prepareStatement(
@@ -1102,6 +1512,13 @@ class BoardStore(
                     query.executeQuery().use { it.next() }
                 }
                 if (isActive) throw ActiveRunException()
+                if (queuedMessageId == null && db.prepareStatement(
+                    "SELECT 1 FROM queued_messages WHERE lane_id = ? AND status = 'pending' LIMIT 1",
+                ).use { query -> query.setString(1, laneId); query.executeQuery().use { it.next() } }) throw PendingQueueException()
+                val effectivePromptInstructions = listOf(
+                    effectiveInstructions(lane[16], lane[14], lane[15], lane[19] ?: "", lane[18]),
+                    SkillCatalog.instructions(selectedSkills),
+                ).filter(String::isNotBlank).joinToString("\n\n")
 
                 val needsSeed = lane[2].toBoolean()
                 val completeTranscript = history(db, laneId)
@@ -1116,27 +1533,33 @@ class BoardStore(
                 val provider = lane[3]
                 val config = LaneConfig(
                     provider,
-                    overrides.model?.takeIf(String::isNotBlank) ?: lane[4],
-                    if (provider == "openrouter") overrides.temperature ?: lane[5]?.toDoubleOrNull() else null,
-                    if (provider == "openrouter") overrides.maxTokens ?: lane[6]?.toIntOrNull() else null,
-                    if (provider == "openrouter") (overrides.stop ?: lane[7])?.takeIf(String::isNotBlank) else null,
+                    requestOverrides.model?.takeIf(String::isNotBlank) ?: lane[4],
+                    if (provider == "openrouter") requestOverrides.temperature ?: lane[5]?.toDoubleOrNull() else null,
+                    if (provider == "openrouter") requestOverrides.maxTokens ?: lane[6]?.toIntOrNull() else null,
+                    if (provider == "openrouter") (requestOverrides.stop ?: lane[7])?.takeIf(String::isNotBlank) else null,
+                    if (provider == "codex") requestOverrides.effort?.takeIf(String::isNotBlank) ?: lane[20]?.takeIf(String::isNotBlank) else null,
+                    if (provider == "codex") requestOverrides.serviceTier?.takeIf(String::isNotBlank) ?: lane[21]?.takeIf(String::isNotBlank) else null,
                 )
                 require(config.provider != "openrouter" || config.model.isNotBlank()) { "OpenRouter model is required" }
                 require(config.temperature == null || config.temperature in 0.0..2.0) { "Temperature must be between 0 and 2" }
                 require(config.maxTokens == null || config.maxTokens in 1..200_000) { "Max tokens is out of range" }
                 require(config.stop == null || config.stop.length <= 500) { "Stop sequence is too long" }
-                val strategy = ContextStrategy.parse(lane[8])
+                val strategy = ContextStrategy.parse(requestOverrides.contextStrategy ?: lane[8])
+                val contextWindowSize = requestOverrides.contextWindowSize ?: lane[9].toInt()
+                val contextBudgetTokens = requestOverrides.contextBudgetTokens ?: lane[12].toInt()
+                require(contextWindowSize in 1..200) { "Размер окна должен быть от 1 до 200 сообщений." }
+                require(contextBudgetTokens in 256..1_000_000) { "Бюджет контекста должен быть от 256 до 1000000 токенов." }
                 val plan = ContextPlanner.plan(
                     transcript = completeTranscript,
-                    prompt = prompt,
+                    prompt = requestPrompt,
                     strategy = strategy,
-                    windowSize = lane[9].toInt(),
+                    windowSize = contextWindowSize,
                     summary = lane[10],
                     summaryWatermark = summaryWatermark,
-                    budgetTokens = lane[12].toInt(),
+                    budgetTokens = contextBudgetTokens,
                     responseTokensEstimate = config.maxTokens ?: 1024,
                 )
-                require(!plan.overflow || overrides.forceSend) {
+                require(!plan.overflow || requestOverrides.forceSend) {
                     "Контекст оценивается в ${plan.inputTokensEstimate + plan.responseTokensEstimate} токенов при бюджете ${plan.budgetTokens}; подтверди отправку ещё раз."
                 }
                 if (strategy != ContextStrategy.FULL) resetThread(db, laneId)
@@ -1153,7 +1576,7 @@ class BoardStore(
                 ).use { query ->
                     query.setString(1, userMessageId)
                     query.setString(2, laneId)
-                    query.setString(3, prompt)
+                    query.setString(3, requestPrompt)
                     query.setString(4, now)
                     query.executeUpdate()
                 }
@@ -1180,7 +1603,7 @@ class BoardStore(
                         kotlinx.serialization.json.Json.parseToJsonElement(config.toJson()).jsonObject.forEach { (key, value) -> put(key, value) }
                         put("contextPlan", plan.toJson())
                         put("contextStrategy", strategy.wireName)
-                        put("effectiveInstructions", effectiveInstructions(lane[16], lane[14], lane[15], lane[19] ?: "", lane[18]))
+                        put("effectiveInstructions", effectivePromptInstructions)
                         put("instructionSource", when (lane[15]) {
                             "override" -> "lane-override"
                             "append" -> "board-and-lane"
@@ -1193,11 +1616,20 @@ class BoardStore(
                     query.executeUpdate()
                 }
                 insertEvent(db, lane[0], laneId, runId, "run.started", buildJsonObject {})
+                queuedMessageId?.let { id ->
+                    db.prepareStatement("DELETE FROM queued_messages WHERE id = ? AND lane_id = ?").use { query ->
+                        query.setString(1, id)
+                        query.setString(2, laneId)
+                        check(query.executeUpdate() == 1) { "Queued message was already started" }
+                    }
+                }
                 db.commit()
                 StartedRun(
                     lane[0],
                     laneId,
+                    requestPrompt,
                     runId,
+                    answerId,
                     reusableThreadId,
                     contextToSeed,
                     plan,
@@ -1206,7 +1638,7 @@ class BoardStore(
                     config = config,
                     mcpTools = mcpTools(db, laneId),
                     mcpAutoApprove = lane[13].toInt() != 0,
-                    effectiveInstructions = effectiveInstructions(lane[16], lane[14], lane[15], lane[19] ?: "", lane[18]),
+                    effectiveInstructions = effectivePromptInstructions,
                 )
             } catch (error: SQLException) {
                 db.rollback()
@@ -1550,6 +1982,22 @@ class BoardStore(
             }
         },
     )
+
+    private fun queuedMessages(db: Connection, laneId: String): List<JsonObject> =
+        db.prepareStatement("SELECT id, content, created_at, status, error FROM queued_messages WHERE lane_id = ? ORDER BY created_at, rowid").use { query ->
+            query.setString(1, laneId)
+            query.executeQuery().use { result ->
+                buildList {
+                    while (result.next()) add(buildJsonObject {
+                        put("id", result.getString("id"))
+                        put("content", result.getString("content"))
+                        put("createdAt", result.getString("created_at"))
+                        put("status", result.getString("status"))
+                        result.getString("error")?.let { put("error", it) }
+                    })
+                }
+            }
+        }
 
     private fun activeRun(db: Connection, laneId: String) = db.prepareStatement(
         """SELECT r.id, r.status, COALESCE(MAX(e.sequence), 0) AS sequence

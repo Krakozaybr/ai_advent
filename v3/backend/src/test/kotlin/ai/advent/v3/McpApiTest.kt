@@ -237,6 +237,6 @@ private class TestCodex : CodexGateway {
     override suspend fun stream(threadId: String?, prompt: String, contextToSeed: List<ContextMessage>, shouldSeedContext: Boolean, model: String,
         onThreadId: suspend (String) -> Unit, onContextSeeded: suspend () -> Unit, onContextSeedFailed: suspend () -> Unit,
         onText: suspend (String) -> Unit, ephemeral: Boolean, onUsage: suspend (kotlinx.serialization.json.JsonObject) -> Unit,
-        developerInstructions: String) = Unit
+        developerInstructions: String, effort: String?, serviceTier: String?) = Unit
     override fun close() = Unit
 }

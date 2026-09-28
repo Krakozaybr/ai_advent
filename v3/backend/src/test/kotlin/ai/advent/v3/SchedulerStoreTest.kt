@@ -3,6 +3,8 @@ package ai.advent.v3
 import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
+import kotlinx.serialization.json.buildJsonObject
+import kotlinx.serialization.json.put
 import java.nio.file.Files
 import java.sql.DriverManager
 import java.util.concurrent.CountDownLatch
@@ -14,6 +16,85 @@ import kotlin.test.assertFailsWith
 
 class SchedulerStoreTest {
     private class FakeClock(var now: Long = 10_000) : SchedulerClock { override fun nowMillis() = now }
+
+    @Test fun `test deleting a schedule removes its history without touching another board`() {
+        val file = Files.createTempDirectory("scheduler-delete").resolve("schedule.sqlite")
+        val clock = FakeClock()
+        SchedulerStore(file, clock).use { store ->
+            val first = store.create("board-a", "first", 250)["id"]!!.jsonPrimitive.content
+            store.create("board-a", "second", 250)
+            store.create("board-b", "other board", 250)
+            clock.now += 250
+            assertEquals(3, store.tick())
+            assertEquals(2, store.clearHistory("board-a"))
+            assertEquals(0, store.runs("board-a")["runs"]!!.jsonArray.size)
+            assertEquals(1, store.runs("board-b")["runs"]!!.jsonArray.size)
+            assertEquals(false, store.delete("board-b", first))
+            assertEquals(true, store.delete("board-a", first))
+            assertEquals(1, store.list("board-a")["schedules"]!!.jsonArray.size)
+
+            val recent = store.create("board-a", "recent", 250)["id"]!!.jsonPrimitive.content
+            clock.now += 250
+            assertEquals(1, store.tick())
+            assertEquals(true, store.delete("board-a", recent))
+            assertEquals(0, store.runs("board-a")["runs"]!!.jsonArray.size)
+        }
+    }
+
+    @Test fun `test running schedule cannot be deleted`() {
+        val file = Files.createTempDirectory("scheduler-delete-running").resolve("schedule.sqlite")
+        val clock = FakeClock()
+        SchedulerStore(file, clock).use { store ->
+            val id = store.create("board", "running", 250)["id"]!!.jsonPrimitive.content
+            DriverManager.getConnection("jdbc:sqlite:$file").use { db -> db.prepareStatement(
+                "INSERT INTO schedule_runs(id,schedule_id,board_id,scheduled_for,started_at,status) VALUES('run',?,?,?,?,'running')"
+            ).use { q ->
+                q.setString(1,id); q.setString(2,"board"); q.setLong(3,clock.now+250); q.setLong(4,clock.now+250); q.executeUpdate()
+            } }
+            assertFailsWith<ScheduleRunningException> { store.delete("board", id) }
+            assertEquals(1, store.list("board")["schedules"]!!.jsonArray.size)
+            assertEquals(1, store.runs("board")["runs"]!!.jsonArray.size)
+            assertEquals(0, store.clearHistory("board"))
+        }
+    }
+
+    @Test fun `test scheduled agent dispatch records the run`() {
+        val file = Files.createTempDirectory("scheduler-agent").resolve("schedule.sqlite")
+        val clock = FakeClock()
+        SchedulerStore(file, clock).use { store ->
+            val calls = mutableListOf<Pair<String, String>>()
+            store.setAgentRunner { laneId, prompt ->
+                calls += laneId to prompt
+                buildJsonObject { put("source", "scheduled-agent"); put("runId", "run-1") }
+            }
+            store.create("board", "agent", 250, null, "lane-1", "Составь сводку")
+            clock.now += 250
+            assertEquals(1, store.tick())
+            assertEquals(listOf("lane-1" to "Составь сводку"), calls)
+            val run = store.runs("board")["runs"]!!.jsonArray.single().jsonObject
+            assertEquals("completed", run["status"]!!.jsonPrimitive.content)
+            assertEquals("run-1", run["result"]!!.jsonObject["runId"]!!.jsonPrimitive.content)
+        }
+    }
+
+    @Test fun `test repeat interval starts after the agent finishes`() {
+        val file = Files.createTempDirectory("scheduler-agent-repeat").resolve("schedule.sqlite")
+        val clock = FakeClock()
+        SchedulerStore(file, clock).use { store ->
+            store.setAgentRunner { _, _ ->
+                assertEquals("running", store.list("board")["schedules"]!!.jsonArray.single().jsonObject["status"]!!.jsonPrimitive.content)
+                clock.now += 5_000
+                buildJsonObject { put("source", "scheduled-agent"); put("runId", "run-1") }
+            }
+            store.create("board", "agent", 1_000, 2_000, "lane-1", "Составь сводку")
+            clock.now += 1_000
+            assertEquals(1, store.tick())
+            assertEquals(18_000L, store.list("board")["schedules"]!!.jsonArray.single().jsonObject["nextRunAt"]!!.jsonPrimitive.content.toLong())
+            assertEquals(0, store.tick())
+            clock.now += 1_999
+            assertEquals(0, store.tick())
+        }
+    }
 
     @Test fun `overdue one shot runs once and stores local aggregate`() {
         val file = Files.createTempDirectory("scheduler-once").resolve("schedule.sqlite")
@@ -46,10 +127,10 @@ class SchedulerStoreTest {
             assertEquals(1,store.tick())
             val run = store.runs("board")["runs"]!!.jsonArray.single().jsonObject
             assertEquals("4",run["missedCount"]!!.jsonPrimitive.content)
-            assertEquals(16_000L,store.list("board")["schedules"]!!.jsonArray.single().jsonObject["nextRunAt"]!!.jsonPrimitive.content.toLong())
+            assertEquals(16_100L,store.list("board")["schedules"]!!.jsonArray.single().jsonObject["nextRunAt"]!!.jsonPrimitive.content.toLong())
         }
         SchedulerStore(file,clock).use { reopened ->
-            assertEquals(16_000L,reopened.list("board")["schedules"]!!.jsonArray.single().jsonObject["nextRunAt"]!!.jsonPrimitive.content.toLong())
+            assertEquals(16_100L,reopened.list("board")["schedules"]!!.jsonArray.single().jsonObject["nextRunAt"]!!.jsonPrimitive.content.toLong())
             assertEquals(1,reopened.runs("board")["runs"]!!.jsonArray.size)
         }
     }
