@@ -6,12 +6,15 @@
     "dev": "NODE_ENV=development node --disable-warning=ExperimentalWarning --env-file-if-exists=.env server/index.mjs",
     "build": "vite build",
     "start": "NODE_ENV=production node --disable-warning=ExperimentalWarning --env-file-if-exists=.env server/index.mjs",
-    "test": "node --test"
+    "test": "node --test",
+    "rag:download": "node examples/ai-advent/classics-corpus.mjs",
+    "rag": "RAG_CORPUS=classics RAG_EMBEDDING=openrouter RAG_ALLOW_REMOTE=1 RAG_ANSWER_MODEL=${RAG_ANSWER_MODEL:-openai/gpt-4.1-mini} node --env-file-if-exists=.env examples/ai-advent/rag-cli.mjs"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.30.0",
     "express": "^5.2.1",
     "katex": "^0.18.7",
+    "parse5": "^7.3.0",
     "react": "^19.1.1",
     "react-dom": "^19.1.1",
     "react-markdown": "^10.1.0",

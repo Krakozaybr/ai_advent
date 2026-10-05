@@ -22,7 +22,7 @@ async function request(path, options) {
   return value;
 }
 
-const boardFiles = Array.from({ length: 11 }, (_, index) => `board-${String(index + 10).padStart(2, "0")}.json`);
+const boardFiles = Array.from({ length: 16 }, (_, index) => `board-${String(index + 10).padStart(2, "0")}.json`);
 const imported = new Map();
 for (const file of boardFiles) {
   const payload = await readFile(join(root, "boards", file), "utf8");

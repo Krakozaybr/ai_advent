@@ -1,0 +1,28 @@
+{
+  "externalId": "ai-advent-day-25",
+  "title": "День 25 · RAG-чат с памятью задачи",
+  "lanes": [
+    {
+      "externalId": "chat",
+      "title": "История, цель и ограничения",
+      "provider": "openrouter",
+      "model": "openai/gpt-4o-mini",
+      "contextStrategy": "full",
+      "contextWindowSize": 10,
+      "contextBudgetTokens": 32768,
+      "layout": {
+        "x": 24,
+        "y": 24,
+        "width": 440
+      },
+      "messages": [
+        {
+          "externalId": "guide",
+          "role": "assistant",
+          "content": "Запусти `npm run rag -- chat demo`. Команды /goal, /constraint, /clarify и /term сохраняют состояние; `scenarios` проверяет два диалога по 12 ходов.",
+          "provenance": "Демонстрационный ответ из seed-пакета; это не результат вызова модели."
+        }
+      ]
+    }
+  ]
+}

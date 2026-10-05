@@ -117,6 +117,22 @@ const boards = [
       instructions: "Для запросов о демонстрационных событиях используй доступные MCP-инструменты. Сначала найди события через demo-events/search_events, затем передай полученные события в demo-events/summarize_events. Если пользователь просит сохранить сводку, передай её в demo-notes/save_summary на другом сервере. Не выдумывай результат инструментов и сообщи пользователю, если сохранение ждёт подтверждения.",
     }),
   ]),
+  board(21, "День 21 · Индексация документов", [
+    lane("indexing", "Корпус и две стратегии", [message("guide", "assistant", "Учебный CLI: `npm run rag -- index`, затем `compare`. Индекс и сравнение находятся в `v3/data/rag/classics/`; сообщения этой ленты сами индекс не создают.")], { index: 0 }),
+  ]),
+  board(22, "День 22 · Первый RAG-запрос", [
+    lane("plain", "Без RAG", [message("guide", "assistant", "Запусти `npm run rag -- ask plain \"вопрос\"`. Контрольные вопросы — в `classics-questions.mjs`.")], { index: 0 }),
+    lane("rag", "С RAG", [message("guide", "assistant", "Запусти `npm run rag -- ask rag \"вопрос\"`; для сравнения 10 вопросов — `eval`. Индекс нужен заранее.")], { index: 1 }),
+  ]),
+  board(23, "День 23 · Фильтрация и переформулировка", [
+    lane("filter", "До и после фильтра", [message("guide", "assistant", "Команда `eval` сравнивает исходные top-K и результаты после порога, лексической переоценки и переформулировки коротких вопросов. Порог задаёт RAG_THRESHOLD.")], { index: 0 }),
+  ]),
+  board(24, "День 24 · Источники и отказ", [
+    lane("citations", "Цитаты и слабый контекст", [message("guide", "assistant", "CLI сверяет source, section, chunk_id и дословность цитаты с найденным чанком. При пустой выдаче или невалидной цитате отвечает «не знаю». Смысловую согласованность отдельно оценивает `eval`.")], { index: 0 }),
+  ]),
+  board(25, "День 25 · RAG-чат с памятью задачи", [
+    lane("chat", "История, цель и ограничения", [message("guide", "assistant", "Запусти `npm run rag -- chat demo`. Команды /goal, /constraint, /clarify и /term сохраняют состояние; `scenarios` проверяет два диалога по 12 ходов.")], { index: 0 }),
+  ]),
 ];
 
 await mkdir(output, { recursive: true });

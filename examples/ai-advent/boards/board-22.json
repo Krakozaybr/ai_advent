@@ -1,0 +1,50 @@
+{
+  "externalId": "ai-advent-day-22",
+  "title": "День 22 · Первый RAG-запрос",
+  "lanes": [
+    {
+      "externalId": "plain",
+      "title": "Без RAG",
+      "provider": "openrouter",
+      "model": "openai/gpt-4o-mini",
+      "contextStrategy": "full",
+      "contextWindowSize": 10,
+      "contextBudgetTokens": 32768,
+      "layout": {
+        "x": 24,
+        "y": 24,
+        "width": 440
+      },
+      "messages": [
+        {
+          "externalId": "guide",
+          "role": "assistant",
+          "content": "Запусти `npm run rag -- ask plain \"вопрос\"`. Контрольные вопросы — в `classics-questions.mjs`.",
+          "provenance": "Демонстрационный ответ из seed-пакета; это не результат вызова модели."
+        }
+      ]
+    },
+    {
+      "externalId": "rag",
+      "title": "С RAG",
+      "provider": "openrouter",
+      "model": "openai/gpt-4o-mini",
+      "contextStrategy": "full",
+      "contextWindowSize": 10,
+      "contextBudgetTokens": 32768,
+      "layout": {
+        "x": 484,
+        "y": 24,
+        "width": 440
+      },
+      "messages": [
+        {
+          "externalId": "guide",
+          "role": "assistant",
+          "content": "Запусти `npm run rag -- ask rag \"вопрос\"`; для сравнения 10 вопросов — `eval`. Индекс нужен заранее.",
+          "provenance": "Демонстрационный ответ из seed-пакета; это не результат вызова модели."
+        }
+      ]
+    }
+  ]
+}

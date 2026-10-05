@@ -1,0 +1,28 @@
+{
+  "externalId": "ai-advent-day-24",
+  "title": "День 24 · Источники и отказ",
+  "lanes": [
+    {
+      "externalId": "citations",
+      "title": "Цитаты и слабый контекст",
+      "provider": "openrouter",
+      "model": "openai/gpt-4o-mini",
+      "contextStrategy": "full",
+      "contextWindowSize": 10,
+      "contextBudgetTokens": 32768,
+      "layout": {
+        "x": 24,
+        "y": 24,
+        "width": 440
+      },
+      "messages": [
+        {
+          "externalId": "guide",
+          "role": "assistant",
+          "content": "CLI сверяет source, section, chunk_id и дословность цитаты с найденным чанком. При пустой выдаче или невалидной цитате отвечает «не знаю». Смысловую согласованность отдельно оценивает `eval`.",
+          "provenance": "Демонстрационный ответ из seed-пакета; это не результат вызова модели."
+        }
+      ]
+    }
+  ]
+}
