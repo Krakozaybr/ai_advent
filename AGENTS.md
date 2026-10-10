@@ -16,6 +16,8 @@
 - `npm run local:backend`, `local:web` — сервер и интерфейс локальных дней v3.
 - `npm run local -- index|probe|benchmark` — локальный индекс и реальные проверки;
   только явный `benchmark --cloud` разрешает облачное сравнение.
+- `npm run local -- optimize` и `report 29 --details` — сравнение профилей дня 29.
+- `npm run private -- setup IP|serve|check URL CERT` — отдельный сервис дня 30.
 
 Перед завершением изменения запусти `npm test`, `npm run build` и
 `git diff --check`.
@@ -32,8 +34,12 @@
 - `test/server.test.mjs` — интеграционные проверки API с подменённым LLM.
 - `server/ollama.mjs` и `examples/ai-advent/local-llm.mjs` — общий локальный
   клиент и RAG для CLI и веба; `LocalLlmRoutes.kt` связывает их с сервером v3.
-- `v3/frontend/src/LocalDays.tsx` — отдельные экраны `?localDay=26|27|28`;
+- `v3/frontend/src/LocalDays.tsx` — отдельные экраны `?localDay=26|27|28|29`;
   обычные ленты доски не являются локальным чат-провайдером.
+- `examples/ai-advent/local-optimization.mjs` — настройки и шаблон RAG;
+  дефолты дней 26–28 не менять.
+- `server/private-llm.mjs` и `private-chat.html` — изолированный чат-сервис:
+  HTTPS в домашней сети, Ollama только на loopback, без инструментов платформы.
 
 ## Добавление дня
 
@@ -56,3 +62,6 @@
 - Для Markdown используй общий `MarkdownContent`, включая GFM и формулы.
 - Локальные и облачные эмбеддинги не смешивай: локальный индекс хранится
   отдельно в `v3/data/rag/classics-ollama/`. Веса, индексы и отчёты не коммить.
+- Ключ и сертификаты приватного сервиса хранятся в `data/private-service/`.
+  Не выводи ключ в диагностику, URL, браузерное хранилище или видео;
+  сетевые запросы должны проходить авторизацию и ограничения до вызова модели.

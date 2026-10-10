@@ -1,0 +1,24 @@
+<!doctype html>
+<html lang="ru"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>День 30 · Приватный чат</title>
+<style>body{font:16px system-ui;color:#24374a;background:#f3f6f9;max-width:850px;margin:30px auto;padding:20px}input,textarea,button{font:inherit;padding:10px;border:1px solid #a9bdd0;border-radius:8px}textarea{width:100%;box-sizing:border-box}button{cursor:pointer}article{background:white;padding:16px;margin:12px 0;border-radius:10px;white-space:pre-wrap;overflow-wrap:anywhere}#error{color:#a32929}.controls{display:flex;gap:10px;flex-wrap:wrap}small{color:#4c6175}</style></head>
+<body><h1>День 30. Приватный чат</h1><p>Этот сервер → Ollama на том же компьютере. Без облачных моделей.</p><p>Ключ и диалог находятся только в памяти этой вкладки; после перезагрузки исчезнут.</p>
+<div class="controls"><input id="token" type="password" autocomplete="off" placeholder="Ключ доступа" aria-label="Ключ доступа"><button id="status" type="button">Проверить подключение</button><button id="clear" type="button">Новый диалог</button></div><p id="connection"></p>
+<div id="turns" aria-live="polite"></div><form id="form"><label for="question">Сообщение</label><textarea id="question" rows="4" maxlength="1000" required></textarea><button id="send">Отправить</button></form><p id="error" role="alert"></p>
+<script>
+const byId = (id) => document.getElementById(id);
+let history = [], busy = false;
+async function api(path, body) {
+  const response = await fetch(path, { method: body ? 'POST' : 'GET', headers: { Authorization: 'Bearer ' + byId('token').value, ...(body ? { 'Content-Type': 'application/json' } : {}) }, ...(body ? { body: JSON.stringify(body) } : {}) });
+  const value = await response.json(); if (!response.ok) throw new Error(value.error || 'HTTP ' + response.status); return value;
+}
+byId('status').onclick = async () => { try { const value = await api('/api/status'); byId('connection').textContent = value.model + ' · ' + value.transport + ' · ' + value.limits.requestsPerMinute + ' запросов/мин · контекст ' + value.limits.contextWindow + ' токенов; вход до ' + value.limits.maxContextBytes + ' байт UTF-8'; byId('error').textContent = ''; } catch (error) { byId('error').textContent = error.message; } };
+byId('clear').onclick = () => { if (!busy) { history = []; byId('turns').replaceChildren(); byId('error').textContent = ''; } };
+byId('form').onsubmit = async (event) => {
+  event.preventDefault(); if (busy) return;
+  const question = byId('question').value;
+  busy = true; byId('send').disabled = true; byId('send').textContent = 'Модель отвечает…'; byId('error').textContent = '';
+  try { const value = await api('/api/chat', { question, history: history.slice(-8) }); const article = document.createElement('article'); article.textContent = question + '\n\n' + value.answer + '\n\n' + value.model + ' · ' + value.elapsedMs + ' мс · только локально'; byId('turns').append(article); history.push({ role: 'user', content: question }, { role: 'assistant', content: value.answer }); byId('question').value = ''; }
+  catch (error) { byId('error').textContent = error.message; }
+  finally { busy = false; byId('send').disabled = false; byId('send').textContent = 'Отправить'; }
+};
+</script></body></html>

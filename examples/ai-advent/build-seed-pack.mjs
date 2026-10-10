@@ -145,6 +145,9 @@ const boards = [
   board(29, "День 29 · Оптимизация локальной LLM", [
     lane("optimization", "Настройки, шаблон и ресурсы", [message("guide", "assistant", "Открой [день 29](/?localDay=29). `npm run local -- optimize` сравнивает профили на одинаковых вопросах; `npm run local -- report 29 --details` показывает ответы и память. Отдельное квантование: `npm run local:quantization`, затем `optimize --quantization`. Обычная лента остаётся карточкой-навигацией.")], { index: 0 }),
   ]),
+  board(30, "День 30 · Приватный AI-сервис", [
+    lane("private-service", "HTTPS-чат на домашнем ноутбуке", [message("guide", "assistant", "Инструкция: examples/ai-advent/days-29-30-guide.md. На сервере: `npm run private -- setup IP`, затем `npm run private -- serve`. Доступ по HTTPS с ключом; Ollama остаётся на loopback. С другого компьютера: `npm run private -- check https://IP:3443 server.pem`. Ключи и сертификаты не добавляй в Git и не показывай в видео.")], { index: 0 }),
+  ]),
 ];
 
 await mkdir(output, { recursive: true });

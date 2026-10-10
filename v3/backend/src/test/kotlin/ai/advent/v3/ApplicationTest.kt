@@ -215,7 +215,7 @@ class ApplicationTest {
             .first { Files.isDirectory(it.resolve("examples/ai-advent/boards")) }
         val seedDirectory = project.resolve("examples/ai-advent/boards")
         val seedFiles = Files.list(seedDirectory).use { paths -> paths.filter { it.fileName.toString().endsWith(".json") }.sorted().toList() }
-        assertEquals(29, seedFiles.size)
+        assertEquals(30, seedFiles.size)
         val database = Files.createTempDirectory("seed-pack-import-").resolve("board.sqlite")
         val store = WorkspaceStore(database)
         application { module(store, FakeCodexAppServer()) }
