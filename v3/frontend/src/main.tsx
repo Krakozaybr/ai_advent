@@ -7,7 +7,7 @@ import "katex/dist/katex.min.css";
 import "highlight.js/styles/github.css";
 
 const requestedLocalDay = Number(new URLSearchParams(window.location.search).get("localDay"));
-const localDay = [26, 27, 28].includes(requestedLocalDay) ? requestedLocalDay as 26 | 27 | 28 : null;
+const localDay = [26, 27, 28, 29].includes(requestedLocalDay) ? requestedLocalDay as 26 | 27 | 28 | 29 : null;
 
 createRoot(document.getElementById("root")!).render(
   <React.StrictMode>

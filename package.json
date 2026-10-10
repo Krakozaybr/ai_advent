@@ -13,6 +13,7 @@
     "local:backend": "cd v3/backend && ./gradlew run --no-configuration-cache",
     "local:web": "npm --prefix v3/frontend run dev",
     "local": "node --env-file-if-exists=.env examples/ai-advent/local-llm.mjs",
+    "local:quantization": "ollama pull qwen3:4b-q8_0",
     "rag": "RAG_CORPUS=classics RAG_EMBEDDING=openrouter RAG_ALLOW_REMOTE=1 RAG_ANSWER_MODEL=${RAG_ANSWER_MODEL:-openai/gpt-4.1-mini} node --env-file-if-exists=.env examples/ai-advent/rag-cli.mjs"
   },
   "dependencies": {

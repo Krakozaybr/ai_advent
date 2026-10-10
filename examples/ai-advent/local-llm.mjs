@@ -4,6 +4,7 @@ import { fileURLToPath } from "node:url";
 import { createOllamaClient, localEmbeddingModel } from "../../server/ollama.mjs";
 import { ask, buildIndexes, createOpenRouterClient, readIndex, writeJsonAtomic } from "./rag.mjs";
 import { controlQuestions } from "./classics-questions.mjs";
+import { profileClient, profiles } from "./local-optimization.mjs";
 
 const root = resolve(fileURLToPath(new URL("../..", import.meta.url)));
 const directory = join(root, "v3/data/rag/classics-ollama");
@@ -13,12 +14,14 @@ export const localProbes = [
   { id: 3, difficulty: "Сложный", question: "Книг 48. Треть отдали в первую библиотеку, половину оставшихся — во вторую. Сколько осталось? Покажи короткий расчёт.", expected: "48 − 16 = 32; 32 − 16 = 16." },
 ];
 
-export async function localRequest({ question, rag = false, history = [], state = {} }, { client, index } = {}) {
+export async function localRequest({ question, rag = false, history = [], state = {}, profile = "baseline" }, { client, index } = {}) {
   if (typeof question !== "string" || !question.trim() || question.length > 6000) throw new Error("Нужен вопрос длиной от 1 до 6000 символов.");
   if (typeof rag !== "boolean" || !Array.isArray(history) || history.length > 20 || history.some((message) => !message || !["user", "assistant"].includes(message.role) || typeof message.content !== "string" || message.content.length > 6000)) throw new Error("История: до 20 сообщений user/assistant, до 6000 символов каждое; rag должен быть логическим значением.");
   history = history.map(({ role, content }) => ({ role, content }));
+  if (!Object.hasOwn(profiles, profile)) throw new Error("Неизвестный профиль локальной модели.");
   const metrics = [];
-  client ??= createOllamaClient({ onMetrics: (item) => metrics.push(item) });
+  client ??= createOllamaClient({ ...(profile === "optimized" ? profiles.optimized : {}), onMetrics: (item) => metrics.push(item) });
+  client = profileClient(client, profile);
   const started = performance.now();
   let result;
   if (rag) {
@@ -29,16 +32,20 @@ export async function localRequest({ question, rag = false, history = [], state 
     const answer = await client.complete([{ role: "system", content: "Отвечай по-русски, кратко. Не выдумывай факты. Если не знаешь, скажи об этом." }, ...history, { role: "user", content: question }]);
     result = { answer, citations: [], abstained: false };
   }
-  return { answer: result.answer, sources: result.citations, abstained: result.abstained ?? false, refusalReason: result.refusalReason, localOnly: true, model: client.model, endpoint: client.baseUrl, embeddingModel: rag ? index.model : undefined, elapsedMs: Math.round(performance.now() - started), metrics, retrieval: result.chosen?.map(({ source, section, chunk_id, score }) => ({ source, section, chunk_id, score })) ?? [] };
+  return { answer: result.answer, sources: result.citations, abstained: result.abstained ?? false, refusalReason: result.refusalReason, localOnly: true, profile, settings: client.settings, model: client.model, endpoint: client.baseUrl, embeddingModel: rag ? index.model : undefined, elapsedMs: Math.round(performance.now() - started), metrics, retrieval: result.chosen?.map(({ source, section, chunk_id, score }) => ({ source, section, chunk_id, score })) ?? [] };
 }
 
 const printAnswer = (result) => {
+  if (result.profile === "optimized" && result.settings) console.log(`Профиль: optimized · temperature=${result.settings.temperature} · контекст=${result.settings.contextWindow} · лимит JSON=${result.settings.jsonMaxTokens}`);
   console.log(`Модель: ${result.model}. Только локально: ${result.localOnly ? "да" : "нет"}. Время: ${result.elapsedMs} мс.\n\n${result.answer}`);
   for (const source of result.sources) console.log(`\nИсточник: ${source.title} · ${source.section} · ${source.chunk_id}\n«${source.quote}»`);
 };
 
 export async function runLocalCommand(command, args = []) {
-  if (command === "status") console.log(JSON.stringify(await createOllamaClient().status(), null, 2));
+  if (command === "optimize" || (command === "report" && args[0] === "29")) {
+    const { optimizationCommand } = await import("./local-optimization.mjs");
+    await optimizationCommand(command, args);
+  } else if (command === "status") console.log(JSON.stringify(await createOllamaClient().status(), null, 2));
   else if (command === "index") {
     const report = await buildIndexes({ client: createOllamaClient(), model: localEmbeddingModel, corpusName: "classics", outputDirectory: directory, batchSize: 16, onProgress: console.log });
     console.log(`Локальный индекс готов: ${report.documents} произведений, ${report.indexes.structural.chunks} структурных фрагментов.`);
@@ -51,8 +58,8 @@ export async function runLocalCommand(command, args = []) {
       printAnswer(result);
     }
     await writeJsonAtomic(join(directory, "day26-probes.json"), { completed: true, createdAt: new Date().toISOString(), rows });
-  } else if (command === "ask" || command === "rag") {
-    printAnswer(await localRequest({ question: args.join(" "), rag: command === "rag" }));
+  } else if (["ask", "rag", "rag-optimized"].includes(command)) {
+    printAnswer(await localRequest({ question: args.join(" "), rag: command !== "ask", profile: command === "rag-optimized" ? "optimized" : "baseline" }));
   } else if (command === "benchmark") {
     const index = await readIndex(join(directory, "structural.json"));
     const rows = [];
@@ -95,7 +102,7 @@ export async function runLocalCommand(command, args = []) {
     for await (const chunk of process.stdin) { text += chunk; if (text.length > 130_000) throw new Error("Запрос слишком большой."); }
     const input = JSON.parse(text);
     console.log(JSON.stringify(await localRequest(input)));
-  } else console.log("Команды: npm run local -- status | probe | index | ask \"вопрос\" | rag \"вопрос\" | benchmark [--cloud] | report 26|28 [--details]");
+  } else console.log("Команды: npm run local -- status | probe | index | ask \"вопрос\" | rag \"вопрос\" | rag-optimized \"вопрос\" | optimize [--all] [--quantization] | benchmark [--cloud] | report 26|28|29 [--details]");
 }
 
 if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {

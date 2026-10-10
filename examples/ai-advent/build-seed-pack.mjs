@@ -142,6 +142,9 @@ const boards = [
   board(28, "День 28 · Локальная LLM + RAG", [
     lane("local-rag", "Классика и локальные эмбеддинги", [message("guide", "assistant", "Открой [локальный RAG](/?localDay=28). Подготовка: `npm run local -- index`. Поиск и генерация работают локально. `benchmark` повторяет три вопроса дважды; `benchmark --cloud` явно включает сравнение с OpenRouter.")], { index: 0 }),
   ]),
+  board(29, "День 29 · Оптимизация локальной LLM", [
+    lane("optimization", "Настройки, шаблон и ресурсы", [message("guide", "assistant", "Открой [день 29](/?localDay=29). `npm run local -- optimize` сравнивает профили на одинаковых вопросах; `npm run local -- report 29 --details` показывает ответы и память. Отдельное квантование: `npm run local:quantization`, затем `optimize --quantization`. Обычная лента остаётся карточкой-навигацией.")], { index: 0 }),
+  ]),
 ];
 
 await mkdir(output, { recursive: true });
