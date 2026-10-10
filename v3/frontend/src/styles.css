@@ -571,3 +571,14 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
   .lane { max-width: calc(100vw - 24px); }
   .lane-messages { padding-inline: 18px; }
 }
+.local-days { max-width: 1080px; margin: 0 auto; padding: 24px; height: 100dvh; overflow-y: auto; }
+.local-days nav, .local-probes { display: flex; flex-wrap: wrap; gap: 10px; margin: 18px 0; }
+.local-days button { padding: 9px 14px; border: 1px solid #b7c6d6; border-radius: 8px; background: white; color: #23384c; cursor: pointer; }
+.local-days button[aria-current="page"] { background: #e1edf8; border-color: #557b9d; }
+.local-days button:disabled { opacity: .55; cursor: default; }
+.local-status, .local-turn { padding: 16px; background: #fff; border: 1px solid #d1dbe5; border-radius: 12px; margin: 14px 0; }
+.local-days form { display: grid; gap: 10px; margin: 20px 0; }
+.local-days textarea { width: 100%; box-sizing: border-box; padding: 12px; border: 1px solid #b7c6d6; border-radius: 8px; font: inherit; resize: vertical; }
+.local-days blockquote { margin: 12px 0; padding: 10px 16px; border-left: 3px solid #557b9d; background: #f1f6fb; }
+.local-days footer { font-size: 12px; overflow-wrap: anywhere; }
+.local-days [role="alert"] { color: #a32929; }

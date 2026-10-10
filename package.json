@@ -8,6 +8,11 @@
     "start": "NODE_ENV=production node --disable-warning=ExperimentalWarning --env-file-if-exists=.env server/index.mjs",
     "test": "node --test",
     "rag:download": "node examples/ai-advent/classics-corpus.mjs",
+    "local:serve": "OLLAMA_NO_CLOUD=1 OLLAMA_HOST=127.0.0.1:11434 OLLAMA_MODELS=./v3/data/ollama/models ollama serve",
+    "local:pull": "ollama pull qwen3:4b && ollama pull qwen3-embedding:0.6b",
+    "local:backend": "cd v3/backend && ./gradlew run --no-configuration-cache",
+    "local:web": "npm --prefix v3/frontend run dev",
+    "local": "node --env-file-if-exists=.env examples/ai-advent/local-llm.mjs",
     "rag": "RAG_CORPUS=classics RAG_EMBEDDING=openrouter RAG_ALLOW_REMOTE=1 RAG_ANSWER_MODEL=${RAG_ANSWER_MODEL:-openai/gpt-4.1-mini} node --env-file-if-exists=.env examples/ai-advent/rag-cli.mjs"
   },
   "dependencies": {

@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-import { ask, buildIndexes, chunkDocuments, compareRetrieval, createOpenRouterClient, filterAndRerank, loadCorpus, localEmbedding, readIndex, rewriteQuestion, validateCitedAnswer, writeJsonAtomic } from "../examples/ai-advent/rag.mjs";
+import { ask, buildIndexes, chunkDocuments, citationCatalog, compareRetrieval, createOpenRouterClient, filterAndRerank, loadCorpus, localEmbedding, readIndex, rewriteQuestion, validateCitedAnswer, writeJsonAtomic } from "../examples/ai-advent/rag.mjs";
 import { chatTurn, emptyChat, loadChat } from "../examples/ai-advent/rag-chat.mjs";
 import { controlQuestions, longScenarios } from "../examples/ai-advent/rag-questions.mjs";
 
@@ -79,12 +79,50 @@ test("цитаты принимаются только дословно из н�
   assert.throws(() => validateCitedAnswer({ ...valid, citations: [{ ...valid.citations[0], quote: "перезаписывает всё" }] }, [chunk]), /не совпадает/);
 });
 
+test("номера цитат подставляют точный текст и метаданные, неизвестные номера отклоняются", () => {
+  const chunk = { source: "book.md", title: "Рассказ", section: "Глава", chunk_id: "a", text: "— Гайка-то? Мы из гаек грузила делаем…\nНа деревню дедушке.\n" + "Длинное предложение с пробелами ".repeat(30) };
+  const catalog = citationCatalog([chunk]);
+  assert.ok(catalog.length > 3);
+  assert.ok(catalog.every((item) => chunk.text.includes(item.quote) && item.quote.length <= 360));
+  const evidence = catalog.find((item) => item.quote.includes("грузила"));
+  const result = validateCitedAnswer({ answer: "Для рыбалки.", citations: [{ evidence_id: evidence.evidence_id, quote: "выдуманный текст", source: "wrong.md" }] }, [chunk], catalog);
+  assert.equal(result.citations[0].quote, evidence.quote);
+  assert.equal(result.citations[0].source, "book.md");
+  assert.throws(() => validateCitedAnswer({ answer: "Ответ", citations: [{ evidence_id: "unknown" }] }, [chunk], catalog), /Неизвестный номер/);
+  assert.throws(() => validateCitedAnswer({ answer: "Ответ", citations: [{ evidence_id: evidence.evidence_id }] }, [chunk], [{ ...evidence, quote: "выдуманная цитата" }]), /не совпадает/);
+});
+
+test("ответ по номерам не требует перепечатывания цитат", async () => {
+  const chunk = { ...doc, chunk_id: "a", section: "Начало", vector: [1, 0] };
+  const client = { embed: async () => [[1, 0]], complete: async (messages) => {
+    assert.match(messages[0].content, /Не перепечатывай цитаты/);
+    assert.match(messages[1].content, /c1e1/);
+    return JSON.stringify({ answer: "Есть импорт досок.", citations: [{ evidence_id: "c1e1" }] });
+  } };
+  const result = await ask({ client, index: { model: "fake", chunks: [chunk] }, question: "Что описано?" });
+  assert.equal(result.abstained, false);
+  assert.equal(result.repairCount, 0);
+  assert.ok(chunk.text.includes(result.citations[0].quote));
+});
+
+test("ошибка номера не публикует черновик и отличается от отсутствия контекста", async () => {
+  const client = { embed: async () => [[1, 0]], complete: async () => JSON.stringify({ answer: "Непроверенный ответ.", citations: [{ evidence_id: "bad" }] }) };
+  const index = { model: "fake", chunks: [{ ...doc, chunk_id: "a", section: "Начало", vector: [1, 0] }] };
+  const result = await ask({ client, index, question: "Что описано?" });
+  assert.equal(result.abstained, true);
+  assert.equal(result.refusalReason, "invalid_citation");
+  assert.equal(result.draftAnswer, "Непроверенный ответ.");
+  assert.notEqual(result.answer, result.draftAnswer);
+  assert.equal(result.citations.length, 0);
+});
+
 test("при слабой выдаче модель не вызывается и возвращается просьба уточнить", async () => {
   let calls = 0;
   const client = { embed: async () => [[1, 0]], complete: async () => { calls++; return ""; } };
   const index = { model: "fake", chunks: [{ ...doc, chunk_id: "a", section: "Начало", vector: [0, 1] }] };
   const result = await ask({ client, index, question: "Несвязанный вопрос", threshold: 0.3 });
   assert.equal(result.abstained, true);
+  assert.equal(result.refusalReason, "no_context");
   assert.match(result.answer, /Уточните/);
   assert.equal(calls, 0);
 });

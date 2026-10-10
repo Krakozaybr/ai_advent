@@ -1,0 +1,28 @@
+{
+  "externalId": "ai-advent-day-28",
+  "title": "День 28 · Локальная LLM + RAG",
+  "lanes": [
+    {
+      "externalId": "local-rag",
+      "title": "Классика и локальные эмбеддинги",
+      "provider": "openrouter",
+      "model": "openai/gpt-4o-mini",
+      "contextStrategy": "full",
+      "contextWindowSize": 10,
+      "contextBudgetTokens": 32768,
+      "layout": {
+        "x": 24,
+        "y": 24,
+        "width": 440
+      },
+      "messages": [
+        {
+          "externalId": "guide",
+          "role": "assistant",
+          "content": "Открой [локальный RAG](/?localDay=28). Подготовка: `npm run local -- index`. Поиск и генерация работают локально. `benchmark` повторяет три вопроса дважды; `benchmark --cloud` явно включает сравнение с OpenRouter.",
+          "provenance": "Демонстрационный ответ из seed-пакета; это не результат вызова модели."
+        }
+      ]
+    }
+  ]
+}

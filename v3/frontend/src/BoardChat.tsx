@@ -708,6 +708,7 @@ export function BoardChat() {
       <header className="topbar">
         <nav className="board-tabs" aria-label="Доски">
           <button className={`board-tab home-tab ${showHome ? "selected" : ""}`} onClick={() => setShowHome(true)} aria-current={showHome ? "page" : undefined}>Home</button>
+          <a className="board-tab" href="/?localDay=26">Дни 26–28 · Локальная LLM</a>
           {openBoards.map((item) => (
             <div ref={item.id === activeBoardId && !showHome ? activeBoardTabRef : null} className={`board-tab-wrap ${item.id === activeBoardId && !showHome ? "selected" : ""}`} key={item.id}>
               <button className="board-tab" onClick={() => void selectBoard(item.id)} aria-current={item.id === activeBoardId && !showHome ? "page" : undefined}>{item.title}</button>

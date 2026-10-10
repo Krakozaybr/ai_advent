@@ -133,6 +133,15 @@ const boards = [
   board(25, "День 25 · RAG-чат с памятью задачи", [
     lane("chat", "История, цель и ограничения", [message("guide", "assistant", "Запусти `npm run rag -- chat demo`. Команды /goal, /constraint, /clarify и /term сохраняют состояние; `scenarios` проверяет два диалога по 12 ходов.")], { index: 0 }),
   ]),
+  board(26, "День 26 · Запуск локальной LLM", [
+    lane("local-start", "Ollama и три запроса", [message("guide", "assistant", "Открой [локальные модели](/?localDay=26). CLI: `npm run local -- status`, затем `probe`. Кнопки на отдельном экране отправляют реальные запросы Ollama; обычная лента этой доски остаётся карточкой-навигацией.")], { index: 0 }),
+  ]),
+  board(27, "День 27 · Локальная LLM в приложении", [
+    lane("local-web", "Веб-чат без облака", [message("guide", "assistant", "Открой [локальный веб-чат](/?localDay=27). Запрос идёт через сервер v3 к Ollama на этом компьютере; API-ключ не нужен, облачного fallback нет.")], { index: 0 }),
+  ]),
+  board(28, "День 28 · Локальная LLM + RAG", [
+    lane("local-rag", "Классика и локальные эмбеддинги", [message("guide", "assistant", "Открой [локальный RAG](/?localDay=28). Подготовка: `npm run local -- index`. Поиск и генерация работают локально. `benchmark` повторяет три вопроса дважды; `benchmark --cloud` явно включает сравнение с OpenRouter.")], { index: 0 }),
+  ]),
 ];
 
 await mkdir(output, { recursive: true });

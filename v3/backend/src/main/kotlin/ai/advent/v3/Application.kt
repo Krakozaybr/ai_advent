@@ -120,6 +120,7 @@ fun Application.module(
     monitor.subscribe(ApplicationStopped) { schedulerScope.cancel(); schedulerStore.close(); coordinator.close() }
 
     routing {
+        localLlmRoutes()
         post("/api/internal/subagents/spawn") {
             if (call.request.headers[HttpHeaders.Authorization] != "Bearer $subagentBridgeToken") {
                 call.respond(HttpStatusCode.Unauthorized, buildJsonObject { put("error", "Внутренний вызов не авторизован.") })
